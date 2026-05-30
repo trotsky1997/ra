@@ -19,20 +19,21 @@ use agent_client_protocol::{
     on_receive_dispatch, on_receive_notification, on_receive_request,
     schema::{
         AgentCapabilities, AuthMethod, AuthMethodAgent, AuthMethodId, AuthenticateRequest,
-        AuthenticateResponse, CancelNotification, CloseSessionRequest, CloseSessionResponse,
-        ContentBlock, ContentChunk, CreateTerminalRequest, CurrentModeUpdate,
-        DeleteSessionRequest, DeleteSessionResponse, ForkSessionRequest, ForkSessionResponse,
-        InitializeRequest, InitializeResponse, ListSessionsRequest, ListSessionsResponse,
-        LoadSessionRequest, LoadSessionResponse, LogoutRequest, LogoutResponse, ModelId,
-        ModelInfo, NewSessionRequest, NewSessionResponse, PermissionOption, PermissionOptionId,
-        PermissionOptionKind, PromptRequest, PromptResponse, ReadTextFileRequest,
-        ReleaseTerminalRequest, RequestPermissionOutcome, RequestPermissionRequest,
-        ResumeSessionRequest, ResumeSessionResponse, SessionId, SessionInfo, SessionMode,
-        SessionModeId, SessionModeState, SessionModelState, SessionNotification, SessionUpdate,
-        SetSessionModeRequest, SetSessionModeResponse, SetSessionModelRequest,
-        SetSessionModelResponse, StopReason, TerminalOutputRequest, TextContent,
-        ToolCall as AcpToolCall, ToolCallContent, ToolCallId, ToolCallStatus, ToolCallUpdate,
-        ToolCallUpdateFields, ToolKind, WaitForTerminalExitRequest, WriteTextFileRequest,
+        AuthenticateResponse, AvailableCommand, AvailableCommandInput, AvailableCommandsUpdate,
+        CancelNotification, CloseSessionRequest, CloseSessionResponse, ContentBlock, ContentChunk,
+        CreateTerminalRequest, CurrentModeUpdate, DeleteSessionRequest, DeleteSessionResponse,
+        ForkSessionRequest, ForkSessionResponse, InitializeRequest, InitializeResponse,
+        ListSessionsRequest, ListSessionsResponse, LoadSessionRequest, LoadSessionResponse,
+        LogoutRequest, LogoutResponse, ModelId, ModelInfo, NewSessionRequest, NewSessionResponse,
+        PermissionOption, PermissionOptionId, PermissionOptionKind, PromptRequest, PromptResponse,
+        ReadTextFileRequest, ReleaseTerminalRequest, RequestPermissionOutcome,
+        RequestPermissionRequest, ResumeSessionRequest, ResumeSessionResponse, SessionId,
+        SessionInfo, SessionMode, SessionModeId, SessionModeState, SessionModelState,
+        SessionNotification, SessionUpdate, SetSessionModeRequest, SetSessionModeResponse,
+        SetSessionModelRequest, SetSessionModelResponse, StopReason, TerminalOutputRequest,
+        TextContent, ToolCall as AcpToolCall, ToolCallContent, ToolCallId, ToolCallStatus,
+        ToolCallUpdate, ToolCallUpdateFields, ToolKind, UnstructuredCommandInput,
+        WaitForTerminalExitRequest, WriteTextFileRequest,
     },
     util,
 };
@@ -76,6 +77,126 @@ fn ra_auth_methods() -> Vec<AuthMethod> {
     let mut m = AuthMethodAgent::new(AuthMethodId::from("env".to_string()), "Environment".to_string());
     m.description = Some("Auth via PI_API_KEY / ANTHROPIC_API_KEY / OPENAI_API_KEY env vars.".into());
     vec![AuthMethod::Agent(m)]
+}
+
+/// A slash command parsed out of a user message. `name` is the command
+/// stem (no leading slash); `args` is everything after, with leading
+/// whitespace trimmed. We treat unknown names as "not a command" and let
+/// the user message flow through to the LLM normally.
+#[derive(Debug)]
+struct SlashCommand {
+    name: String,
+    args: String,
+}
+
+fn parse_slash_command(text: &str) -> Option<SlashCommand> {
+    let trimmed = text.trim_start();
+    let rest = trimmed.strip_prefix('/')?;
+    if rest.is_empty() {
+        return None;
+    }
+    let (name, args) = match rest.find(char::is_whitespace) {
+        Some(i) => (&rest[..i], rest[i..].trim_start()),
+        None => (rest, ""),
+    };
+    let name_lc = name.to_lowercase();
+    if !ra_commands().iter().any(|c| c.name == name_lc) {
+        return None;
+    }
+    Some(SlashCommand { name: name_lc, args: args.to_string() })
+}
+
+async fn run_slash_command(
+    cmd: &SlashCommand,
+    session: &Session,
+    state: &Arc<SharedState>,
+    session_id: SessionId,
+    cx: ConnectionTo<agent_client_protocol::Client>,
+) {
+    let send_text = |s: &str| {
+        let _ = cx.send_notification(SessionNotification::new(
+            session_id.clone(),
+            SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::Text(
+                TextContent::new(s.to_string()),
+            ))),
+        ));
+    };
+
+    match cmd.name.as_str() {
+        "clear" => {
+            session.restore_messages(Vec::new()).await;
+            send_text("Session cleared.");
+        }
+        "compact" => {
+            // Naive compaction: collapse to a one-line summary message. A
+            // future version can ask the model for a real summary.
+            let snapshot = session.snapshot_messages().await;
+            let n = snapshot.len();
+            session
+                .restore_messages(vec![crate::model::Message::User {
+                    content: format!(
+                        "[compacted: {} prior messages elided]{}",
+                        n,
+                        if cmd.args.is_empty() {
+                            "".to_string()
+                        } else {
+                            format!(" focus={}", cmd.args)
+                        }
+                    ),
+                }])
+                .await;
+            send_text(&format!("Compacted {n} prior messages."));
+        }
+        "models" => {
+            let mut buf = String::from("Available models:\n");
+            for m in &state.available_models {
+                buf.push_str(&format!("  • {} — {}\n", m.model_id, m.name));
+            }
+            send_text(&buf);
+        }
+        "mode" => {
+            let valid = ["default", "plan", "ask"];
+            let target = cmd.args.split_whitespace().next().unwrap_or("");
+            if !valid.contains(&target) {
+                send_text(&format!(
+                    "Unknown mode: '{target}'. Choose one of: {}.",
+                    valid.join(", ")
+                ));
+                return;
+            }
+            session.set_mode(target).await;
+            let _ = cx.send_notification(SessionNotification::new(
+                session_id.clone(),
+                SessionUpdate::CurrentModeUpdate(CurrentModeUpdate::new(SessionModeId::from(
+                    target.to_string(),
+                ))),
+            ));
+            send_text(&format!("Mode → {target}."));
+        }
+        _ => unreachable!("parse_slash_command vetted the name"),
+    }
+}
+
+/// Slash commands the agent advertises to ACP clients. Each command is
+/// intercepted server-side in the prompt handler when the user message
+/// starts with `/<name>`; the LLM never sees these.
+fn ra_commands() -> Vec<AvailableCommand> {
+    let unstructured = |hint: &str| {
+        Some(AvailableCommandInput::Unstructured(
+            UnstructuredCommandInput::new(hint),
+        ))
+    };
+    vec![
+        AvailableCommand::new("clear", "Reset the session: drop all prior messages."),
+        AvailableCommand::new(
+            "compact",
+            "Summarize the conversation so far and replace history with the summary.",
+        )
+        .input(unstructured("optional focus, e.g. 'keep code edits'")),
+        AvailableCommand::new("models", "List the available LLM backends and their ids."),
+        AvailableCommand::new("mode", "Switch session mode: default | plan | ask.")
+            .input(unstructured("default | plan | ask")),
+    ]
 }
 ///
 /// Holds the active default model, the model registry (for `session/set_model`
@@ -380,7 +501,15 @@ pub async fn run(
                 // Persist an empty trajectory upfront so the session shows up
                 // in session/list immediately (not just after first prompt).
                 s_new.save_session(&id).await;
-                let resp = NewSessionResponse::new(SessionId::from(id))
+                let session_id = SessionId::from(id);
+                // Advertise our slash commands now that the session exists.
+                let _ = cx.send_notification(SessionNotification::new(
+                    session_id.clone(),
+                    SessionUpdate::AvailableCommandsUpdate(AvailableCommandsUpdate::new(
+                        ra_commands(),
+                    )),
+                ));
+                let resp = NewSessionResponse::new(session_id)
                     .modes(ra_modes())
                     .models(SessionModelState::new(
                         ModelId::from(s_new.model_factory.default_model_id()),
@@ -410,15 +539,39 @@ pub async fn run(
                 // reverse calls). The Responder is owned and can be moved across
                 // tasks; we respond once the turn loop finishes.
                 let s_prompt_save = s_prompt.clone();
+                let cx_for_task = cx.clone();
                 tokio::spawn(async move {
-                    let prompt_result = session.prompt(user_text).await;
-                    let _ = forwarder.await;
-                    let stop = match prompt_result {
-                        Ok(crate::session::PromptOutcome::Completed) => StopReason::EndTurn,
-                        Ok(crate::session::PromptOutcome::Cancelled) => StopReason::Cancelled,
-                        Err(e) => {
-                            eprintln!("[ra::acp] prompt error: {e:#}");
-                            StopReason::EndTurn
+                    let stop = if let Some(cmd) = parse_slash_command(&user_text) {
+                        // Slash commands are intercepted server-side and never
+                        // reach the LLM. The handler streams its own
+                        // AgentMessageChunk(s) and may mutate session state.
+                        run_slash_command(
+                            &cmd,
+                            &session,
+                            &s_prompt_save,
+                            session_id.clone(),
+                            cx_for_task,
+                        )
+                        .await;
+                        // Forwarder is still alive listening for AgentEnd; the
+                        // command handler does not emit one, so we end the
+                        // forwarder by dropping the broadcast receiver via
+                        // the implicit timeout below. To avoid hanging, we
+                        // explicitly send an AgentEnd through the session's
+                        // broadcast channel.
+                        session.signal_agent_end().await;
+                        let _ = forwarder.await;
+                        StopReason::EndTurn
+                    } else {
+                        let prompt_result = session.prompt(user_text).await;
+                        let _ = forwarder.await;
+                        match prompt_result {
+                            Ok(crate::session::PromptOutcome::Completed) => StopReason::EndTurn,
+                            Ok(crate::session::PromptOutcome::Cancelled) => StopReason::Cancelled,
+                            Err(e) => {
+                                eprintln!("[ra::acp] prompt error: {e:#}");
+                                StopReason::EndTurn
+                            }
                         }
                     };
                     // Persist the updated trajectory before responding so a

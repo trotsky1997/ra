@@ -77,6 +77,23 @@ impl Session {
         self.mode.read().await.clone()
     }
 
+    /// Manually emit an `AgentEnd` event into the broadcast channel.
+    /// Used by the ACP server to terminate the event-forwarder when a
+    /// prompt is handled entirely server-side (slash command) and never
+    /// goes through the turn loop.
+    pub fn signal_agent_end(&self) -> impl std::future::Future<Output = ()> + '_ {
+        let tx = self.tx.clone();
+        async move {
+            let _ = tx.send(Event::AgentEnd);
+        }
+    }
+
+    /// Append a synthetic AgentMessageChunk-style event without going through
+    /// the model, useful for slash commands that produce text directly.
+    pub fn emit_text(&self, s: impl Into<String>) {
+        let _ = self.tx.send(Event::TextDelta(s.into()));
+    }
+
     /// Snapshot the current message log. Useful for `session/fork`.
     pub async fn snapshot_messages(&self) -> Vec<Message> {
         self.messages.lock().await.clone()

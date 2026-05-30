@@ -19,17 +19,18 @@ use agent_client_protocol::{
     on_receive_dispatch, on_receive_notification, on_receive_request,
     schema::{
         AgentCapabilities, CancelNotification, CloseSessionRequest, CloseSessionResponse,
-        ContentBlock, ContentChunk, CreateTerminalRequest, ForkSessionRequest,
-        ForkSessionResponse, InitializeRequest, InitializeResponse, ListSessionsRequest,
-        ListSessionsResponse, LoadSessionRequest, LoadSessionResponse, ModelId, ModelInfo,
-        NewSessionRequest, NewSessionResponse, PermissionOption, PermissionOptionId,
-        PermissionOptionKind, PromptRequest, PromptResponse, ReadTextFileRequest,
-        ReleaseTerminalRequest, RequestPermissionOutcome, RequestPermissionRequest, SessionId,
+        ContentBlock, ContentChunk, CreateTerminalRequest, DeleteSessionRequest,
+        DeleteSessionResponse, ForkSessionRequest, ForkSessionResponse, InitializeRequest,
+        InitializeResponse, ListSessionsRequest, ListSessionsResponse, LoadSessionRequest,
+        LoadSessionResponse, ModelId, ModelInfo, NewSessionRequest, NewSessionResponse,
+        PermissionOption, PermissionOptionId, PermissionOptionKind, PromptRequest, PromptResponse,
+        ReadTextFileRequest, ReleaseTerminalRequest, RequestPermissionOutcome,
+        RequestPermissionRequest, ResumeSessionRequest, ResumeSessionResponse, SessionId,
         SessionInfo, SessionModelState, SessionNotification, SessionUpdate,
         SetSessionModelRequest, SetSessionModelResponse, StopReason, TerminalOutputRequest,
         TextContent, ToolCall as AcpToolCall, ToolCallContent, ToolCallId, ToolCallStatus,
-        ToolCallUpdate, ToolCallUpdateFields, ToolKind, WaitForTerminalExitRequest,
-        WriteTextFileRequest,
+        ToolCallUpdate, ToolCallUpdateFields, ToolKind,
+        WaitForTerminalExitRequest, WriteTextFileRequest,
     },
     util,
 };
@@ -323,6 +324,8 @@ pub async fn run(
     let s_load = state.clone();
     let s_list = state.clone();
     let s_close = state.clone();
+    let s_resume = state.clone();
+    let s_delete = state.clone();
 
     AcpAgent
         .builder()
@@ -528,6 +531,65 @@ pub async fn run(
                 s_close.sessions.remove(&id);
                 s_close.session_cwds.remove(&id);
                 responder.respond(CloseSessionResponse::default())
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |req: ResumeSessionRequest, responder, cx: ConnectionTo<agent_client_protocol::Client>| {
+                // resume == load semantically for us: the on-disk trajectory
+                // is the source of truth, and a fresh in-memory Session is
+                // hydrated from it. (We don't keep idle sessions warm.)
+                let id = req.session_id.to_string();
+                let cwd = req.cwd.clone();
+                let store = match SessionStore::for_cwd(&cwd) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        return responder.respond_with_error(util::internal_error(format!(
+                            "store for {}: {e:#}",
+                            cwd.display()
+                        )));
+                    }
+                };
+                let traj = match store.load(&id).await {
+                    Ok(t) => t,
+                    Err(e) => {
+                        return responder.respond_with_error(util::internal_error(format!(
+                            "load {id}: {e:#}"
+                        )));
+                    }
+                };
+                let messages = atif_codec::decode(&traj);
+                let handle: Arc<dyn ClientHandle> =
+                    Arc::new(AcpClientHandle { cx: cx.clone() });
+                let session = s_resume.create_session(&id, handle, cwd);
+                session.restore_messages(messages).await;
+                let resp = ResumeSessionResponse::default();
+                responder.respond(resp)
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |req: DeleteSessionRequest, responder, _cx| {
+                let id = req.session_id.to_string();
+                // Drop in-memory session if present, then nuke the file.
+                s_delete.sessions.remove(&id);
+                let cwd = s_delete.cwd_for(&id);
+                s_delete.session_cwds.remove(&id);
+                let store = match SessionStore::for_cwd(&cwd) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        return responder.respond_with_error(util::internal_error(format!(
+                            "store for {}: {e:#}",
+                            cwd.display()
+                        )));
+                    }
+                };
+                if let Err(e) = store.delete(&id).await {
+                    return responder.respond_with_error(util::internal_error(format!(
+                        "delete {id}: {e:#}"
+                    )));
+                }
+                responder.respond(DeleteSessionResponse::default())
             },
             on_receive_request!(),
         )

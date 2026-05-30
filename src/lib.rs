@@ -1,3 +1,4 @@
+pub mod acp_server;
 pub mod events;
 pub mod model;
 pub mod pi_model;

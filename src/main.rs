@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use clap::{Parser, Subcommand};
 use ra::{BashTool, Event, MockModel, Model, PiModel, ReadTool, Session};
 use tokio::io::{self, AsyncWriteExt};
 
@@ -14,21 +15,45 @@ const BANNER: &str = r#"
    rust-native agent
 "#;
 
+#[derive(Parser)]
+#[command(name = "ra", version, about = "Ra — rust-native agent")]
+struct Cli {
+    #[command(subcommand)]
+    cmd: Option<Cmd>,
+
+    /// Legacy positional prompt; equivalent to `ra run <PROMPT>`.
+    prompt: Option<String>,
+}
+
+#[derive(Subcommand)]
+enum Cmd {
+    /// Run a single prompt and stream events to stdout (print mode).
+    Run {
+        /// Prompt text. Use prefixes like `bash:` / `read:` with the mock model.
+        prompt: Option<String>,
+    },
+    /// Serve Ra as an ACP-compatible agent over stdio (JSON-RPC 2.0).
+    Acp,
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    eprintln!("{BANNER}");
+    let cli = Cli::parse();
 
-    let prompt = std::env::args().nth(1).unwrap_or_else(|| {
-        "bash:echo hello from ra && uname -sr".to_string()
-    });
+    match cli.cmd {
+        Some(Cmd::Acp) => run_acp().await,
+        Some(Cmd::Run { prompt }) => run_print(prompt).await,
+        None => run_print(cli.prompt).await,
+    }
+}
 
-    // 选模型：有 PI_API_KEY 就接真后端，否则用 mock 跑骨架。
-    let model: Arc<dyn Model> = match std::env::var("PI_API_KEY") {
+/// Build a Model based on environment. Banner + log go to stderr only.
+fn build_model() -> Arc<dyn Model> {
+    match std::env::var("PI_API_KEY") {
         Ok(key) if !key.is_empty() => {
             let base = std::env::var("PI_BASE_URL")
                 .unwrap_or_else(|_| "https://pi-api-us.macaron.xin".into());
-            let model_id =
-                std::env::var("PI_MODEL").unwrap_or_else(|_| "gpt-5.5".into());
+            let model_id = std::env::var("PI_MODEL").unwrap_or_else(|_| "gpt-5.5".into());
             eprintln!("[ra] using PiModel base={base} model={model_id}");
             Arc::new(PiModel::new(base, key, model_id))
         }
@@ -36,7 +61,22 @@ async fn main() -> anyhow::Result<()> {
             eprintln!("[ra] PI_API_KEY not set; using MockModel");
             Arc::new(MockModel)
         }
-    };
+    }
+}
+
+async fn run_acp() -> anyhow::Result<()> {
+    eprintln!("{BANNER}");
+    eprintln!("[ra] starting ACP server on stdio (protocol v1)");
+    let model = build_model();
+    ra::acp_server::run(model).await.map_err(|e| anyhow::anyhow!("{e:?}"))?;
+    Ok(())
+}
+
+async fn run_print(prompt: Option<String>) -> anyhow::Result<()> {
+    eprintln!("{BANNER}");
+
+    let prompt = prompt.unwrap_or_else(|| "bash:echo hello from ra && uname -sr".to_string());
+    let model = build_model();
 
     let session = Arc::new(Session::new(
         model,
@@ -64,8 +104,7 @@ async fn main() -> anyhow::Result<()> {
                 Ok(Event::ToolCallStart(c)) => {
                     let _ = stdout
                         .write_all(
-                            format!("\n[tool_start] {} input={}\n", c.name, c.input)
-                                .as_bytes(),
+                            format!("\n[tool_start] {} input={}\n", c.name, c.input).as_bytes(),
                         )
                         .await;
                 }

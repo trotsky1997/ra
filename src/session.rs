@@ -215,6 +215,11 @@ impl Session {
             })
             .collect();
         let model = self.model.read().await.clone();
+        // ATOF: scope the whole streamed response from the model layer.
+        // Drops at the end of the stream-consumption loop, before tool
+        // execution starts, so each tool gets its own sibling Tool scope
+        // rather than nesting under the LLM scope.
+        let llm_scope = crate::nemo_obs::llm_scope("model.stream");
         let mut stream = model.stream(&history, &specs).await?;
 
         let mut text_acc = String::new();
@@ -240,6 +245,7 @@ impl Session {
                 }
             }
         }
+        drop(llm_scope);
 
         self.messages.lock().await.push(Message::Assistant {
             content: text_acc,

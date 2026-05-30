@@ -94,6 +94,39 @@ impl Session {
         let _ = self.tx.send(Event::TextDelta(s.into()));
     }
 
+    /// Best-effort token estimate of the current conversation, used as the
+    /// `used` field on `SessionUpdate::UsageUpdate` when the model layer
+    /// hasn't surfaced exact usage. Uses tiktoken's o200k_base singleton —
+    /// approximate for non-OpenAI models, but always nonzero and stable.
+    pub async fn estimate_used_tokens(&self) -> u64 {
+        let messages = self.messages.lock().await.clone();
+        let bpe = tiktoken_rs::o200k_base_singleton();
+        let mut total = 0u64;
+        for m in &messages {
+            // 4 tokens of overhead per message is the conventional rough
+            // estimate for chat-completions framing.
+            total += 4;
+            match m {
+                Message::User { content } => {
+                    total += bpe.encode_with_special_tokens(content).len() as u64;
+                }
+                Message::Assistant { content, tool_calls } => {
+                    total += bpe.encode_with_special_tokens(content).len() as u64;
+                    for c in tool_calls {
+                        total += bpe.encode_with_special_tokens(&c.name).len() as u64;
+                        total += bpe
+                            .encode_with_special_tokens(&c.input.to_string())
+                            .len() as u64;
+                    }
+                }
+                Message::ToolResult(r) => {
+                    total += bpe.encode_with_special_tokens(&r.content).len() as u64;
+                }
+            }
+        }
+        total
+    }
+
     /// Snapshot the current message log. Useful for `session/fork`.
     pub async fn snapshot_messages(&self) -> Vec<Message> {
         self.messages.lock().await.clone()

@@ -32,7 +32,7 @@ use agent_client_protocol::{
         SessionNotification, SessionUpdate, SetSessionModeRequest, SetSessionModeResponse,
         SetSessionModelRequest, SetSessionModelResponse, StopReason, TerminalOutputRequest,
         TextContent, ToolCall as AcpToolCall, ToolCallContent, ToolCallId, ToolCallStatus,
-        ToolCallUpdate, ToolCallUpdateFields, ToolKind, UnstructuredCommandInput,
+        ToolCallUpdate, ToolCallUpdateFields, ToolKind, UnstructuredCommandInput, UsageUpdate,
         WaitForTerminalExitRequest, WriteTextFileRequest,
     },
     util,
@@ -111,7 +111,7 @@ async fn run_slash_command(
     session: &Session,
     state: &Arc<SharedState>,
     session_id: SessionId,
-    cx: ConnectionTo<agent_client_protocol::Client>,
+    cx: &ConnectionTo<agent_client_protocol::Client>,
 ) {
     let send_text = |s: &str| {
         let _ = cx.send_notification(SessionNotification::new(
@@ -177,7 +177,27 @@ async fn run_slash_command(
     }
 }
 
-/// Slash commands the agent advertises to ACP clients. Each command is
+/// Best-guess context window size (in tokens) for a given model id, used
+/// as the `size` field on `SessionUpdate::UsageUpdate`. Falls back to a
+/// conservative default for unknown ids.
+fn ctx_window_for(model_id: &str) -> u64 {
+    let id = model_id.to_ascii_lowercase();
+    if id.contains("gpt-5") {
+        1_000_000
+    } else if id.contains("gpt-4.1") || id.contains("gpt-4o") {
+        128_000
+    } else if id.contains("claude") && id.contains("opus") {
+        200_000
+    } else if id.contains("claude") {
+        200_000
+    } else if id.contains("gemini") {
+        1_000_000
+    } else if id.contains("ollama") {
+        8_000
+    } else {
+        128_000
+    }
+}
 /// intercepted server-side in the prompt handler when the user message
 /// starts with `/<name>`; the LLM never sees these.
 fn ra_commands() -> Vec<AvailableCommand> {
@@ -550,7 +570,7 @@ pub async fn run(
                             &session,
                             &s_prompt_save,
                             session_id.clone(),
-                            cx_for_task,
+                            &cx_for_task,
                         )
                         .await;
                         // Forwarder is still alive listening for AgentEnd; the
@@ -577,7 +597,26 @@ pub async fn run(
                     // Persist the updated trajectory before responding so a
                     // crash here does not silently lose the turn.
                     s_prompt_save.save_session(&session_id.to_string()).await;
-                    let _ = responder.respond(PromptResponse::new(stop));
+
+                    // Best-effort token accounting. graniet/llm doesn't
+                    // surface real usage on the streaming-with-tools path
+                    // yet, so we tiktoken-estimate over the persisted
+                    // trajectory. Two delivery channels for redundancy:
+                    //   1. SessionUpdate::UsageUpdate notification (spec)
+                    //   2. PromptResponse.usage (always reaches the client)
+                    let used = session.estimate_used_tokens().await;
+                    let model_id = s_prompt_save.model_factory.default_model_id();
+                    let size = ctx_window_for(&model_id);
+
+                    let _ = cx_for_task.send_notification(SessionNotification::new(
+                        session_id.clone(),
+                        SessionUpdate::UsageUpdate(UsageUpdate::new(used, size)),
+                    ));
+
+                    let usage = agent_client_protocol::schema::Usage::new(used, used, 0);
+                    let _ = responder.respond(
+                        PromptResponse::new(stop).usage(Some(usage)),
+                    );
                 });
 
                 Ok(())

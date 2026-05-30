@@ -23,7 +23,7 @@ tokio-stream = "0.1"
 anyhow = "1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
 llm = { version = "1.2", default-features = false, features = ["openai", "anthropic", "google", "deepseek", "ollama", "groq", "xai"] }
-agent-client-protocol = { version = "0.12", features = ["unstable"] }
+agent-client-protocol = { git = "https://github.com/trotsky1997/rust-sdk.git", branch = "feat/unstable-feature-passthrough", features = ["unstable"] }
 dashmap = "6"
 clap = { version = "4", features = ["derive"] }
 ulid = "1"

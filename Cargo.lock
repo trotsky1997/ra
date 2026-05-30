@@ -5,8 +5,7 @@ version = 4
 [[package]]
 name = "agent-client-protocol"
 version = "0.12.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4361ba6627e51de955b10f3c77fb9eb959c85191a236c1c2c84e32f4ff240faf"
+source = "git+https://github.com/trotsky1997/rust-sdk.git?branch=feat%2Funstable-feature-passthrough#a846753f981841d5b0c6853850dbaaa276a13eb1"
 dependencies = [
  "agent-client-protocol-derive",
  "agent-client-protocol-schema",
@@ -30,8 +29,7 @@ dependencies = [
 [[package]]
 name = "agent-client-protocol-derive"
 version = "0.11.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cabdc9d845d08ec7ed2d0c9de1ae4a1b198301407d55855261572761be90ec9f"
+source = "git+https://github.com/trotsky1997/rust-sdk.git?branch=feat%2Funstable-feature-passthrough#a846753f981841d5b0c6853850dbaaa276a13eb1"
 dependencies = [
  "quote",
  "syn",

@@ -18,43 +18,53 @@ use agent_client_protocol::{
     Agent as AcpAgent, ConnectionTo, Dispatch, Error as AcpError, Result as AcpResult, Stdio,
     on_receive_dispatch, on_receive_notification, on_receive_request,
     schema::{
-        AgentCapabilities, CancelNotification, ContentBlock, ContentChunk, CreateTerminalRequest,
-        ForkSessionRequest, ForkSessionResponse, InitializeRequest, InitializeResponse, ModelId,
-        ModelInfo, NewSessionRequest, NewSessionResponse, PermissionOption, PermissionOptionId,
+        AgentCapabilities, CancelNotification, CloseSessionRequest, CloseSessionResponse,
+        ContentBlock, ContentChunk, CreateTerminalRequest, ForkSessionRequest,
+        ForkSessionResponse, InitializeRequest, InitializeResponse, ListSessionsRequest,
+        ListSessionsResponse, LoadSessionRequest, LoadSessionResponse, ModelId, ModelInfo,
+        NewSessionRequest, NewSessionResponse, PermissionOption, PermissionOptionId,
         PermissionOptionKind, PromptRequest, PromptResponse, ReadTextFileRequest,
         ReleaseTerminalRequest, RequestPermissionOutcome, RequestPermissionRequest, SessionId,
-        SessionModelState, SessionNotification, SessionUpdate, SetSessionModelRequest,
-        SetSessionModelResponse, StopReason, TerminalOutputRequest, TextContent,
-        ToolCall as AcpToolCall, ToolCallContent, ToolCallId, ToolCallStatus, ToolCallUpdate,
-        ToolCallUpdateFields, ToolKind, WaitForTerminalExitRequest, WriteTextFileRequest,
+        SessionInfo, SessionModelState, SessionNotification, SessionUpdate,
+        SetSessionModelRequest, SetSessionModelResponse, StopReason, TerminalOutputRequest,
+        TextContent, ToolCall as AcpToolCall, ToolCallContent, ToolCallId, ToolCallStatus,
+        ToolCallUpdate, ToolCallUpdateFields, ToolKind, WaitForTerminalExitRequest,
+        WriteTextFileRequest,
     },
     util,
 };
 use anyhow::anyhow;
 use async_trait::async_trait;
+use std::path::PathBuf;
 use dashmap::DashMap;
 use tokio::sync::broadcast;
 use ulid::Ulid;
 
+use crate::atif_codec;
 use crate::events::Event;
 use crate::model::Model;
 use crate::session::Session;
+use crate::store::SessionStore;
 use crate::tool_ctx::{ClientHandle, PermissionOutcome, TerminalRunResult};
 use crate::tools::{BashTool, ReadTool, Tool};
 
 /// Top-level server state shared across all ACP handlers.
 ///
 /// Holds the active default model, the model registry (for `session/set_model`
-/// + `NewSessionResponse.models`), and the live ACP session map.
+/// + `NewSessionResponse.models`), the on-disk trajectory store, and the
+/// live ACP session map.
 struct SharedState {
     model: Arc<dyn Model>,
-    /// Factory that turns a `ModelId` (chosen by the client) into a `Model`.
-    /// Returns None if the id is unknown.
     model_factory: Arc<dyn ModelFactory>,
-    /// `ModelInfo` list advertised to clients.
     available_models: Vec<ModelInfo>,
     tools: Vec<Arc<dyn Tool>>,
     sessions: DashMap<String, Arc<Session>>,
+    /// Per-session ATIF cwd reported by the client at session/new (or
+    /// session/load). Used as the bucketing key for the on-disk store.
+    session_cwds: DashMap<String, PathBuf>,
+    /// Default cwd for `session/list` when the client doesn't pin one.
+    /// We treat the agent's launch cwd as a sensible fallback.
+    default_cwd: PathBuf,
 }
 
 /// Resolve a model id (sent by the client over `session/set_model`) to a `Model`
@@ -70,12 +80,15 @@ pub trait ModelFactory: Send + Sync {
 impl SharedState {
     fn new(model: Arc<dyn Model>, model_factory: Arc<dyn ModelFactory>) -> Self {
         let available_models = model_factory.available();
+        let default_cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
         Self {
             model,
             model_factory,
             available_models,
             tools: vec![Arc::new(ReadTool), Arc::new(BashTool)],
             sessions: DashMap::new(),
+            session_cwds: DashMap::new(),
+            default_cwd,
         }
     }
 
@@ -83,17 +96,50 @@ impl SharedState {
         &self,
         id: &str,
         client: Arc<dyn ClientHandle>,
+        cwd: PathBuf,
     ) -> Arc<Session> {
         let s = Arc::new(
             Session::new(self.model.clone(), self.tools.clone())
                 .with_client(client, id.to_string()),
         );
         self.sessions.insert(id.to_string(), s.clone());
+        self.session_cwds.insert(id.to_string(), cwd);
         s
     }
 
     fn get(&self, id: &str) -> Option<Arc<Session>> {
         self.sessions.get(id).map(|r| r.clone())
+    }
+
+    fn cwd_for(&self, id: &str) -> PathBuf {
+        self.session_cwds
+            .get(id)
+            .map(|p| p.clone())
+            .unwrap_or_else(|| self.default_cwd.clone())
+    }
+
+    fn store_for(&self, id: &str) -> anyhow::Result<SessionStore> {
+        SessionStore::for_cwd(self.cwd_for(id))
+    }
+
+    /// Snapshot the session's messages → ATIF Trajectory → save to disk.
+    /// Best-effort: errors are logged but do not propagate (we don't want to
+    /// fail an otherwise-completed prompt because the disk hiccuped).
+    async fn save_session(&self, id: &str) {
+        let Some(session) = self.get(id) else { return };
+        let store = match self.store_for(id) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("[ra::acp] store_for({id}): {e:#}");
+                return;
+            }
+        };
+        let messages = session.snapshot_messages().await;
+        let model_name = Some(self.model_factory.default_model_id());
+        let traj = atif_codec::encode(id, model_name, &messages);
+        if let Err(e) = store.save(&traj).await {
+            eprintln!("[ra::acp] save trajectory {id}: {e:#}");
+        }
     }
 }
 
@@ -274,6 +320,9 @@ pub async fn run(
     let s_cancel = state.clone();
     let s_setmodel = state.clone();
     let s_fork = state.clone();
+    let s_load = state.clone();
+    let s_list = state.clone();
+    let s_close = state.clone();
 
     AcpAgent
         .builder()
@@ -289,11 +338,14 @@ pub async fn run(
             on_receive_request!(),
         )
         .on_receive_request(
-            async move |_req: NewSessionRequest, responder, cx: ConnectionTo<agent_client_protocol::Client>| {
+            async move |req: NewSessionRequest, responder, cx: ConnectionTo<agent_client_protocol::Client>| {
                 let id = format!("ra_{}", Ulid::new());
                 let handle: Arc<dyn ClientHandle> =
                     Arc::new(AcpClientHandle { cx: cx.clone() });
-                s_new.create_session(&id, handle);
+                s_new.create_session(&id, handle, req.cwd.clone());
+                // Persist an empty trajectory upfront so the session shows up
+                // in session/list immediately (not just after first prompt).
+                s_new.save_session(&id).await;
                 let resp = NewSessionResponse::new(SessionId::from(id))
                     .models(SessionModelState::new(
                         ModelId::from(s_new.model_factory.default_model_id()),
@@ -322,6 +374,7 @@ pub async fn run(
                 // stays free to deliver concurrent messages (cancel / fs / terminal
                 // reverse calls). The Responder is owned and can be moved across
                 // tasks; we respond once the turn loop finishes.
+                let s_prompt_save = s_prompt.clone();
                 tokio::spawn(async move {
                     let prompt_result = session.prompt(user_text).await;
                     let _ = forwarder.await;
@@ -333,6 +386,9 @@ pub async fn run(
                             StopReason::EndTurn
                         }
                     };
+                    // Persist the updated trajectory before responding so a
+                    // crash here does not silently lose the turn.
+                    s_prompt_save.save_session(&session_id.to_string()).await;
                     let _ = responder.respond(PromptResponse::new(stop));
                 });
 
@@ -381,15 +437,97 @@ pub async fn run(
                 let new_id = format!("ra_{}", Ulid::new());
                 let handle: Arc<dyn ClientHandle> =
                     Arc::new(AcpClientHandle { cx: cx.clone() });
-                let child = s_fork.create_session(&new_id, handle);
+                let child = s_fork.create_session(&new_id, handle, req.cwd.clone());
                 let snapshot = parent.snapshot_messages().await;
                 child.restore_messages(snapshot).await;
+                s_fork.save_session(&new_id).await;
                 let resp = ForkSessionResponse::new(SessionId::from(new_id))
                     .models(SessionModelState::new(
                         ModelId::from(s_fork.model_factory.default_model_id()),
                         s_fork.available_models.clone(),
                     ));
                 responder.respond(resp)
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |req: LoadSessionRequest, responder, cx: ConnectionTo<agent_client_protocol::Client>| {
+                let id = req.session_id.to_string();
+                let cwd = req.cwd.clone();
+                let store = match SessionStore::for_cwd(&cwd) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        return responder.respond_with_error(util::internal_error(format!(
+                            "store for {}: {e:#}",
+                            cwd.display()
+                        )));
+                    }
+                };
+                let traj = match store.load(&id).await {
+                    Ok(t) => t,
+                    Err(e) => {
+                        return responder.respond_with_error(util::internal_error(format!(
+                            "load {id}: {e:#}"
+                        )));
+                    }
+                };
+                let messages = atif_codec::decode(&traj);
+                let handle: Arc<dyn ClientHandle> =
+                    Arc::new(AcpClientHandle { cx: cx.clone() });
+                let session = s_load.create_session(&id, handle, cwd);
+                session.restore_messages(messages).await;
+                let resp = LoadSessionResponse::default();
+                responder.respond(resp)
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |req: ListSessionsRequest, responder, _cx| {
+                let cwd = req.cwd.clone().unwrap_or_else(|| s_list.default_cwd.clone());
+                let store = match SessionStore::for_cwd(&cwd) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        return responder.respond_with_error(util::internal_error(format!(
+                            "store for {}: {e:#}",
+                            cwd.display()
+                        )));
+                    }
+                };
+                let metas = match store.list().await {
+                    Ok(m) => m,
+                    Err(e) => {
+                        return responder.respond_with_error(util::internal_error(format!(
+                            "list: {e:#}"
+                        )));
+                    }
+                };
+                let sessions = metas
+                    .into_iter()
+                    .map(|m| {
+                        let mut info = SessionInfo::new(
+                            SessionId::from(m.session_id),
+                            cwd.clone(),
+                        );
+                        info.title = m.title;
+                        info.updated_at = chrono::DateTime::<chrono::Utc>::from(m.modified)
+                            .format("%Y-%m-%dT%H:%M:%SZ")
+                            .to_string()
+                            .into();
+                        info
+                    })
+                    .collect();
+                responder.respond(ListSessionsResponse::new(sessions))
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |req: CloseSessionRequest, responder, _cx| {
+                let id = req.session_id.to_string();
+                // Final save before letting go.
+                s_close.save_session(&id).await;
+                s_close.sessions.remove(&id);
+                s_close.session_cwds.remove(&id);
+                responder.respond(CloseSessionResponse::default())
             },
             on_receive_request!(),
         )

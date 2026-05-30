@@ -27,4 +27,9 @@ agent-client-protocol = { version = "0.12", features = ["unstable"] }
 dashmap = "6"
 clap = { version = "4", features = ["derive"] }
 ulid = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+dirs = "5"
+sha2 = "0.10"
+hex = "0.4"
+tempfile = "3"
 tokio-util = { version = "0.7", features = ["rt"] }

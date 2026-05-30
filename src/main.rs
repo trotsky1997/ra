@@ -38,6 +38,15 @@ enum Cmd {
     },
     /// Serve Ra as an ACP-compatible agent over stdio (JSON-RPC 2.0).
     Acp,
+    /// Serve Ra as an A2A-compatible agent over HTTP + gRPC.
+    Serve {
+        /// HTTP port (JSON-RPC, REST, agent card).
+        #[arg(long, default_value_t = 3000)]
+        http_port: u16,
+        /// gRPC port.
+        #[arg(long, default_value_t = 50051)]
+        grpc_port: u16,
+    },
 }
 
 #[tokio::main]
@@ -47,6 +56,7 @@ async fn main() -> anyhow::Result<()> {
     match cli.cmd {
         Some(Cmd::Acp) => run_acp().await,
         Some(Cmd::Run { prompt }) => run_print(prompt).await,
+        Some(Cmd::Serve { http_port, grpc_port }) => run_serve(http_port, grpc_port).await,
         None => run_print(cli.prompt).await,
     }
 }
@@ -184,6 +194,13 @@ async fn run_acp() -> anyhow::Result<()> {
         .await
         .map_err(|e| anyhow::anyhow!("{e:?}"))?;
     Ok(())
+}
+
+async fn run_serve(http_port: u16, grpc_port: u16) -> anyhow::Result<()> {
+    eprintln!("{BANNER}");
+    eprintln!("[ra] starting A2A server (HTTP :{http_port}, gRPC :{grpc_port})");
+    let (model, factory) = build_model();
+    ra::a2a_server::run(model, factory, http_port, grpc_port).await
 }
 
 async fn run_print(prompt: Option<String>) -> anyhow::Result<()> {

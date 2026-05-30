@@ -225,9 +225,39 @@ impl SessionRunner {
                         Ok(PromptOutcome::Cancelled) => RunOutcome::Cancelled,
                         Err(e) => RunOutcome::Failed(format!("{e:#}")),
                     });
-                    // Drain any final events the bus has buffered.
+                    // Drain any final events the bus has buffered. The
+                    // prompt future may have resolved before we'd looped
+                    // around to read the last broadcast frames; if we
+                    // don't drain them here the consumer never sees them.
                     while let Ok(ev) = rx.try_recv() {
-                        if let RaEvent::AgentEnd = ev { break; }
+                        match ev {
+                            RaEvent::TextDelta(s) => on_event(RunnerEvent::TextDelta(s)),
+                            RaEvent::ThinkingDelta(s) => on_event(RunnerEvent::ThinkingDelta(s)),
+                            RaEvent::ToolCallStart(c) => {
+                                let kind = match c.name.as_str() {
+                                    "read" => ToolKindHint::Read,
+                                    "bash" => ToolKindHint::Execute,
+                                    _ => ToolKindHint::Other,
+                                };
+                                let title = tool_title(&c.name, &c.input);
+                                on_event(RunnerEvent::ToolCallStart {
+                                    id: c.id.clone(),
+                                    name: c.name.clone(),
+                                    input: c.input.clone(),
+                                    title,
+                                    kind,
+                                });
+                            }
+                            RaEvent::ToolCallEnd(r) => {
+                                on_event(RunnerEvent::ToolCallEnd {
+                                    id: r.call_id,
+                                    is_error: r.is_error,
+                                    content: r.content,
+                                });
+                            }
+                            RaEvent::AgentEnd => break,
+                            _ => {}
+                        }
                     }
                     break;
                 }

@@ -480,6 +480,7 @@ pub async fn run(
     model: Arc<dyn Model>,
     model_factory: Arc<dyn ModelFactory>,
 ) -> AcpResult<()> {
+    crate::nemo_obs::init();
     let state = Arc::new(SharedState::new(model, model_factory));
 
     // Each handler closure is FnMut, so we clone the Arc into each one.
@@ -560,7 +561,9 @@ pub async fn run(
                 // tasks; we respond once the turn loop finishes.
                 let s_prompt_save = s_prompt.clone();
                 let cx_for_task = cx.clone();
-                tokio::spawn(async move {
+                let scope_label = format!("session/prompt {}", session_id);
+                tokio::spawn(crate::nemo_obs::with_task_scope(async move {
+                    let _agent_scope = crate::nemo_obs::agent_scope(&scope_label);
                     let stop = if let Some(cmd) = parse_slash_command(&user_text) {
                         // Slash commands are intercepted server-side and never
                         // reach the LLM. The handler streams its own
@@ -617,7 +620,7 @@ pub async fn run(
                     let _ = responder.respond(
                         PromptResponse::new(stop).usage(Some(usage)),
                     );
-                });
+                }));
 
                 Ok(())
             },

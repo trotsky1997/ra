@@ -58,6 +58,7 @@ impl Tool for ReadTool {
         input: serde_json::Value,
         ctx: &ToolCtx,
     ) -> Result<String> {
+        let _scope = crate::nemo_obs::tool_scope("read");
         let params: ReadParams =
             serde_json::from_value(input).context("invalid params for read")?;
 
@@ -113,6 +114,7 @@ impl Tool for BashTool {
         input: serde_json::Value,
         ctx: &ToolCtx,
     ) -> Result<String> {
+        let _scope = crate::nemo_obs::tool_scope("bash");
         let params: BashParams =
             serde_json::from_value(input).context("invalid params for bash")?;
 

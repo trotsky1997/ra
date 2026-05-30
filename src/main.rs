@@ -3,7 +3,8 @@ use std::sync::Arc;
 use clap::{Parser, Subcommand};
 use llm::builder::LLMBackend;
 use ra::{
-    BashTool, Event, LlmModel, LlmModelConfig, MockModel, Model, ReadTool, Session,
+    acp_server::ModelFactory, BashTool, Event, LlmModel, LlmModelConfig, MockModel, Model, ReadTool,
+    Session,
 };
 use tokio::io::{self, AsyncWriteExt};
 
@@ -50,75 +51,138 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
-/// Build a Model based on environment. Banner + log go to stderr only.
-///
-/// Resolution order:
-///   1. ANTHROPIC_API_KEY  → Anthropic backend (model defaults to claude-opus-4-5)
-///   2. OPENAI_API_KEY     → OpenAI backend, public api.openai.com
-///   3. PI_API_KEY         → OpenAI-compatible Responses API at pi-api-us
-///   4. otherwise          → MockModel
-fn build_model() -> Arc<dyn Model> {
-    if let Ok(key) = std::env::var("ANTHROPIC_API_KEY") {
-        if !key.is_empty() {
-            let model_id = std::env::var("RA_MODEL")
-                .unwrap_or_else(|_| "claude-opus-4-5".into());
-            eprintln!("[ra] using LlmModel backend=Anthropic model={model_id}");
-            return Arc::new(
-                LlmModel::build(LlmModelConfig {
+/// One advertised model option. The id is what the client sends back over
+/// `session/set_model`; the spec is consumed by `EnvModelFactory::build`.
+#[derive(Clone)]
+struct ModelEntry {
+    id: String,
+    name: String,
+    backend: LLMBackend,
+    api_key: String,
+    backend_model: String,
+    base_url: Option<String>,
+}
+
+/// Default factory: enumerates whatever providers we have credentials for.
+struct EnvModelFactory {
+    entries: Vec<ModelEntry>,
+}
+
+impl EnvModelFactory {
+    fn new() -> Self {
+        let mut entries = Vec::new();
+
+        if let Ok(key) = std::env::var("ANTHROPIC_API_KEY") {
+            if !key.is_empty() {
+                let model = std::env::var("RA_MODEL")
+                    .unwrap_or_else(|_| "claude-opus-4-5".into());
+                entries.push(ModelEntry {
+                    id: format!("anthropic/{model}"),
+                    name: format!("Anthropic {model}"),
                     backend: LLMBackend::Anthropic,
                     api_key: key,
-                    model: model_id,
+                    backend_model: model,
                     base_url: None,
-                })
-                .expect("LlmModel::build (Anthropic)"),
-            );
+                });
+            }
         }
-    }
-    if let Ok(key) = std::env::var("OPENAI_API_KEY") {
-        if !key.is_empty() {
-            let model_id = std::env::var("RA_MODEL")
-                .unwrap_or_else(|_| "gpt-4.1-mini".into());
-            let base_url = std::env::var("OPENAI_BASE_URL").ok();
-            eprintln!("[ra] using LlmModel backend=OpenAI model={model_id}");
-            return Arc::new(
-                LlmModel::build(LlmModelConfig {
+
+        if let Ok(key) = std::env::var("OPENAI_API_KEY") {
+            if !key.is_empty() {
+                let model =
+                    std::env::var("RA_MODEL").unwrap_or_else(|_| "gpt-4.1-mini".into());
+                let base_url = std::env::var("OPENAI_BASE_URL").ok();
+                entries.push(ModelEntry {
+                    id: format!("openai/{model}"),
+                    name: format!("OpenAI {model}"),
                     backend: LLMBackend::OpenAI,
                     api_key: key,
-                    model: model_id,
+                    backend_model: model,
                     base_url,
-                })
-                .expect("LlmModel::build (OpenAI)"),
-            );
+                });
+            }
         }
-    }
-    if let Ok(key) = std::env::var("PI_API_KEY") {
-        if !key.is_empty() {
-            let base = std::env::var("PI_BASE_URL")
-                .unwrap_or_else(|_| "https://pi-api-us.macaron.xin/v1/".into());
-            let model_id = std::env::var("PI_MODEL")
-                .or_else(|_| std::env::var("RA_MODEL"))
-                .unwrap_or_else(|_| "gpt-5.5".into());
-            eprintln!("[ra] using LlmModel backend=OpenAI(pi) base={base} model={model_id}");
-            return Arc::new(
-                LlmModel::build(LlmModelConfig {
+
+        if let Ok(key) = std::env::var("PI_API_KEY") {
+            if !key.is_empty() {
+                let base = std::env::var("PI_BASE_URL")
+                    .unwrap_or_else(|_| "https://pi-api-us.macaron.xin/v1/".into());
+                let model = std::env::var("PI_MODEL")
+                    .or_else(|_| std::env::var("RA_MODEL"))
+                    .unwrap_or_else(|_| "gpt-5.5".into());
+                entries.push(ModelEntry {
+                    id: format!("pi/{model}"),
+                    name: format!("pi {model}"),
                     backend: LLMBackend::OpenAI,
                     api_key: key,
-                    model: model_id,
+                    backend_model: model,
                     base_url: Some(base),
-                })
-                .expect("LlmModel::build (pi)"),
-            );
+                });
+            }
         }
+
+        Self { entries }
     }
-    eprintln!("[ra] no API key set; using MockModel");
-    Arc::new(MockModel)
+
+    fn first(&self) -> Option<&ModelEntry> {
+        self.entries.first()
+    }
+}
+
+impl ModelFactory for EnvModelFactory {
+    fn build(&self, model_id: &str) -> Option<Arc<dyn Model>> {
+        let entry = self.entries.iter().find(|e| e.id == model_id)?;
+        let m = LlmModel::build(LlmModelConfig {
+            backend: entry.backend.clone(),
+            api_key: entry.api_key.clone(),
+            model: entry.backend_model.clone(),
+            base_url: entry.base_url.clone(),
+        })
+        .ok()?;
+        Some(Arc::new(m))
+    }
+
+    fn default_model_id(&self) -> String {
+        self.first()
+            .map(|e| e.id.clone())
+            .unwrap_or_else(|| "mock".to_string())
+    }
+
+    fn available(&self) -> Vec<agent_client_protocol::schema::ModelInfo> {
+        use agent_client_protocol::schema::{ModelId, ModelInfo};
+        self.entries
+            .iter()
+            .map(|e| ModelInfo::new(ModelId::from(e.id.clone()), e.name.clone()))
+            .collect()
+    }
+}
+
+/// Build the default Model + a factory for runtime model swapping.
+fn build_model() -> (Arc<dyn Model>, Arc<dyn ModelFactory>) {
+    let factory = EnvModelFactory::new();
+    let model: Arc<dyn Model> = if let Some(entry) = factory.first().cloned() {
+        eprintln!(
+            "[ra] default model: {} (backend={:?})",
+            entry.id, entry.backend
+        );
+        // Build via factory to keep the resolution path identical to set_model.
+        factory
+            .build(&entry.id)
+            .expect("default model build failed")
+    } else {
+        eprintln!("[ra] no API key set; using MockModel");
+        Arc::new(MockModel)
+    };
+    (model, Arc::new(factory))
 }
 
 async fn run_acp() -> anyhow::Result<()> {
     eprintln!("{BANNER}");
     eprintln!("[ra] starting ACP server on stdio (protocol v1)");
-    let model = build_model();
-    ra::acp_server::run(model).await.map_err(|e| anyhow::anyhow!("{e:?}"))?;
+    let (model, factory) = build_model();
+    ra::acp_server::run(model, factory)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e:?}"))?;
     Ok(())
 }
 
@@ -126,7 +190,7 @@ async fn run_print(prompt: Option<String>) -> anyhow::Result<()> {
     eprintln!("{BANNER}");
 
     let prompt = prompt.unwrap_or_else(|| "bash:echo hello from ra && uname -sr".to_string());
-    let model = build_model();
+    let (model, _factory) = build_model();
 
     let session = Arc::new(Session::new(
         model,

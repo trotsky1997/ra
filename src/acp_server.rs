@@ -19,13 +19,14 @@ use agent_client_protocol::{
     on_receive_dispatch, on_receive_notification, on_receive_request,
     schema::{
         AgentCapabilities, CancelNotification, ContentBlock, ContentChunk, CreateTerminalRequest,
-        InitializeRequest, InitializeResponse, NewSessionRequest, NewSessionResponse,
-        PermissionOption, PermissionOptionId, PermissionOptionKind, PromptRequest, PromptResponse,
-        ReadTextFileRequest, ReleaseTerminalRequest, RequestPermissionOutcome,
-        RequestPermissionRequest, SessionId, SessionNotification, SessionUpdate, StopReason,
-        TerminalOutputRequest, TextContent, ToolCall as AcpToolCall, ToolCallContent, ToolCallId,
-        ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind,
-        WaitForTerminalExitRequest, WriteTextFileRequest,
+        ForkSessionRequest, ForkSessionResponse, InitializeRequest, InitializeResponse, ModelId,
+        ModelInfo, NewSessionRequest, NewSessionResponse, PermissionOption, PermissionOptionId,
+        PermissionOptionKind, PromptRequest, PromptResponse, ReadTextFileRequest,
+        ReleaseTerminalRequest, RequestPermissionOutcome, RequestPermissionRequest, SessionId,
+        SessionModelState, SessionNotification, SessionUpdate, SetSessionModelRequest,
+        SetSessionModelResponse, StopReason, TerminalOutputRequest, TextContent,
+        ToolCall as AcpToolCall, ToolCallContent, ToolCallId, ToolCallStatus, ToolCallUpdate,
+        ToolCallUpdateFields, ToolKind, WaitForTerminalExitRequest, WriteTextFileRequest,
     },
     util,
 };
@@ -41,20 +42,38 @@ use crate::session::Session;
 use crate::tool_ctx::{ClientHandle, PermissionOutcome, TerminalRunResult};
 use crate::tools::{BashTool, ReadTool, Tool};
 
-/// Build the agent's session map and the model factory used by every new session.
+/// Top-level server state shared across all ACP handlers.
 ///
-/// We keep one `Session` per ACP session id, all sharing the same `Model` instance
-/// and the same set of tools. Tools and model are cheap clones (Arc).
+/// Holds the active default model, the model registry (for `session/set_model`
+/// + `NewSessionResponse.models`), and the live ACP session map.
 struct SharedState {
     model: Arc<dyn Model>,
+    /// Factory that turns a `ModelId` (chosen by the client) into a `Model`.
+    /// Returns None if the id is unknown.
+    model_factory: Arc<dyn ModelFactory>,
+    /// `ModelInfo` list advertised to clients.
+    available_models: Vec<ModelInfo>,
     tools: Vec<Arc<dyn Tool>>,
     sessions: DashMap<String, Arc<Session>>,
 }
 
+/// Resolve a model id (sent by the client over `session/set_model`) to a `Model`
+/// instance. Implementors can read environment, multiplex backends, etc.
+pub trait ModelFactory: Send + Sync {
+    fn build(&self, model_id: &str) -> Option<Arc<dyn Model>>;
+    /// Identifier of the default model (matches one of `available_models`).
+    fn default_model_id(&self) -> String;
+    /// What to advertise to ACP clients in `NewSessionResponse.models`.
+    fn available(&self) -> Vec<ModelInfo>;
+}
+
 impl SharedState {
-    fn new(model: Arc<dyn Model>) -> Self {
+    fn new(model: Arc<dyn Model>, model_factory: Arc<dyn ModelFactory>) -> Self {
+        let available_models = model_factory.available();
         Self {
             model,
+            model_factory,
+            available_models,
             tools: vec![Arc::new(ReadTool), Arc::new(BashTool)],
             sessions: DashMap::new(),
         }
@@ -238,14 +257,23 @@ impl ClientHandle for AcpClientHandle {
 }
 
 /// Run the ACP server on stdio. Blocks until the client closes stdin.
-pub async fn run(model: Arc<dyn Model>) -> AcpResult<()> {
-    let state = Arc::new(SharedState::new(model));
+///
+/// `model` is the initial model used for sessions until the client overrides
+/// it via `session/set_model`. `model_factory` is consulted on those overrides
+/// and to advertise the list of available models in `NewSessionResponse`.
+pub async fn run(
+    model: Arc<dyn Model>,
+    model_factory: Arc<dyn ModelFactory>,
+) -> AcpResult<()> {
+    let state = Arc::new(SharedState::new(model, model_factory));
 
     // Each handler closure is FnMut, so we clone the Arc into each one.
     let s_init = state.clone();
     let s_new = state.clone();
     let s_prompt = state.clone();
     let s_cancel = state.clone();
+    let s_setmodel = state.clone();
+    let s_fork = state.clone();
 
     AcpAgent
         .builder()
@@ -266,7 +294,12 @@ pub async fn run(model: Arc<dyn Model>) -> AcpResult<()> {
                 let handle: Arc<dyn ClientHandle> =
                     Arc::new(AcpClientHandle { cx: cx.clone() });
                 s_new.create_session(&id, handle);
-                responder.respond(NewSessionResponse::new(SessionId::from(id)))
+                let resp = NewSessionResponse::new(SessionId::from(id))
+                    .models(SessionModelState::new(
+                        ModelId::from(s_new.model_factory.default_model_id()),
+                        s_new.available_models.clone(),
+                    ));
+                responder.respond(resp)
             },
             on_receive_request!(),
         )
@@ -315,6 +348,50 @@ pub async fn run(model: Arc<dyn Model>) -> AcpResult<()> {
                 Ok(())
             },
             on_receive_notification!(),
+        )
+        .on_receive_request(
+            async move |req: SetSessionModelRequest, responder, _cx| {
+                let Some(session) = s_setmodel.get(&req.session_id.to_string()) else {
+                    return responder.respond_with_error(util::internal_error(format!(
+                        "unknown session id: {}",
+                        req.session_id
+                    )));
+                };
+                let model_id = req.model_id.to_string();
+                match s_setmodel.model_factory.build(&model_id) {
+                    Some(m) => {
+                        session.set_model(m).await;
+                        responder.respond(SetSessionModelResponse::default())
+                    }
+                    None => responder.respond_with_error(util::internal_error(format!(
+                        "unknown model id: {model_id}"
+                    ))),
+                }
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |req: ForkSessionRequest, responder, cx: ConnectionTo<agent_client_protocol::Client>| {
+                let Some(parent) = s_fork.get(&req.session_id.to_string()) else {
+                    return responder.respond_with_error(util::internal_error(format!(
+                        "unknown session id: {}",
+                        req.session_id
+                    )));
+                };
+                let new_id = format!("ra_{}", Ulid::new());
+                let handle: Arc<dyn ClientHandle> =
+                    Arc::new(AcpClientHandle { cx: cx.clone() });
+                let child = s_fork.create_session(&new_id, handle);
+                let snapshot = parent.snapshot_messages().await;
+                child.restore_messages(snapshot).await;
+                let resp = ForkSessionResponse::new(SessionId::from(new_id))
+                    .models(SessionModelState::new(
+                        ModelId::from(s_fork.model_factory.default_model_id()),
+                        s_fork.available_models.clone(),
+                    ));
+                responder.respond(resp)
+            },
+            on_receive_request!(),
         )
         .on_receive_dispatch(
             async move |msg: Dispatch, cx: ConnectionTo<agent_client_protocol::Client>| {

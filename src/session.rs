@@ -5,7 +5,7 @@ use crate::tools::Tool;
 use anyhow::{anyhow, Result};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{broadcast, Mutex};
+use tokio::sync::{broadcast, Mutex, RwLock};
 use tokio_stream::StreamExt;
 use tokio_util::sync::CancellationToken;
 
@@ -17,7 +17,9 @@ use tokio_util::sync::CancellationToken;
 /// We then re-arm the token by `child_token`-ing — so a fresh prompt after a
 /// cancel still works without recreating the session.
 pub struct Session {
-    model: Arc<dyn Model>,
+    /// Hot-swappable model. `set_model` replaces this without invalidating
+    /// outstanding `Arc<Session>`s; the next turn picks up the new pointer.
+    model: RwLock<Arc<dyn Model>>,
     tools: HashMap<String, Arc<dyn Tool>>,
     messages: Arc<Mutex<Vec<Message>>>,
     tx: broadcast::Sender<Event>,
@@ -46,7 +48,7 @@ impl Session {
             map.insert(t.name().to_string(), t);
         }
         Self {
-            model,
+            model: RwLock::new(model),
             tools: map,
             messages: Arc::new(Mutex::new(Vec::new())),
             tx,
@@ -54,6 +56,21 @@ impl Session {
             client: None,
             session_id: None,
         }
+    }
+
+    /// Hot-swap the active model. Used by `session/set_model` (ACP unstable).
+    pub async fn set_model(&self, model: Arc<dyn Model>) {
+        *self.model.write().await = model;
+    }
+
+    /// Snapshot the current message log. Useful for `session/fork`.
+    pub async fn snapshot_messages(&self) -> Vec<Message> {
+        self.messages.lock().await.clone()
+    }
+
+    /// Replace the message log wholesale (used when forking from a snapshot).
+    pub async fn restore_messages(&self, msgs: Vec<Message>) {
+        *self.messages.lock().await = msgs;
     }
 
     /// Builder-style injector: when called the session will route tool
@@ -133,7 +150,8 @@ impl Session {
                 parameters: t.schema(),
             })
             .collect();
-        let mut stream = self.model.stream(&history, &specs).await?;
+        let model = self.model.read().await.clone();
+        let mut stream = model.stream(&history, &specs).await?;
 
         let mut text_acc = String::new();
         let mut pending_calls = Vec::new();

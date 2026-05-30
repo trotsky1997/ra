@@ -75,6 +75,17 @@ pub trait ClientHandle: Send + Sync {
         command: &str,
     ) -> Result<TerminalRunResult>;
 
+    /// Kill a still-running terminal previously created via `run_terminal`.
+    /// Maps to ACP `terminal/kill`. Default implementation returns an error
+    /// so existing handles compile; the ACP-backed handle overrides.
+    async fn kill_terminal(
+        &self,
+        _session_id: &str,
+        _terminal_id: &str,
+    ) -> Result<()> {
+        Err(anyhow::anyhow!("kill_terminal not supported by this ClientHandle"))
+    }
+
     /// Ask the host to confirm a tool invocation. `tool_call_id` correlates
     /// with the previously emitted `ToolCall` notification; `title` and
     /// `description` are surfaced in the host's permission dialog.

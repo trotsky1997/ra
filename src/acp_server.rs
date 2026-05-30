@@ -20,16 +20,20 @@ use agent_client_protocol::{
     schema::{
         AgentCapabilities, AuthMethod, AuthMethodAgent, AuthMethodId, AuthenticateRequest,
         AuthenticateResponse, AvailableCommand, AvailableCommandInput, AvailableCommandsUpdate,
-        CancelNotification, CloseSessionRequest, CloseSessionResponse, ContentBlock, ContentChunk,
+        CancelNotification, CloseSessionRequest, CloseSessionResponse, ConfigOptionUpdate,
+        ContentBlock, ContentChunk,
         CreateTerminalRequest, CurrentModeUpdate, DeleteSessionRequest, DeleteSessionResponse,
         ForkSessionRequest, ForkSessionResponse, InitializeRequest, InitializeResponse,
-        ListSessionsRequest, ListSessionsResponse, LoadSessionRequest, LoadSessionResponse,
+        KillTerminalRequest, ListSessionsRequest, ListSessionsResponse, LoadSessionRequest,
+        LoadSessionResponse,
         LogoutRequest, LogoutResponse, ModelId, ModelInfo, NewSessionRequest, NewSessionResponse,
         PermissionOption, PermissionOptionId, PermissionOptionKind, PromptRequest, PromptResponse,
         ReadTextFileRequest, ReleaseTerminalRequest, RequestPermissionOutcome,
         RequestPermissionRequest, ResumeSessionRequest, ResumeSessionResponse, SessionId,
         SessionInfo, SessionMode, SessionModeId, SessionModeState, SessionModelState,
-        SessionNotification, SessionUpdate, SetSessionModeRequest, SetSessionModeResponse,
+        SessionConfigId, SessionConfigOption, SessionConfigOptionValue, SessionConfigSelectOption,
+        SessionConfigValueId, SessionNotification, SessionUpdate, SetSessionConfigOptionRequest,
+        SetSessionConfigOptionResponse, SetSessionModeRequest, SetSessionModeResponse,
         SetSessionModelRequest, SetSessionModelResponse, StopReason, TerminalOutputRequest,
         TextContent, ToolCall as AcpToolCall, ToolCallContent, ToolCallId, ToolCallStatus,
         ToolCallUpdate, ToolCallUpdateFields, ToolKind, UnstructuredCommandInput, UsageUpdate,
@@ -216,6 +220,39 @@ fn ra_commands() -> Vec<AvailableCommand> {
         AvailableCommand::new("models", "List the available LLM backends and their ids."),
         AvailableCommand::new("mode", "Switch session mode: default | plan | ask.")
             .input(unstructured("default | plan | ask")),
+    ]
+}
+
+/// Per-session configuration options advertised to the client. These are
+/// surfaced via `NewSessionResponse.configOptions` and re-emitted on
+/// `ConfigOptionUpdate` notifications when the user changes them via
+/// `session/set_config_option`. Today they're informational only — Ra
+/// stores the values on the Session but does not yet branch its behavior
+/// on them.
+fn ra_config_options() -> Vec<SessionConfigOption> {
+    vec![
+        SessionConfigOption::boolean(
+            SessionConfigId::from("follow_up_summary".to_string()),
+            "Follow-up summary".to_string(),
+            false,
+        )
+        .description("Automatically summarize the conversation after each turn."),
+        SessionConfigOption::select(
+            SessionConfigId::from("verbose_tools".to_string()),
+            "Tool output verbosity".to_string(),
+            SessionConfigValueId::from("compact".to_string()),
+            vec![
+                SessionConfigSelectOption::new(
+                    SessionConfigValueId::from("compact".to_string()),
+                    "Compact".to_string(),
+                ),
+                SessionConfigSelectOption::new(
+                    SessionConfigValueId::from("detailed".to_string()),
+                    "Detailed".to_string(),
+                ),
+            ],
+        )
+        .description("Whether tool outputs are inlined verbatim or trimmed."),
     ]
 }
 ///
@@ -410,6 +447,24 @@ impl ClientHandle for AcpClientHandle {
         })
     }
 
+    async fn kill_terminal(
+        &self,
+        session_id: &str,
+        terminal_id: &str,
+    ) -> anyhow::Result<()> {
+        use agent_client_protocol::schema::TerminalId;
+        let req = KillTerminalRequest::new(
+            SessionId::from(session_id.to_string()),
+            TerminalId::from(terminal_id.to_string()),
+        );
+        self.cx
+            .send_request(req)
+            .block_task()
+            .await
+            .map_err(|e| anyhow!("terminal/kill: {e:?}"))?;
+        Ok(())
+    }
+
     async fn request_permission(
         &self,
         session_id: &str,
@@ -498,6 +553,7 @@ pub async fn run(
     let s_auth = state.clone();
     let s_logout = state.clone();
     let s_setmode = state.clone();
+    let s_setconfig = state.clone();
 
     AcpAgent
         .builder()
@@ -532,6 +588,7 @@ pub async fn run(
                 ));
                 let resp = NewSessionResponse::new(session_id)
                     .modes(ra_modes())
+                    .config_options(Some(ra_config_options()))
                     .models(SessionModelState::new(
                         ModelId::from(s_new.model_factory.default_model_id()),
                         s_new.available_models.clone(),
@@ -673,6 +730,7 @@ pub async fn run(
                 s_fork.save_session(&new_id).await;
                 let resp = ForkSessionResponse::new(SessionId::from(new_id))
                     .modes(ra_modes())
+                    .config_options(Some(ra_config_options()))
                     .models(SessionModelState::new(
                         ModelId::from(s_fork.model_factory.default_model_id()),
                         s_fork.available_models.clone(),
@@ -878,6 +936,50 @@ pub async fn run(
                 );
                 let _ = cx.send_notification(notif);
                 responder.respond(SetSessionModeResponse::default())
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |req: SetSessionConfigOptionRequest, responder, cx: ConnectionTo<agent_client_protocol::Client>| {
+                let id = req.session_id.to_string();
+                let Some(session) = s_setconfig.get(&id) else {
+                    return responder.respond_with_error(util::internal_error(format!(
+                        "unknown session id: {id}"
+                    )));
+                };
+                let config_id = req.config_id.to_string();
+                // Validate against the advertised catalogue.
+                if !ra_config_options()
+                    .iter()
+                    .any(|c| c.id.to_string() == config_id)
+                {
+                    return responder.respond_with_error(util::internal_error(format!(
+                        "unknown config option id: {config_id}"
+                    )));
+                }
+                // Persist whichever variant the client sent. We store as a
+                // free-form JSON Value so the same map serves both boolean
+                // and select-id payloads.
+                let stored = match &req.value {
+                    SessionConfigOptionValue::Boolean { value } => serde_json::json!(value),
+                    SessionConfigOptionValue::ValueId { value } => {
+                        serde_json::json!(value.to_string())
+                    }
+                    _ => serde_json::Value::Null,
+                };
+                session.set_config(&config_id, stored).await;
+
+                // Echo the full advertised catalogue back. This is what ACP
+                // clients consume to rebuild their config UI; for now the
+                // catalogue is static, so we don't bother reflecting the
+                // user's pick into the displayed `current_value`.
+                let opts = ra_config_options();
+                let notif = SessionNotification::new(
+                    req.session_id.clone(),
+                    SessionUpdate::ConfigOptionUpdate(ConfigOptionUpdate::new(opts.clone())),
+                );
+                let _ = cx.send_notification(notif);
+                responder.respond(SetSessionConfigOptionResponse::new(opts))
             },
             on_receive_request!(),
         )

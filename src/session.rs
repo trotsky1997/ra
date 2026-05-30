@@ -32,6 +32,11 @@ pub struct Session {
     /// Current operating mode (e.g. "default", "plan", "ask"). Surfaced via
     /// `session/set_mode` and `SessionUpdate::CurrentModeUpdate`.
     mode: RwLock<String>,
+    /// Per-session config values keyed by ACP `SessionConfigId`. Set by
+    /// `session/set_config_option`; surfaced via `ConfigOptionUpdate`. The
+    /// value is stored as a JSON Value to round-trip both string-id and
+    /// boolean payloads.
+    config: RwLock<HashMap<String, serde_json::Value>>,
 }
 
 /// Result of one `prompt()` call.
@@ -59,6 +64,7 @@ impl Session {
             client: None,
             session_id: None,
             mode: RwLock::new("default".into()),
+            config: RwLock::new(HashMap::new()),
         }
     }
 
@@ -75,6 +81,16 @@ impl Session {
 
     pub async fn mode(&self) -> String {
         self.mode.read().await.clone()
+    }
+
+    /// Store / overwrite a config option value.
+    pub async fn set_config(&self, id: impl Into<String>, value: serde_json::Value) {
+        self.config.write().await.insert(id.into(), value);
+    }
+
+    /// Snapshot the current config map. Caller can iterate / serialize.
+    pub async fn config_snapshot(&self) -> HashMap<String, serde_json::Value> {
+        self.config.read().await.clone()
     }
 
     /// Manually emit an `AgentEnd` event into the broadcast channel.

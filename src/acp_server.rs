@@ -13,16 +13,19 @@ use std::sync::Arc;
 
 use agent_client_protocol::{
     Agent as AcpAgent, ConnectionTo, Dispatch, Error as AcpError, Result as AcpResult, Stdio,
-    on_receive_dispatch, on_receive_request,
+    on_receive_dispatch, on_receive_notification, on_receive_request,
     schema::{
-        AgentCapabilities, ContentBlock, ContentChunk, InitializeRequest, InitializeResponse,
-        NewSessionRequest, NewSessionResponse, PromptRequest, PromptResponse, SessionId,
-        SessionNotification, SessionUpdate, StopReason, TextContent,
+        AgentCapabilities, CancelNotification, ContentBlock, ContentChunk, InitializeRequest,
+        InitializeResponse, NewSessionRequest, NewSessionResponse, PromptRequest, PromptResponse,
+        SessionId, SessionNotification, SessionUpdate, StopReason, TextContent,
+        ToolCall as AcpToolCall, ToolCallContent, ToolCallId, ToolCallStatus, ToolCallUpdate,
+        ToolCallUpdateFields, ToolKind,
     },
     util,
 };
 use dashmap::DashMap;
 use tokio::sync::broadcast;
+use ulid::Ulid;
 
 use crate::events::Event;
 use crate::model::Model;
@@ -67,6 +70,7 @@ pub async fn run(model: Arc<dyn Model>) -> AcpResult<()> {
     let s_init = state.clone();
     let s_new = state.clone();
     let s_prompt = state.clone();
+    let s_cancel = state.clone();
 
     AcpAgent
         .builder()
@@ -83,7 +87,7 @@ pub async fn run(model: Arc<dyn Model>) -> AcpResult<()> {
         )
         .on_receive_request(
             async move |_req: NewSessionRequest, responder, _cx| {
-                let id = format!("ra_{}", new_id());
+                let id = format!("ra_{}", Ulid::new());
                 s_new.create_session(&id);
                 responder.respond(NewSessionResponse::new(SessionId::from(id)))
             },
@@ -113,7 +117,8 @@ pub async fn run(model: Arc<dyn Model>) -> AcpResult<()> {
                 let _ = forwarder.await;
 
                 let stop = match prompt_result {
-                    Ok(()) => StopReason::EndTurn,
+                    Ok(crate::session::PromptOutcome::Completed) => StopReason::EndTurn,
+                    Ok(crate::session::PromptOutcome::Cancelled) => StopReason::Cancelled,
                     Err(e) => {
                         eprintln!("[ra::acp] prompt error: {e:#}");
                         StopReason::EndTurn
@@ -122,6 +127,15 @@ pub async fn run(model: Arc<dyn Model>) -> AcpResult<()> {
                 responder.respond(PromptResponse::new(stop))
             },
             on_receive_request!(),
+        )
+        .on_receive_notification(
+            async move |notif: CancelNotification, _cx| {
+                if let Some(s) = s_cancel.get(&notif.session_id.to_string()) {
+                    s.cancel().await;
+                }
+                Ok(())
+            },
+            on_receive_notification!(),
         )
         .on_receive_dispatch(
             async move |msg: Dispatch, cx: ConnectionTo<agent_client_protocol::Client>| {
@@ -175,12 +189,46 @@ fn spawn_event_forwarder(
                     );
                     let _ = cx.send_notification(notif);
                 }
-                Ok(Event::ToolCallStart(_))
-                | Ok(Event::ToolCallEnd(_))
-                | Ok(Event::ToolCallUpdate { .. }) => {
-                    // Phase 2: map to SessionUpdate::ToolCall / ToolCallUpdate.
-                    // For now we silently swallow them; the tool result still appears
-                    // in the next AgentMessageChunk because the model summarizes it.
+                Ok(Event::ToolCallStart(c)) => {
+                    let kind = tool_kind_for(&c.name);
+                    let title = tool_title(&c.name, &c.input);
+                    let notif = SessionNotification::new(
+                        session_id.clone(),
+                        SessionUpdate::ToolCall(
+                            AcpToolCall::new(ToolCallId::from(c.id.clone()), title)
+                                .kind(kind)
+                                .status(ToolCallStatus::InProgress)
+                                .raw_input(c.input.clone()),
+                        ),
+                    );
+                    let _ = cx.send_notification(notif);
+                }
+                Ok(Event::ToolCallUpdate { .. }) => {
+                    // intermediate progress (exit code etc) — Phase 2: emit
+                    // ToolCallUpdateFields with `content` patch. Skipped for now.
+                }
+                Ok(Event::ToolCallEnd(r)) => {
+                    let status = if r.is_error {
+                        ToolCallStatus::Failed
+                    } else {
+                        ToolCallStatus::Completed
+                    };
+                    let content = vec![ToolCallContent::from(ContentBlock::Text(
+                        TextContent::new(r.content.clone()),
+                    ))];
+                    let raw_output = serde_json::Value::String(r.content.clone());
+                    let fields = ToolCallUpdateFields::new()
+                        .status(status)
+                        .content(content)
+                        .raw_output(raw_output);
+                    let notif = SessionNotification::new(
+                        session_id.clone(),
+                        SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
+                            ToolCallId::from(r.call_id.clone()),
+                            fields,
+                        )),
+                    );
+                    let _ = cx.send_notification(notif);
                 }
                 Ok(Event::AgentEnd) => break,
                 Ok(_) => {}
@@ -190,10 +238,39 @@ fn spawn_event_forwarder(
     })
 }
 
-fn new_id() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    format!(
-        "{:x}",
-        SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
-    )
+/// Map our internal tool name → ACP `ToolKind`. The kind drives client-side
+/// icon / treatment ("read" vs "execute" gets very different UI).
+fn tool_kind_for(name: &str) -> ToolKind {
+    match name {
+        "read" => ToolKind::Read,
+        "bash" => ToolKind::Execute,
+        _ => ToolKind::Other,
+    }
 }
+
+/// Build a short human-readable title for a tool call, surfaced as the
+/// first line in the client UI.
+fn tool_title(name: &str, input: &serde_json::Value) -> String {
+    match name {
+        "read" => input
+            .get("path")
+            .and_then(|v| v.as_str())
+            .map(|p| format!("Read {p}"))
+            .unwrap_or_else(|| "Read".into()),
+        "bash" => input
+            .get("command")
+            .and_then(|v| v.as_str())
+            .map(|c| {
+                let mut s = c.to_string();
+                if s.len() > 60 {
+                    s.truncate(60);
+                    s.push('…');
+                }
+                format!("$ {s}")
+            })
+            .unwrap_or_else(|| "Run shell".into()),
+        other => other.to_string(),
+    }
+}
+
+// (id generation lives inline at NewSessionRequest using Ulid::new())

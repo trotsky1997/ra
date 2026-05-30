@@ -187,7 +187,7 @@ async fn run_print(prompt: Option<String>) -> anyhow::Result<()> {
         }
     });
 
-    session.prompt(prompt).await?;
+    let _outcome = session.prompt(prompt).await?;
     printer.await?;
     Ok(())
 }

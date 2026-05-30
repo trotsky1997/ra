@@ -26,3 +26,5 @@ llm = { version = "1.2", default-features = false, features = ["openai", "anthro
 agent-client-protocol = "0.12"
 dashmap = "6"
 clap = { version = "4", features = ["derive"] }
+ulid = "1"
+tokio-util = { version = "0.7", features = ["rt"] }

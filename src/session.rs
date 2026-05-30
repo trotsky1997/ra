@@ -6,18 +6,30 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{broadcast, Mutex};
 use tokio_stream::StreamExt;
+use tokio_util::sync::CancellationToken;
 
 /// 等价于 TS SDK 的 AgentSession。
 ///
-/// 设计要点：
-/// - 内部状态（messages）用 Mutex 保护，方便后续多消费者读取。
-/// - 事件用 tokio broadcast，订阅者多对一，落后太多会丢消息（语义上对应 TS 里
-///   subscribe(cb) 不会反压模型）。
+/// Cancellation: each session owns one `CancellationToken`. `cancel()` triggers
+/// it (idempotent); `prompt()` races the token against the turn loop via
+/// `tokio::select!` and returns `PromptOutcome::Cancelled` when the token wins.
+/// We then re-arm the token by `child_token`-ing — so a fresh prompt after a
+/// cancel still works without recreating the session.
 pub struct Session {
     model: Arc<dyn Model>,
     tools: HashMap<String, Arc<dyn Tool>>,
     messages: Arc<Mutex<Vec<Message>>>,
     tx: broadcast::Sender<Event>,
+    cancel: Mutex<CancellationToken>,
+}
+
+/// Result of one `prompt()` call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromptOutcome {
+    /// Turn loop ran to natural completion.
+    Completed,
+    /// `cancel()` was called before the turn loop finished.
+    Cancelled,
 }
 
 impl Session {
@@ -32,10 +44,11 @@ impl Session {
             tools: map,
             messages: Arc::new(Mutex::new(Vec::new())),
             tx,
+            cancel: Mutex::new(CancellationToken::new()),
         }
     }
 
-    /// 像 TS 的 session.subscribe(cb)，返回 receiver；丢弃即取消订阅。
+    /// Subscribe to the event broadcast (drop the receiver to unsubscribe).
     pub fn subscribe(&self) -> broadcast::Receiver<Event> {
         self.tx.subscribe()
     }
@@ -44,27 +57,51 @@ impl Session {
         self.messages.lock().await.clone()
     }
 
-    /// 主入口：发送一条用户消息，跑完整个 turn loop 才返回。
-    pub async fn prompt(&self, user_text: impl Into<String>) -> Result<()> {
+    /// Signal the active prompt to abort. Idempotent; safe to call from any task.
+    pub async fn cancel(&self) {
+        self.cancel.lock().await.cancel();
+    }
+
+    /// Send a user message and run the turn loop to completion or cancellation.
+    pub async fn prompt(&self, user_text: impl Into<String>) -> Result<PromptOutcome> {
+        // Re-arm the cancel token for this prompt invocation.
+        let token = {
+            let mut guard = self.cancel.lock().await;
+            *guard = CancellationToken::new();
+            guard.clone()
+        };
+
         self.messages
             .lock()
             .await
             .push(Message::User { content: user_text.into() });
         let _ = self.tx.send(Event::AgentStart);
 
+        let outcome = tokio::select! {
+            biased;
+            _ = token.cancelled() => PromptOutcome::Cancelled,
+            res = self.run_loop() => {
+                res?;
+                PromptOutcome::Completed
+            }
+        };
+
+        let _ = self.tx.send(Event::AgentEnd);
+        Ok(outcome)
+    }
+
+    async fn run_loop(&self) -> Result<()> {
         loop {
             let stop = self.run_one_turn().await?;
             if stop == StopReason::EndTurn {
                 break;
             }
-            // ToolUse: tool 结果已经写进 messages，下一轮让模型继续。
         }
-
-        let _ = self.tx.send(Event::AgentEnd);
         Ok(())
     }
 
-    /// 一个 turn = 模型流式响应一次 + 执行它发起的所有工具。
+    /// One turn = one streamed model response, plus execution of any tool
+    /// calls it requested.
     async fn run_one_turn(&self) -> Result<StopReason> {
         let _ = self.tx.send(Event::TurnStart);
 
@@ -104,13 +141,11 @@ impl Session {
             }
         }
 
-        // 把 assistant 这一回合的输出固化到历史里
         self.messages.lock().await.push(Message::Assistant {
             content: text_acc,
             tool_calls: pending_calls.clone(),
         });
 
-        // 执行所有 tool_call，把每个结果作为 ToolResult 写回历史
         for call in pending_calls {
             let tool = self
                 .tools

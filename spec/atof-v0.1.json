@@ -1,0 +1,142 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/NVIDIA/NeMo-Relay/atof/v0.1",
+  "title": "ATOF Event v0.1",
+  "description": "Agent Trajectory Observability Format. Hand-derived from NeMo Relay's runtime types (api/event.rs) since the source crate does not derive JsonSchema. See spec/atof-v0.1.mdx for the human-readable spec, and spec/atof-v0.1-samples.jsonl for live captures.",
+  "type": "object",
+  "discriminator": { "propertyName": "kind" },
+  "oneOf": [
+    { "$ref": "#/$defs/ScopeEvent" },
+    { "$ref": "#/$defs/MarkEvent" }
+  ],
+  "$defs": {
+    "BaseFields": {
+      "type": "object",
+      "properties": {
+        "atof_version": {
+          "type": "string",
+          "const": "0.1",
+          "description": "ATOF protocol version emitted by this runtime."
+        },
+        "uuid": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Unique identifier for this event or span (UUIDv7)."
+        },
+        "parent_uuid": {
+          "type": ["string", "null"],
+          "format": "uuid",
+          "description": "UUID of the parent scope, if any."
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "description": "RFC3339/ISO 8601 UTC timestamp."
+        },
+        "name": {
+          "type": "string",
+          "description": "Human-readable event name."
+        },
+        "data": {
+          "description": "Application-defined payload.",
+          "default": null
+        },
+        "data_schema": {
+          "anyOf": [
+            { "$ref": "#/$defs/DataSchema" },
+            { "type": "null" }
+          ]
+        },
+        "metadata": {
+          "description": "Optional tracing/correlation metadata.",
+          "default": null
+        }
+      },
+      "required": ["atof_version", "uuid", "timestamp", "name"]
+    },
+    "DataSchema": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "version": { "type": "string" }
+      },
+      "required": ["name", "version"]
+    },
+    "ScopeCategory": {
+      "type": "string",
+      "enum": ["start", "end"],
+      "description": "Lifecycle phase: start = scope entered, end = scope exited."
+    },
+    "EventCategory": {
+      "type": "string",
+      "description": "Semantic category of work the scope represents.",
+      "examples": [
+        "agent",
+        "function",
+        "llm",
+        "tool",
+        "retriever",
+        "embedder",
+        "reranker",
+        "guardrail",
+        "evaluator",
+        "custom",
+        "unknown"
+      ]
+    },
+    "CategoryProfile": {
+      "type": "object",
+      "description": "Category-specific typed fields. Unknown keys preserved in `extra`.",
+      "additionalProperties": true
+    },
+    "ScopeEvent": {
+      "allOf": [
+        { "$ref": "#/$defs/BaseFields" },
+        {
+          "type": "object",
+          "properties": {
+            "kind": { "type": "string", "const": "scope" },
+            "scope_category": { "$ref": "#/$defs/ScopeCategory" },
+            "attributes": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Canonical lowercase behavioral flags."
+            },
+            "category": { "$ref": "#/$defs/EventCategory" },
+            "category_profile": {
+              "anyOf": [
+                { "$ref": "#/$defs/CategoryProfile" },
+                { "type": "null" }
+              ]
+            }
+          },
+          "required": ["kind", "scope_category", "category", "attributes"]
+        }
+      ]
+    },
+    "MarkEvent": {
+      "allOf": [
+        { "$ref": "#/$defs/BaseFields" },
+        {
+          "type": "object",
+          "properties": {
+            "kind": { "type": "string", "const": "mark" },
+            "category": {
+              "anyOf": [
+                { "$ref": "#/$defs/EventCategory" },
+                { "type": "null" }
+              ]
+            },
+            "category_profile": {
+              "anyOf": [
+                { "$ref": "#/$defs/CategoryProfile" },
+                { "type": "null" }
+              ]
+            }
+          },
+          "required": ["kind"]
+        }
+      ]
+    }
+  }
+}

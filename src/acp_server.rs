@@ -45,13 +45,12 @@ use anyhow::anyhow;
 use async_trait::async_trait;
 use std::path::PathBuf;
 use dashmap::DashMap;
-use tokio::sync::broadcast;
 use ulid::Ulid;
 
 use crate::atif_codec;
-use crate::events::Event;
 use crate::model::Model;
 use crate::session::Session;
+use crate::session_runner::{RunOutcome, RunnerEvent, RunnerHost, SessionRunner, ToolKindHint};
 use crate::store::SessionStore;
 use crate::tool_ctx::{ClientHandle, PermissionOutcome, TerminalRunResult};
 use crate::tools::{BashTool, ReadTool, Tool};
@@ -83,103 +82,6 @@ fn ra_auth_methods() -> Vec<AuthMethod> {
     vec![AuthMethod::Agent(m)]
 }
 
-/// A slash command parsed out of a user message. `name` is the command
-/// stem (no leading slash); `args` is everything after, with leading
-/// whitespace trimmed. We treat unknown names as "not a command" and let
-/// the user message flow through to the LLM normally.
-#[derive(Debug)]
-struct SlashCommand {
-    name: String,
-    args: String,
-}
-
-fn parse_slash_command(text: &str) -> Option<SlashCommand> {
-    let trimmed = text.trim_start();
-    let rest = trimmed.strip_prefix('/')?;
-    if rest.is_empty() {
-        return None;
-    }
-    let (name, args) = match rest.find(char::is_whitespace) {
-        Some(i) => (&rest[..i], rest[i..].trim_start()),
-        None => (rest, ""),
-    };
-    let name_lc = name.to_lowercase();
-    if !ra_commands().iter().any(|c| c.name == name_lc) {
-        return None;
-    }
-    Some(SlashCommand { name: name_lc, args: args.to_string() })
-}
-
-async fn run_slash_command(
-    cmd: &SlashCommand,
-    session: &Session,
-    state: &Arc<SharedState>,
-    session_id: SessionId,
-    cx: &ConnectionTo<agent_client_protocol::Client>,
-) {
-    let send_text = |s: &str| {
-        let _ = cx.send_notification(SessionNotification::new(
-            session_id.clone(),
-            SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::Text(
-                TextContent::new(s.to_string()),
-            ))),
-        ));
-    };
-
-    match cmd.name.as_str() {
-        "clear" => {
-            session.restore_messages(Vec::new()).await;
-            send_text("Session cleared.");
-        }
-        "compact" => {
-            // Naive compaction: collapse to a one-line summary message. A
-            // future version can ask the model for a real summary.
-            let snapshot = session.snapshot_messages().await;
-            let n = snapshot.len();
-            session
-                .restore_messages(vec![crate::model::Message::User {
-                    content: format!(
-                        "[compacted: {} prior messages elided]{}",
-                        n,
-                        if cmd.args.is_empty() {
-                            "".to_string()
-                        } else {
-                            format!(" focus={}", cmd.args)
-                        }
-                    ),
-                }])
-                .await;
-            send_text(&format!("Compacted {n} prior messages."));
-        }
-        "models" => {
-            let mut buf = String::from("Available models:\n");
-            for m in &state.available_models {
-                buf.push_str(&format!("  • {} — {}\n", m.model_id, m.name));
-            }
-            send_text(&buf);
-        }
-        "mode" => {
-            let valid = ["default", "plan", "ask"];
-            let target = cmd.args.split_whitespace().next().unwrap_or("");
-            if !valid.contains(&target) {
-                send_text(&format!(
-                    "Unknown mode: '{target}'. Choose one of: {}.",
-                    valid.join(", ")
-                ));
-                return;
-            }
-            session.set_mode(target).await;
-            let _ = cx.send_notification(SessionNotification::new(
-                session_id.clone(),
-                SessionUpdate::CurrentModeUpdate(CurrentModeUpdate::new(SessionModeId::from(
-                    target.to_string(),
-                ))),
-            ));
-            send_text(&format!("Mode → {target}."));
-        }
-        _ => unreachable!("parse_slash_command vetted the name"),
-    }
-}
 
 /// Best-guess context window size (in tokens) for a given model id, used
 /// as the `size` field on `SessionUpdate::UsageUpdate`. Falls back to a
@@ -346,6 +248,27 @@ impl SharedState {
         if let Err(e) = store.save(&traj).await {
             eprintln!("[ra::acp] save trajectory {id}: {e:#}");
         }
+    }
+}
+
+#[async_trait]
+impl RunnerHost for SharedState {
+    async fn save_session(&self, session_id: &str) {
+        // Reuse the inherent method to avoid name collision; the trait
+        // method takes precedence in callers because they hold the trait
+        // object via Arc<dyn RunnerHost>.
+        SharedState::save_session(self, session_id).await
+    }
+
+    fn default_ctx_window(&self) -> u64 {
+        ctx_window_for(&self.model_factory.default_model_id())
+    }
+
+    fn list_models_for_display(&self) -> Vec<(String, String)> {
+        self.available_models
+            .iter()
+            .map(|m| (m.model_id.to_string(), m.name.clone()))
+            .collect()
     }
 }
 
@@ -608,76 +531,33 @@ pub async fn run(
                     )));
                 };
 
-                // Subscribe BEFORE dispatching prompt, so we don't miss the first events.
-                let rx = session.subscribe();
-                let forwarder = spawn_event_forwarder(rx, session_id.clone(), cx.clone());
+                // Build a SessionRunner with the shared host. The runner
+                // owns the spawn body, slash dispatch, observability scope,
+                // event forwarding and final save.
+                let host: Arc<dyn RunnerHost> = s_prompt.clone();
+                let runner = SessionRunner::new(session, session_id.to_string(), host);
 
-                // Move the actual prompt run into a spawned task so the dispatcher
-                // stays free to deliver concurrent messages (cancel / fs / terminal
-                // reverse calls). The Responder is owned and can be moved across
-                // tasks; we respond once the turn loop finishes.
-                let s_prompt_save = s_prompt.clone();
                 let cx_for_task = cx.clone();
-                let scope_label = format!("session/prompt {}", session_id);
-                tokio::spawn(crate::nemo_obs::with_task_scope(async move {
-                    let _agent_scope = crate::nemo_obs::agent_scope(&scope_label);
-                    let stop = if let Some(cmd) = parse_slash_command(&user_text) {
-                        // Slash commands are intercepted server-side and never
-                        // reach the LLM. The handler streams its own
-                        // AgentMessageChunk(s) and may mutate session state.
-                        run_slash_command(
-                            &cmd,
-                            &session,
-                            &s_prompt_save,
-                            session_id.clone(),
-                            &cx_for_task,
-                        )
-                        .await;
-                        // Forwarder is still alive listening for AgentEnd; the
-                        // command handler does not emit one, so we end the
-                        // forwarder by dropping the broadcast receiver via
-                        // the implicit timeout below. To avoid hanging, we
-                        // explicitly send an AgentEnd through the session's
-                        // broadcast channel.
-                        session.signal_agent_end().await;
-                        let _ = forwarder.await;
-                        StopReason::EndTurn
-                    } else {
-                        let prompt_result = session.prompt(user_text).await;
-                        let _ = forwarder.await;
-                        match prompt_result {
-                            Ok(crate::session::PromptOutcome::Completed) => StopReason::EndTurn,
-                            Ok(crate::session::PromptOutcome::Cancelled) => StopReason::Cancelled,
-                            Err(e) => {
-                                eprintln!("[ra::acp] prompt error: {e:#}");
-                                StopReason::EndTurn
-                            }
-                        }
+                let session_id_for_cb = session_id.clone();
+                let mut accumulated_text = String::new();
+
+                tokio::spawn(async move {
+                    let outcome = runner.run_input(user_text, |ev| {
+                        translate_runner_event(&session_id_for_cb, &cx_for_task, &mut accumulated_text, ev);
+                    }).await;
+
+                    // The runner already emitted UsageReport via the callback,
+                    // but PromptResponse.usage carries the same number for
+                    // clients that close before the notification lands.
+                    let final_usage = agent_client_protocol::schema::Usage::new(0, 0, 0);
+                    let stop = match outcome {
+                        RunOutcome::Completed | RunOutcome::Failed(_) => StopReason::EndTurn,
+                        RunOutcome::Cancelled => StopReason::Cancelled,
                     };
-                    // Persist the updated trajectory before responding so a
-                    // crash here does not silently lose the turn.
-                    s_prompt_save.save_session(&session_id.to_string()).await;
-
-                    // Best-effort token accounting. graniet/llm doesn't
-                    // surface real usage on the streaming-with-tools path
-                    // yet, so we tiktoken-estimate over the persisted
-                    // trajectory. Two delivery channels for redundancy:
-                    //   1. SessionUpdate::UsageUpdate notification (spec)
-                    //   2. PromptResponse.usage (always reaches the client)
-                    let used = session.estimate_used_tokens().await;
-                    let model_id = s_prompt_save.model_factory.default_model_id();
-                    let size = ctx_window_for(&model_id);
-
-                    let _ = cx_for_task.send_notification(SessionNotification::new(
-                        session_id.clone(),
-                        SessionUpdate::UsageUpdate(UsageUpdate::new(used, size)),
-                    ));
-
-                    let usage = agent_client_protocol::schema::Usage::new(used, used, 0);
                     let _ = responder.respond(
-                        PromptResponse::new(stop).usage(Some(usage)),
+                        PromptResponse::new(stop).usage(Some(final_usage)),
                     );
-                }));
+                });
 
                 Ok(())
             },
@@ -1006,116 +886,75 @@ fn collect_text(blocks: &[ContentBlock]) -> String {
     out
 }
 
-/// Bridge Ra's broadcast<Event> to ACP's session/update notifications.
+/// Translate one `RunnerEvent` into ACP `SessionUpdate` notifications.
 ///
-/// Returns a JoinHandle that finishes when AgentEnd is observed (or the channel closes).
-fn spawn_event_forwarder(
-    mut rx: broadcast::Receiver<Event>,
-    session_id: SessionId,
-    cx: ConnectionTo<agent_client_protocol::Client>,
-) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        loop {
-            match rx.recv().await {
-                Ok(Event::TextDelta(s)) => {
-                    let notif = SessionNotification::new(
-                        session_id.clone(),
-                        SessionUpdate::AgentMessageChunk(ContentChunk::new(
-                            ContentBlock::Text(TextContent::new(s)),
-                        )),
-                    );
-                    let _ = cx.send_notification(notif);
-                }
-                Ok(Event::ThinkingDelta(s)) => {
-                    let notif = SessionNotification::new(
-                        session_id.clone(),
-                        SessionUpdate::AgentThoughtChunk(ContentChunk::new(
-                            ContentBlock::Text(TextContent::new(s)),
-                        )),
-                    );
-                    let _ = cx.send_notification(notif);
-                }
-                Ok(Event::ToolCallStart(c)) => {
-                    let kind = tool_kind_for(&c.name);
-                    let title = tool_title(&c.name, &c.input);
-                    let notif = SessionNotification::new(
-                        session_id.clone(),
-                        SessionUpdate::ToolCall(
-                            AcpToolCall::new(ToolCallId::from(c.id.clone()), title)
-                                .kind(kind)
-                                .status(ToolCallStatus::InProgress)
-                                .raw_input(c.input.clone()),
-                        ),
-                    );
-                    let _ = cx.send_notification(notif);
-                }
-                Ok(Event::ToolCallUpdate { .. }) => {
-                    // intermediate progress (exit code etc) — Phase 2: emit
-                    // ToolCallUpdateFields with `content` patch. Skipped for now.
-                }
-                Ok(Event::ToolCallEnd(r)) => {
-                    let status = if r.is_error {
-                        ToolCallStatus::Failed
-                    } else {
-                        ToolCallStatus::Completed
-                    };
-                    let content = vec![ToolCallContent::from(ContentBlock::Text(
-                        TextContent::new(r.content.clone()),
-                    ))];
-                    let raw_output = serde_json::Value::String(r.content.clone());
-                    let fields = ToolCallUpdateFields::new()
-                        .status(status)
-                        .content(content)
-                        .raw_output(raw_output);
-                    let notif = SessionNotification::new(
-                        session_id.clone(),
-                        SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
-                            ToolCallId::from(r.call_id.clone()),
-                            fields,
-                        )),
-                    );
-                    let _ = cx.send_notification(notif);
-                }
-                Ok(Event::AgentEnd) => break,
-                Ok(_) => {}
-                Err(_) => break,
-            }
+/// Called from inside the prompt-handler's spawned task. Owns its own copy
+/// of the running text so the spec-encouraged final `current_message` could
+/// be reconstructed if we ever wanted (currently unused).
+fn translate_runner_event(
+    session_id: &SessionId,
+    cx: &ConnectionTo<agent_client_protocol::Client>,
+    accumulated_text: &mut String,
+    ev: RunnerEvent,
+) {
+    let notify = |update: SessionUpdate| {
+        let _ = cx.send_notification(SessionNotification::new(session_id.clone(), update));
+    };
+    match ev {
+        RunnerEvent::TextDelta(s) => {
+            accumulated_text.push_str(&s);
+            notify(SessionUpdate::AgentMessageChunk(ContentChunk::new(
+                ContentBlock::Text(TextContent::new(s)),
+            )));
         }
-    })
-}
-
-/// Map our internal tool name → ACP `ToolKind`. The kind drives client-side
-/// icon / treatment ("read" vs "execute" gets very different UI).
-fn tool_kind_for(name: &str) -> ToolKind {
-    match name {
-        "read" => ToolKind::Read,
-        "bash" => ToolKind::Execute,
-        _ => ToolKind::Other,
+        RunnerEvent::ThinkingDelta(s) => {
+            notify(SessionUpdate::AgentThoughtChunk(ContentChunk::new(
+                ContentBlock::Text(TextContent::new(s)),
+            )));
+        }
+        RunnerEvent::ToolCallStart { id, name: _, input, title, kind } => {
+            notify(SessionUpdate::ToolCall(
+                AcpToolCall::new(ToolCallId::from(id), title)
+                    .kind(tool_kind_hint_to_acp(kind))
+                    .status(ToolCallStatus::InProgress)
+                    .raw_input(input),
+            ));
+        }
+        RunnerEvent::ToolCallEnd { id, is_error, content } => {
+            let status = if is_error {
+                ToolCallStatus::Failed
+            } else {
+                ToolCallStatus::Completed
+            };
+            let acp_content = vec![ToolCallContent::from(ContentBlock::Text(
+                TextContent::new(content.clone()),
+            ))];
+            let fields = ToolCallUpdateFields::new()
+                .status(status)
+                .content(acp_content)
+                .raw_output(serde_json::Value::String(content));
+            notify(SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
+                ToolCallId::from(id),
+                fields,
+            )));
+        }
+        RunnerEvent::ModeChanged(mode_id) => {
+            notify(SessionUpdate::CurrentModeUpdate(CurrentModeUpdate::new(
+                SessionModeId::from(mode_id),
+            )));
+        }
+        RunnerEvent::UsageReport { used, size } => {
+            notify(SessionUpdate::UsageUpdate(UsageUpdate::new(used, size)));
+        }
+        RunnerEvent::Started | RunnerEvent::Finished(_) => {}
     }
 }
 
-/// Build a short human-readable title for a tool call, surfaced as the
-/// first line in the client UI.
-fn tool_title(name: &str, input: &serde_json::Value) -> String {
-    match name {
-        "read" => input
-            .get("path")
-            .and_then(|v| v.as_str())
-            .map(|p| format!("Read {p}"))
-            .unwrap_or_else(|| "Read".into()),
-        "bash" => input
-            .get("command")
-            .and_then(|v| v.as_str())
-            .map(|c| {
-                let mut s = c.to_string();
-                if s.len() > 60 {
-                    s.truncate(60);
-                    s.push('…');
-                }
-                format!("$ {s}")
-            })
-            .unwrap_or_else(|| "Run shell".into()),
-        other => other.to_string(),
+fn tool_kind_hint_to_acp(hint: ToolKindHint) -> ToolKind {
+    match hint {
+        ToolKindHint::Read => ToolKind::Read,
+        ToolKindHint::Execute => ToolKind::Execute,
+        ToolKindHint::Other => ToolKind::Other,
     }
 }
 

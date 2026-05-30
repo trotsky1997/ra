@@ -18,19 +18,21 @@ use agent_client_protocol::{
     Agent as AcpAgent, ConnectionTo, Dispatch, Error as AcpError, Result as AcpResult, Stdio,
     on_receive_dispatch, on_receive_notification, on_receive_request,
     schema::{
-        AgentCapabilities, CancelNotification, CloseSessionRequest, CloseSessionResponse,
-        ContentBlock, ContentChunk, CreateTerminalRequest, DeleteSessionRequest,
-        DeleteSessionResponse, ForkSessionRequest, ForkSessionResponse, InitializeRequest,
-        InitializeResponse, ListSessionsRequest, ListSessionsResponse, LoadSessionRequest,
-        LoadSessionResponse, ModelId, ModelInfo, NewSessionRequest, NewSessionResponse,
-        PermissionOption, PermissionOptionId, PermissionOptionKind, PromptRequest, PromptResponse,
-        ReadTextFileRequest, ReleaseTerminalRequest, RequestPermissionOutcome,
-        RequestPermissionRequest, ResumeSessionRequest, ResumeSessionResponse, SessionId,
-        SessionInfo, SessionModelState, SessionNotification, SessionUpdate,
-        SetSessionModelRequest, SetSessionModelResponse, StopReason, TerminalOutputRequest,
-        TextContent, ToolCall as AcpToolCall, ToolCallContent, ToolCallId, ToolCallStatus,
-        ToolCallUpdate, ToolCallUpdateFields, ToolKind,
-        WaitForTerminalExitRequest, WriteTextFileRequest,
+        AgentCapabilities, AuthMethod, AuthMethodAgent, AuthMethodId, AuthenticateRequest,
+        AuthenticateResponse, CancelNotification, CloseSessionRequest, CloseSessionResponse,
+        ContentBlock, ContentChunk, CreateTerminalRequest, CurrentModeUpdate,
+        DeleteSessionRequest, DeleteSessionResponse, ForkSessionRequest, ForkSessionResponse,
+        InitializeRequest, InitializeResponse, ListSessionsRequest, ListSessionsResponse,
+        LoadSessionRequest, LoadSessionResponse, LogoutRequest, LogoutResponse, ModelId,
+        ModelInfo, NewSessionRequest, NewSessionResponse, PermissionOption, PermissionOptionId,
+        PermissionOptionKind, PromptRequest, PromptResponse, ReadTextFileRequest,
+        ReleaseTerminalRequest, RequestPermissionOutcome, RequestPermissionRequest,
+        ResumeSessionRequest, ResumeSessionResponse, SessionId, SessionInfo, SessionMode,
+        SessionModeId, SessionModeState, SessionModelState, SessionNotification, SessionUpdate,
+        SetSessionModeRequest, SetSessionModeResponse, SetSessionModelRequest,
+        SetSessionModelResponse, StopReason, TerminalOutputRequest, TextContent,
+        ToolCall as AcpToolCall, ToolCallContent, ToolCallId, ToolCallStatus, ToolCallUpdate,
+        ToolCallUpdateFields, ToolKind, WaitForTerminalExitRequest, WriteTextFileRequest,
     },
     util,
 };
@@ -49,7 +51,32 @@ use crate::store::SessionStore;
 use crate::tool_ctx::{ClientHandle, PermissionOutcome, TerminalRunResult};
 use crate::tools::{BashTool, ReadTool, Tool};
 
-/// Top-level server state shared across all ACP handlers.
+/// The mode catalogue Ra advertises. We don't actually change behavior between
+/// modes today; the field is mostly cosmetic and lets clients show a picker.
+fn ra_modes() -> SessionModeState {
+    let make = |id: &str, name: &str, desc: &str| {
+        let mut m = SessionMode::new(SessionModeId::from(id.to_string()), name.to_string());
+        m.description = Some(desc.to_string());
+        m
+    };
+    SessionModeState::new(
+        SessionModeId::from("default".to_string()),
+        vec![
+            make("default", "Default", "Run tools as needed."),
+            make("plan", "Plan", "Think only; do not run tools."),
+            make("ask", "Ask", "Confirm every tool call."),
+        ],
+    )
+}
+
+/// Default `agent` auth method advertised to clients. Ra holds its API
+/// keys in environment variables and considers itself "always authenticated"
+/// once those are set, so this is a single no-op method.
+fn ra_auth_methods() -> Vec<AuthMethod> {
+    let mut m = AuthMethodAgent::new(AuthMethodId::from("env".to_string()), "Environment".to_string());
+    m.description = Some("Auth via PI_API_KEY / ANTHROPIC_API_KEY / OPENAI_API_KEY env vars.".into());
+    vec![AuthMethod::Agent(m)]
+}
 ///
 /// Holds the active default model, the model registry (for `session/set_model`
 /// + `NewSessionResponse.models`), the on-disk trajectory store, and the
@@ -326,16 +353,20 @@ pub async fn run(
     let s_close = state.clone();
     let s_resume = state.clone();
     let s_delete = state.clone();
+    let s_auth = state.clone();
+    let s_logout = state.clone();
+    let s_setmode = state.clone();
 
     AcpAgent
         .builder()
         .name("ra")
         .on_receive_request(
             async move |req: InitializeRequest, responder, _cx| {
-                let _ = &s_init; // keep the Arc captured even if we don't read it yet
+                let _ = &s_init;
                 responder.respond(
                     InitializeResponse::new(req.protocol_version)
-                        .agent_capabilities(AgentCapabilities::default()),
+                        .agent_capabilities(AgentCapabilities::default())
+                        .auth_methods(ra_auth_methods()),
                 )
             },
             on_receive_request!(),
@@ -350,6 +381,7 @@ pub async fn run(
                 // in session/list immediately (not just after first prompt).
                 s_new.save_session(&id).await;
                 let resp = NewSessionResponse::new(SessionId::from(id))
+                    .modes(ra_modes())
                     .models(SessionModelState::new(
                         ModelId::from(s_new.model_factory.default_model_id()),
                         s_new.available_models.clone(),
@@ -445,6 +477,7 @@ pub async fn run(
                 child.restore_messages(snapshot).await;
                 s_fork.save_session(&new_id).await;
                 let resp = ForkSessionResponse::new(SessionId::from(new_id))
+                    .modes(ra_modes())
                     .models(SessionModelState::new(
                         ModelId::from(s_fork.model_factory.default_model_id()),
                         s_fork.available_models.clone(),
@@ -590,6 +623,66 @@ pub async fn run(
                     )));
                 }
                 responder.respond(DeleteSessionResponse::default())
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |req: AuthenticateRequest, responder, _cx| {
+                // Single 'env' method advertised at initialize. Ra trusts the
+                // env to already hold the API key, so authenticate is a no-op
+                // success; unknown method ids return InvalidRequest.
+                let _ = &s_auth;
+                if req.method_id.to_string() == "env" {
+                    responder.respond(AuthenticateResponse::default())
+                } else {
+                    responder.respond_with_error(util::internal_error(format!(
+                        "unknown auth method: {}",
+                        req.method_id
+                    )))
+                }
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_req: LogoutRequest, responder, _cx| {
+                // No persistent auth state to clear (env vars stay where they
+                // are). The handler exists so clients calling logout don't
+                // see method_not_found.
+                let _ = &s_logout;
+                responder.respond(LogoutResponse::default())
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |req: SetSessionModeRequest, responder, cx: ConnectionTo<agent_client_protocol::Client>| {
+                let id = req.session_id.to_string();
+                let Some(session) = s_setmode.get(&id) else {
+                    return responder.respond_with_error(util::internal_error(format!(
+                        "unknown session id: {id}"
+                    )));
+                };
+                let mode_id = req.mode_id.to_string();
+                // Validate against the advertised catalogue.
+                let valid = ra_modes()
+                    .available_modes
+                    .iter()
+                    .any(|m| m.id.to_string() == mode_id);
+                if !valid {
+                    return responder.respond_with_error(util::internal_error(format!(
+                        "unknown mode id: {mode_id}"
+                    )));
+                }
+                session.set_mode(&mode_id).await;
+                // Notify the client of the new current mode so it can
+                // refresh any picker UI.
+                let notif = SessionNotification::new(
+                    req.session_id.clone(),
+                    SessionUpdate::CurrentModeUpdate(CurrentModeUpdate::new(
+                        SessionModeId::from(mode_id),
+                    )),
+                );
+                let _ = cx.send_notification(notif);
+                responder.respond(SetSessionModeResponse::default())
             },
             on_receive_request!(),
         )

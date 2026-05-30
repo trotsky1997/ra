@@ -29,6 +29,9 @@ pub struct Session {
     client: Option<Arc<dyn ClientHandle>>,
     /// ACP session id, required by every reverse call. Set whenever `client` is.
     session_id: Option<String>,
+    /// Current operating mode (e.g. "default", "plan", "ask"). Surfaced via
+    /// `session/set_mode` and `SessionUpdate::CurrentModeUpdate`.
+    mode: RwLock<String>,
 }
 
 /// Result of one `prompt()` call.
@@ -55,12 +58,23 @@ impl Session {
             cancel: Mutex::new(CancellationToken::new()),
             client: None,
             session_id: None,
+            mode: RwLock::new("default".into()),
         }
     }
 
     /// Hot-swap the active model. Used by `session/set_model` (ACP unstable).
     pub async fn set_model(&self, model: Arc<dyn Model>) {
         *self.model.write().await = model;
+    }
+
+    /// Set the active mode. The new value flows back to ACP clients via
+    /// `SessionUpdate::CurrentModeUpdate`, which the caller emits.
+    pub async fn set_mode(&self, mode: impl Into<String>) {
+        *self.mode.write().await = mode.into();
+    }
+
+    pub async fn mode(&self) -> String {
+        self.mode.read().await.clone()
     }
 
     /// Snapshot the current message log. Useful for `session/fork`.

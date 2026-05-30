@@ -1,7 +1,10 @@
 use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
-use ra::{BashTool, Event, MockModel, Model, PiModel, ReadTool, Session};
+use llm::builder::LLMBackend;
+use ra::{
+    BashTool, Event, LlmModel, LlmModelConfig, MockModel, Model, ReadTool, Session,
+};
 use tokio::io::{self, AsyncWriteExt};
 
 const BANNER: &str = r#"
@@ -48,20 +51,67 @@ async fn main() -> anyhow::Result<()> {
 }
 
 /// Build a Model based on environment. Banner + log go to stderr only.
+///
+/// Resolution order:
+///   1. ANTHROPIC_API_KEY  → Anthropic backend (model defaults to claude-opus-4-5)
+///   2. OPENAI_API_KEY     → OpenAI backend, public api.openai.com
+///   3. PI_API_KEY         → OpenAI-compatible Responses API at pi-api-us
+///   4. otherwise          → MockModel
 fn build_model() -> Arc<dyn Model> {
-    match std::env::var("PI_API_KEY") {
-        Ok(key) if !key.is_empty() => {
-            let base = std::env::var("PI_BASE_URL")
-                .unwrap_or_else(|_| "https://pi-api-us.macaron.xin".into());
-            let model_id = std::env::var("PI_MODEL").unwrap_or_else(|_| "gpt-5.5".into());
-            eprintln!("[ra] using PiModel base={base} model={model_id}");
-            Arc::new(PiModel::new(base, key, model_id))
-        }
-        _ => {
-            eprintln!("[ra] PI_API_KEY not set; using MockModel");
-            Arc::new(MockModel)
+    if let Ok(key) = std::env::var("ANTHROPIC_API_KEY") {
+        if !key.is_empty() {
+            let model_id = std::env::var("RA_MODEL")
+                .unwrap_or_else(|_| "claude-opus-4-5".into());
+            eprintln!("[ra] using LlmModel backend=Anthropic model={model_id}");
+            return Arc::new(
+                LlmModel::build(LlmModelConfig {
+                    backend: LLMBackend::Anthropic,
+                    api_key: key,
+                    model: model_id,
+                    base_url: None,
+                })
+                .expect("LlmModel::build (Anthropic)"),
+            );
         }
     }
+    if let Ok(key) = std::env::var("OPENAI_API_KEY") {
+        if !key.is_empty() {
+            let model_id = std::env::var("RA_MODEL")
+                .unwrap_or_else(|_| "gpt-4.1-mini".into());
+            let base_url = std::env::var("OPENAI_BASE_URL").ok();
+            eprintln!("[ra] using LlmModel backend=OpenAI model={model_id}");
+            return Arc::new(
+                LlmModel::build(LlmModelConfig {
+                    backend: LLMBackend::OpenAI,
+                    api_key: key,
+                    model: model_id,
+                    base_url,
+                })
+                .expect("LlmModel::build (OpenAI)"),
+            );
+        }
+    }
+    if let Ok(key) = std::env::var("PI_API_KEY") {
+        if !key.is_empty() {
+            let base = std::env::var("PI_BASE_URL")
+                .unwrap_or_else(|_| "https://pi-api-us.macaron.xin/v1/".into());
+            let model_id = std::env::var("PI_MODEL")
+                .or_else(|_| std::env::var("RA_MODEL"))
+                .unwrap_or_else(|_| "gpt-5.5".into());
+            eprintln!("[ra] using LlmModel backend=OpenAI(pi) base={base} model={model_id}");
+            return Arc::new(
+                LlmModel::build(LlmModelConfig {
+                    backend: LLMBackend::OpenAI,
+                    api_key: key,
+                    model: model_id,
+                    base_url: Some(base),
+                })
+                .expect("LlmModel::build (pi)"),
+            );
+        }
+    }
+    eprintln!("[ra] no API key set; using MockModel");
+    Arc::new(MockModel)
 }
 
 async fn run_acp() -> anyhow::Result<()> {

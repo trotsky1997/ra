@@ -1,28 +1,32 @@
 use crate::events::Event;
+use crate::tool_ctx::ToolCtx;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use schemars::{schema_for, JsonSchema};
 use serde::Deserialize;
-use tokio::sync::broadcast;
 
-/// 工具的统一接口。dyn-safe：不绑定 associated type，参数走 serde_json::Value。
+/// Unified tool interface. `dyn`-safe: no associated types, params travel as
+/// `serde_json::Value` and the tool deserializes them.
 ///
-/// 真实工具一般会定义自己的 Params struct + #[derive(JsonSchema, Deserialize)]，
-/// 然后在 schema() 里用 schema_for!(Params) 自动生成 JSON Schema。
+/// In practice each tool defines its own `Params` struct with
+/// `#[derive(JsonSchema, Deserialize)]`, then `schema()` returns
+/// `schema_for!(Params)` so the LLM knows the call shape.
 #[async_trait]
 pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
 
-    /// 返回 JSON Schema，描述本工具的入参。模型层会把这个塞给 LLM。
+    /// JSON Schema describing the input parameters. Forwarded verbatim to the
+    /// model layer for function-calling registration.
     fn schema(&self) -> serde_json::Value;
 
-    /// 真正执行。tx 用来在执行过程中广播 Update 事件（比如 bash 的流式 stdout）。
+    /// Execute the tool. `ctx` carries the broadcast channel for streaming
+    /// updates and an optional `ClientHandle` for ACP reverse calls.
     async fn execute(
         &self,
         call_id: &str,
         input: serde_json::Value,
-        tx: &broadcast::Sender<Event>,
+        ctx: &ToolCtx,
     ) -> Result<String>;
 }
 
@@ -30,7 +34,7 @@ pub trait Tool: Send + Sync {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ReadParams {
-    /// File path to read (absolute or relative to cwd).
+    /// File path to read (absolute, or relative to the agent's cwd).
     pub path: String,
 }
 
@@ -52,10 +56,28 @@ impl Tool for ReadTool {
         &self,
         _call_id: &str,
         input: serde_json::Value,
-        _tx: &broadcast::Sender<Event>,
+        ctx: &ToolCtx,
     ) -> Result<String> {
         let params: ReadParams =
             serde_json::from_value(input).context("invalid params for read")?;
+
+        // Prefer host-provided fs (ACP `fs/read_text_file`); fall back to
+        // local filesystem if the host does not implement it.
+        if let (Some(client), Some(sid)) = (&ctx.client, &ctx.session_id) {
+            match client
+                .fs_read_text_file(sid, &params.path, None, None)
+                .await
+            {
+                Ok(text) => return Ok(text),
+                Err(e) => {
+                    eprintln!(
+                        "[ra::tools::read] reverse fs/read_text_file failed: {e:#}; \
+                         falling back to local read"
+                    );
+                }
+            }
+        }
+
         let bytes = tokio::fs::read(&params.path)
             .await
             .with_context(|| format!("read {}", params.path))?;
@@ -89,11 +111,59 @@ impl Tool for BashTool {
         &self,
         call_id: &str,
         input: serde_json::Value,
-        tx: &broadcast::Sender<Event>,
+        ctx: &ToolCtx,
     ) -> Result<String> {
         let params: BashParams =
             serde_json::from_value(input).context("invalid params for bash")?;
 
+        // ACP path: ask permission, then run via host terminal. If the host
+        // doesn't implement permission OR terminal, fall through to local.
+        if let (Some(client), Some(sid)) = (&ctx.client, &ctx.session_id) {
+            // 1. permission gate
+            let perm = client
+                .request_permission(
+                    sid,
+                    call_id,
+                    &format!("Run shell: {}", truncate(&params.command, 60)),
+                    "Agent wants to run a shell command via the host terminal.",
+                )
+                .await;
+
+            match perm {
+                Ok(crate::tool_ctx::PermissionOutcome::Denied) => {
+                    return Err(anyhow::anyhow!("user denied bash invocation"));
+                }
+                Ok(crate::tool_ctx::PermissionOutcome::Cancelled) => {
+                    return Err(anyhow::anyhow!("permission request cancelled"));
+                }
+                Ok(crate::tool_ctx::PermissionOutcome::Allowed) => {
+                    // 2. host terminal
+                    match client.run_terminal(sid, &params.command).await {
+                        Ok(res) => {
+                            let _ = ctx.events.send(Event::ToolCallUpdate {
+                                id: call_id.to_string(),
+                                chunk: format!("[exit={}]", res.exit_code.unwrap_or(-1)),
+                            });
+                            return Ok(res.output);
+                        }
+                        Err(e) => {
+                            eprintln!(
+                                "[ra::tools::bash] reverse terminal/* failed: {e:#}; \
+                                 falling back to local /bin/sh"
+                            );
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!(
+                        "[ra::tools::bash] permission request failed: {e:#}; \
+                         falling back to local /bin/sh"
+                    );
+                }
+            }
+        }
+
+        // Local fallback path.
         let output = tokio::process::Command::new("/bin/sh")
             .arg("-c")
             .arg(&params.command)
@@ -106,12 +176,21 @@ impl Tool for BashTool {
             combined.push_str(&String::from_utf8_lossy(&output.stderr));
         }
 
-        // 演示一下 ToolCallUpdate 的广播用法
-        let _ = tx.send(Event::ToolCallUpdate {
+        let _ = ctx.events.send(Event::ToolCallUpdate {
             id: call_id.to_string(),
             chunk: format!("[exit={}]", output.status.code().unwrap_or(-1)),
         });
 
         Ok(combined)
+    }
+}
+
+fn truncate(s: &str, n: usize) -> String {
+    if s.chars().count() <= n {
+        s.to_string()
+    } else {
+        let mut out: String = s.chars().take(n).collect();
+        out.push('…');
+        out
     }
 }

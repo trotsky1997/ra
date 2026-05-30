@@ -1,13 +1,16 @@
-//! Phase 1 ACP server: serve Ra over stdio JSON-RPC.
+//! ACP server: serve Ra over stdio JSON-RPC, including Phase 2 reverse
+//! calls (the client editor hosts our filesystem reads and shell terminals).
 //!
-//! Implements the baseline 3 agent methods:
+//! Agent methods implemented:
 //! - `initialize`     — protocol version + capability handshake
-//! - `session/new`    — create a Ra Session
-//! - `session/prompt` — run the turn loop, stream session/update notifications
+//! - `session/new`    — create a Ra Session, attach an `AcpClientHandle`
+//! - `session/prompt` — spawn the turn loop, stream `session/update`s
+//! - `session/cancel` — notification, signals the session's CancellationToken
 //!
-//! Other methods are routed to `on_receive_dispatch` and answered with
-//! method_not_found. Phase 2 will add the client-side reverse calls
-//! (`fs/read_text_file`, `terminal/*`) and `session/request_permission`.
+//! Tools are wired to call back into the client through `AcpClientHandle`:
+//! - `read`  → `fs/read_text_file`
+//! - `bash`  → `terminal/create` + `wait_for_exit` + `terminal/output`
+//!             + `terminal/release`, gated by `session/request_permission`.
 
 use std::sync::Arc;
 
@@ -15,14 +18,19 @@ use agent_client_protocol::{
     Agent as AcpAgent, ConnectionTo, Dispatch, Error as AcpError, Result as AcpResult, Stdio,
     on_receive_dispatch, on_receive_notification, on_receive_request,
     schema::{
-        AgentCapabilities, CancelNotification, ContentBlock, ContentChunk, InitializeRequest,
-        InitializeResponse, NewSessionRequest, NewSessionResponse, PromptRequest, PromptResponse,
-        SessionId, SessionNotification, SessionUpdate, StopReason, TextContent,
-        ToolCall as AcpToolCall, ToolCallContent, ToolCallId, ToolCallStatus, ToolCallUpdate,
-        ToolCallUpdateFields, ToolKind,
+        AgentCapabilities, CancelNotification, ContentBlock, ContentChunk, CreateTerminalRequest,
+        InitializeRequest, InitializeResponse, NewSessionRequest, NewSessionResponse,
+        PermissionOption, PermissionOptionId, PermissionOptionKind, PromptRequest, PromptResponse,
+        ReadTextFileRequest, ReleaseTerminalRequest, RequestPermissionOutcome,
+        RequestPermissionRequest, SessionId, SessionNotification, SessionUpdate, StopReason,
+        TerminalOutputRequest, TextContent, ToolCall as AcpToolCall, ToolCallContent, ToolCallId,
+        ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind,
+        WaitForTerminalExitRequest, WriteTextFileRequest,
     },
     util,
 };
+use anyhow::anyhow;
+use async_trait::async_trait;
 use dashmap::DashMap;
 use tokio::sync::broadcast;
 use ulid::Ulid;
@@ -30,6 +38,7 @@ use ulid::Ulid;
 use crate::events::Event;
 use crate::model::Model;
 use crate::session::Session;
+use crate::tool_ctx::{ClientHandle, PermissionOutcome, TerminalRunResult};
 use crate::tools::{BashTool, ReadTool, Tool};
 
 /// Build the agent's session map and the model factory used by every new session.
@@ -51,14 +60,180 @@ impl SharedState {
         }
     }
 
-    fn create_session(&self, id: &str) -> Arc<Session> {
-        let s = Arc::new(Session::new(self.model.clone(), self.tools.clone()));
+    fn create_session(
+        &self,
+        id: &str,
+        client: Arc<dyn ClientHandle>,
+    ) -> Arc<Session> {
+        let s = Arc::new(
+            Session::new(self.model.clone(), self.tools.clone())
+                .with_client(client, id.to_string()),
+        );
         self.sessions.insert(id.to_string(), s.clone());
         s
     }
 
     fn get(&self, id: &str) -> Option<Arc<Session>> {
         self.sessions.get(id).map(|r| r.clone())
+    }
+}
+
+/// Bridge between Ra's `ClientHandle` trait and the ACP `ConnectionTo<Client>`.
+///
+/// `tokio::spawn` + `block_task().await` is the supported pattern: the
+/// surrounding turn-loop already runs in a spawned task, so awaiting an
+/// inner JSON-RPC response cannot deadlock the dispatch loop.
+struct AcpClientHandle {
+    cx: ConnectionTo<agent_client_protocol::Client>,
+}
+
+#[async_trait]
+impl ClientHandle for AcpClientHandle {
+    async fn fs_read_text_file(
+        &self,
+        session_id: &str,
+        path: &str,
+        line: Option<u32>,
+        limit: Option<u32>,
+    ) -> anyhow::Result<String> {
+        let mut req = ReadTextFileRequest::new(SessionId::from(session_id.to_string()), path);
+        if let Some(l) = line {
+            req = req.line(Some(l));
+        }
+        if let Some(l) = limit {
+            req = req.limit(Some(l));
+        }
+        let resp = self
+            .cx
+            .send_request(req)
+            .block_task()
+            .await
+            .map_err(|e| anyhow!("fs/read_text_file: {e:?}"))?;
+        Ok(resp.content)
+    }
+
+    async fn fs_write_text_file(
+        &self,
+        session_id: &str,
+        path: &str,
+        content: &str,
+    ) -> anyhow::Result<()> {
+        let req = WriteTextFileRequest::new(
+            SessionId::from(session_id.to_string()),
+            path,
+            content,
+        );
+        self.cx
+            .send_request(req)
+            .block_task()
+            .await
+            .map_err(|e| anyhow!("fs/write_text_file: {e:?}"))?;
+        Ok(())
+    }
+
+    async fn run_terminal(
+        &self,
+        session_id: &str,
+        command: &str,
+    ) -> anyhow::Result<TerminalRunResult> {
+        let sid = SessionId::from(session_id.to_string());
+
+        // Run via /bin/sh -c so the model can pass shell-y commands directly.
+        let create_req = CreateTerminalRequest::new(sid.clone(), "/bin/sh")
+            .args(vec!["-c".into(), command.into()]);
+        let create_resp = self
+            .cx
+            .send_request(create_req)
+            .block_task()
+            .await
+            .map_err(|e| anyhow!("terminal/create: {e:?}"))?;
+        let term_id = create_resp.terminal_id;
+
+        let exit = self
+            .cx
+            .send_request(WaitForTerminalExitRequest::new(sid.clone(), term_id.clone()))
+            .block_task()
+            .await
+            .map_err(|e| anyhow!("terminal/wait_for_exit: {e:?}"))?;
+
+        let out = self
+            .cx
+            .send_request(TerminalOutputRequest::new(sid.clone(), term_id.clone()))
+            .block_task()
+            .await
+            .map_err(|e| anyhow!("terminal/output: {e:?}"))?;
+
+        // Best-effort release; drop the error if the host already cleaned up.
+        let _ = self
+            .cx
+            .send_request(ReleaseTerminalRequest::new(sid, term_id))
+            .block_task()
+            .await;
+
+        Ok(TerminalRunResult {
+            exit_code: exit.exit_status.exit_code.map(|n| n as i32),
+            output: out.output,
+        })
+    }
+
+    async fn request_permission(
+        &self,
+        session_id: &str,
+        tool_call_id: &str,
+        title: &str,
+        _description: &str,
+    ) -> anyhow::Result<PermissionOutcome> {
+        let options = vec![
+            PermissionOption::new(
+                PermissionOptionId::from("allow_once".to_string()),
+                "Allow once".to_string(),
+                PermissionOptionKind::AllowOnce,
+            ),
+            PermissionOption::new(
+                PermissionOptionId::from("allow_always".to_string()),
+                "Allow always".to_string(),
+                PermissionOptionKind::AllowAlways,
+            ),
+            PermissionOption::new(
+                PermissionOptionId::from("reject_once".to_string()),
+                "Reject".to_string(),
+                PermissionOptionKind::RejectOnce,
+            ),
+        ];
+
+        // The permission UI is keyed off ToolCallUpdate, so we surface the
+        // title via that field. The tool_call must already exist client-side
+        // (the bash tool emits a ToolCallStart before requesting permission).
+        let update = ToolCallUpdate::new(
+            ToolCallId::from(tool_call_id.to_string()),
+            ToolCallUpdateFields::new().title(title.to_string()),
+        );
+
+        let req = RequestPermissionRequest::new(
+            SessionId::from(session_id.to_string()),
+            update,
+            options,
+        );
+
+        let resp = self
+            .cx
+            .send_request(req)
+            .block_task()
+            .await
+            .map_err(|e| anyhow!("session/request_permission: {e:?}"))?;
+
+        Ok(match resp.outcome {
+            RequestPermissionOutcome::Cancelled => PermissionOutcome::Cancelled,
+            RequestPermissionOutcome::Selected(sel) => {
+                let id = sel.option_id.to_string();
+                if id.starts_with("allow") {
+                    PermissionOutcome::Allowed
+                } else {
+                    PermissionOutcome::Denied
+                }
+            }
+            _ => PermissionOutcome::Denied,
+        })
     }
 }
 
@@ -86,9 +261,11 @@ pub async fn run(model: Arc<dyn Model>) -> AcpResult<()> {
             on_receive_request!(),
         )
         .on_receive_request(
-            async move |_req: NewSessionRequest, responder, _cx| {
+            async move |_req: NewSessionRequest, responder, cx: ConnectionTo<agent_client_protocol::Client>| {
                 let id = format!("ra_{}", Ulid::new());
-                s_new.create_session(&id);
+                let handle: Arc<dyn ClientHandle> =
+                    Arc::new(AcpClientHandle { cx: cx.clone() });
+                s_new.create_session(&id, handle);
                 responder.respond(NewSessionResponse::new(SessionId::from(id)))
             },
             on_receive_request!(),
@@ -108,23 +285,25 @@ pub async fn run(model: Arc<dyn Model>) -> AcpResult<()> {
                 let rx = session.subscribe();
                 let forwarder = spawn_event_forwarder(rx, session_id.clone(), cx.clone());
 
-                // Run the turn loop. This drains the model + tools and emits events into the
-                // broadcast channel; the forwarder task converts each one into session/update
-                // and pushes it to the client.
-                let prompt_result = session.prompt(user_text).await;
+                // Move the actual prompt run into a spawned task so the dispatcher
+                // stays free to deliver concurrent messages (cancel / fs / terminal
+                // reverse calls). The Responder is owned and can be moved across
+                // tasks; we respond once the turn loop finishes.
+                tokio::spawn(async move {
+                    let prompt_result = session.prompt(user_text).await;
+                    let _ = forwarder.await;
+                    let stop = match prompt_result {
+                        Ok(crate::session::PromptOutcome::Completed) => StopReason::EndTurn,
+                        Ok(crate::session::PromptOutcome::Cancelled) => StopReason::Cancelled,
+                        Err(e) => {
+                            eprintln!("[ra::acp] prompt error: {e:#}");
+                            StopReason::EndTurn
+                        }
+                    };
+                    let _ = responder.respond(PromptResponse::new(stop));
+                });
 
-                // Wait for the forwarder to drain remaining events (it stops on AgentEnd).
-                let _ = forwarder.await;
-
-                let stop = match prompt_result {
-                    Ok(crate::session::PromptOutcome::Completed) => StopReason::EndTurn,
-                    Ok(crate::session::PromptOutcome::Cancelled) => StopReason::Cancelled,
-                    Err(e) => {
-                        eprintln!("[ra::acp] prompt error: {e:#}");
-                        StopReason::EndTurn
-                    }
-                };
-                responder.respond(PromptResponse::new(stop))
+                Ok(())
             },
             on_receive_request!(),
         )

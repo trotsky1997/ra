@@ -1,5 +1,6 @@
 use crate::events::{Event, ToolResult};
 use crate::model::{Message, Model, ModelChunk, StopReason, ToolSpec};
+use crate::tool_ctx::{ClientHandle, ToolCtx};
 use crate::tools::Tool;
 use anyhow::{anyhow, Result};
 use std::collections::HashMap;
@@ -21,6 +22,11 @@ pub struct Session {
     messages: Arc<Mutex<Vec<Message>>>,
     tx: broadcast::Sender<Event>,
     cancel: Mutex<CancellationToken>,
+    /// Optional ACP client handle. When `Some`, tools may issue reverse calls
+    /// (`fs/read_text_file`, `terminal/*`, `session/request_permission`).
+    client: Option<Arc<dyn ClientHandle>>,
+    /// ACP session id, required by every reverse call. Set whenever `client` is.
+    session_id: Option<String>,
 }
 
 /// Result of one `prompt()` call.
@@ -45,7 +51,19 @@ impl Session {
             messages: Arc::new(Mutex::new(Vec::new())),
             tx,
             cancel: Mutex::new(CancellationToken::new()),
+            client: None,
+            session_id: None,
         }
+    }
+
+    /// Builder-style injector: when called the session will route tool
+    /// execution through the host editor instead of the local filesystem
+    /// and terminal.
+    #[must_use]
+    pub fn with_client(mut self, client: Arc<dyn ClientHandle>, session_id: impl Into<String>) -> Self {
+        self.client = Some(client);
+        self.session_id = Some(session_id.into());
+        self
     }
 
     /// Subscribe to the event broadcast (drop the receiver to unsubscribe).
@@ -153,7 +171,12 @@ impl Session {
                 .ok_or_else(|| anyhow!("unknown tool: {}", call.name))?
                 .clone();
 
-            let exec = tool.execute(&call.id, call.input.clone(), &self.tx).await;
+            let ctx = ToolCtx {
+                events: self.tx.clone(),
+                client: self.client.clone(),
+                session_id: self.session_id.clone(),
+            };
+            let exec = tool.execute(&call.id, call.input.clone(), &ctx).await;
             let result = match exec {
                 Ok(text) => ToolResult {
                     call_id: call.id.clone(),

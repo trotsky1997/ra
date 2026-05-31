@@ -1,0 +1,488 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "RaConfig",
+  "description": "The whole config file. All sections are optional so a minimal `version = 1` document is a valid Ra config.",
+  "type": "object",
+  "properties": {
+    "a2a": {
+      "$ref": "#/definitions/A2aSection"
+    },
+    "agents_md": {
+      "$ref": "#/definitions/AgentsMdSection"
+    },
+    "hooks": {
+      "$ref": "#/definitions/HooksSection"
+    },
+    "mcp": {
+      "$ref": "#/definitions/McpSection"
+    },
+    "model": {
+      "$ref": "#/definitions/ModelSelectorSection"
+    },
+    "models": {
+      "description": "Array-of-tables: `[[models]]` entries.",
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/ModelEntrySection"
+      }
+    },
+    "obs": {
+      "$ref": "#/definitions/ObsSection"
+    },
+    "prompts": {
+      "$ref": "#/definitions/PromptsSection"
+    },
+    "resources": {
+      "$ref": "#/definitions/ResourcesSection"
+    },
+    "run": {
+      "$ref": "#/definitions/RunSection"
+    },
+    "session": {
+      "$ref": "#/definitions/SessionSection"
+    },
+    "skills": {
+      "$ref": "#/definitions/SkillsSection"
+    },
+    "tools": {
+      "$ref": "#/definitions/ToolsSection"
+    },
+    "version": {
+      "description": "Schema version. Currently 1; future breaks bump it.",
+      "default": 1,
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0.0
+    }
+  },
+  "additionalProperties": false,
+  "definitions": {
+    "A2aRemoteAgent": {
+      "type": "object",
+      "required": [
+        "name",
+        "url"
+      ],
+      "properties": {
+        "auth": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AuthSpec"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "A2aSection": {
+      "type": "object",
+      "properties": {
+        "remote_agents": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/A2aRemoteAgent"
+          }
+        },
+        "serve": {
+          "$ref": "#/definitions/A2aServeSection"
+        }
+      },
+      "additionalProperties": false
+    },
+    "A2aServeSection": {
+      "type": "object",
+      "properties": {
+        "grpc_port": {
+          "default": null,
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint16",
+          "minimum": 0.0
+        },
+        "http_port": {
+          "default": null,
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint16",
+          "minimum": 0.0
+        }
+      },
+      "additionalProperties": false
+    },
+    "AgentsMdSection": {
+      "description": "`[agents_md]` — auto-discover AGENTS.md files (https://agents.md/). We walk the cwd up to the git root and concatenate every AGENTS.md we find, \"nearest-file-wins\" by ordering them root→leaf so deeper files appear later in the system prompt and override.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Default true. Set false to disable AGENTS.md auto-discovery (some projects ship one but want Ra to ignore it).",
+          "default": true,
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "AuthSpec": {
+      "type": "object",
+      "properties": {
+        "bearer_env": {
+          "description": "Env var holding a Bearer token to send as `Authorization`.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "Hook": {
+      "type": "object",
+      "required": [
+        "command"
+      ],
+      "properties": {
+        "command": {
+          "description": "Shell command to invoke. Receives the event JSON on stdin.",
+          "type": "string"
+        },
+        "matcher": {
+          "description": "Regex matched against the tool name (PreToolUse/PostToolUse) or the user message text (UserPromptSubmit). Default `.*`.",
+          "default": ".*",
+          "type": "string"
+        },
+        "run_async": {
+          "description": "Fire-and-forget: don't wait for response.",
+          "default": false,
+          "type": "boolean"
+        },
+        "timeout_s": {
+          "description": "Hard timeout in seconds. Default 5.",
+          "default": 5.0,
+          "type": "number",
+          "format": "double"
+        }
+      },
+      "additionalProperties": false
+    },
+    "HooksSection": {
+      "type": "object",
+      "properties": {
+        "agent_end": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Hook"
+          }
+        },
+        "post_tool_use": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Hook"
+          }
+        },
+        "pre_tool_use": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Hook"
+          }
+        },
+        "user_prompt_submit": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Hook"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "McpSection": {
+      "type": "object",
+      "properties": {
+        "servers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/McpServer"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "McpServer": {
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "args": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "auth": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AuthSpec"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "command": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cwd": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "env": {
+          "default": {},
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "name": {
+          "type": "string"
+        },
+        "transport": {
+          "description": "`stdio` | `http`. Default `stdio`.",
+          "default": "stdio",
+          "type": "string"
+        },
+        "url": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "ModelEntrySection": {
+      "description": "One entry in `[[models]]`. Mirrors HCP's `[model]` shape but lifted into an array so Ra can advertise a catalog at session/new time.",
+      "type": "object",
+      "required": [
+        "backend",
+        "model_id",
+        "name"
+      ],
+      "properties": {
+        "api_key": {
+          "description": "API key inline. Strongly discouraged; prefer `api_key_env`.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "api_key_env": {
+          "description": "Env var holding the API key. Required unless `api_key` is given.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "backend": {
+          "description": "`openai` | `anthropic` | `google` | `deepseek` | `ollama` | `groq` | `xai`. Mapped to the graniet/llm `LLMBackend` enum.",
+          "type": "string"
+        },
+        "base_url": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "model_id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ModelSelectorSection": {
+      "type": "object",
+      "properties": {
+        "default": {
+          "description": "Name of the entry in `[[models]]` to use by default.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "ObsSection": {
+      "type": "object",
+      "properties": {
+        "backend": {
+          "description": "`stderr` | `file` | `otel` | `none`. Maps to `RA_OBS_BACKEND`. Empty string treated as unset.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "otel_endpoint": {
+          "description": "OTLP endpoint when backend=otel. Equivalent of `OTEL_EXPORTER_OTLP_ENDPOINT`.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "PromptsSection": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "default": true,
+          "type": "boolean"
+        },
+        "paths": {
+          "description": "Glob patterns. Each match becomes a slash command named after the file stem.",
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "ResourcesSection": {
+      "description": "`[resources]` — extra plain-text files concatenated into the system prompt verbatim. Less structured than `[skills]`; useful for ad-hoc system prompts or repo conventions kept in a non-AGENTS.md file.",
+      "type": "object",
+      "properties": {
+        "append_system_prompt_paths": {
+          "description": "Additional files appended after the primary one.",
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "system_prompt_path": {
+          "description": "Optional path to a single primary system prompt file.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "RunSection": {
+      "type": "object",
+      "properties": {
+        "banner": {
+          "description": "Print the Ra banner on stderr at startup. Default true.",
+          "default": true,
+          "type": "boolean"
+        },
+        "data_dir": {
+          "description": "Root for ATIF trajectories, ATOF logs, etc. Defaults to `dirs::data_local_dir() / \"ra\"`.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "default_cwd": {
+          "description": "Default working directory used for session bucketing when an ACP client doesn't pin one. Defaults to `std::env::current_dir()`.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "SessionSection": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "description": "`default` | `plan` | `ask`.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "trajectory_dir": {
+          "description": "Override for the trajectory dir. Otherwise `<data_dir>/sessions`.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "SkillsSection": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "default": true,
+          "type": "boolean"
+        },
+        "paths": {
+          "description": "Glob patterns; expanded against `~` and the current working directory. Each match is loaded as a SKILL.md.",
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "ToolsSection": {
+      "type": "object",
+      "properties": {
+        "builtin": {
+          "description": "Builtin tool allow-list. Empty Vec = all enabled (default). Non-empty: only the listed names ship to the LLM.",
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

@@ -21,6 +21,11 @@ Authoritative schemas / specs for every protocol Ra speaks or persists to.
 | `atof-v0.1-samples.jsonl`         | Real captures from a live Ra prompt run                 | `~/.local/share/ra/obs/atof-<pid>.jsonl`                  | conformance set |
 | **graniet/llm — client SDK**      |                                                         |                                                           |           |
 | `graniet-llm-NOTES.md`            | Crate is not a protocol; pointer to backend specs       | hand-written                                              | n/a |
+| **HCP — Ra runtime config**       |                                                         |                                                           |           |
+| `hcp.json`                        | Upstream HCP RFC-0002 schema (Pi coding-agent)          | https://github.com/trotsky1997/hcp-sdk                    | reference |
+| `hcp-RFC.md`                      | RFC-0002 narrative                                      | upstream `docs/rfcs/0002-...md`                           | reference |
+| `ra-config.schema.json`           | Ra's own JSON Schema (HCP-flavored, factored down)      | generated via `cargo run --bin gen-schema`                | ✓ schemars derive |
+| `ra.toml.example`                 | Annotated example config covering every section         | hand-written                                              | tracks code |
 
 ## Regenerating
 
@@ -64,4 +69,12 @@ Pulled directly from the upstream `agent-client-protocol-schema` repo;
 re-clone and copy when bumping protocol version:
 ```bash
 cp /tmp/acp/schema/{schema.json,schema.unstable.json,meta.json,meta.unstable.json} spec/
+```
+
+### Ra runtime config
+The `ra-config.schema.json` is generated from the live Rust types
+(`schemars` derive on `RaConfig` and friends) — re-run after touching
+`src/config.rs`:
+```bash
+cargo run --bin gen-schema > spec/ra-config.schema.json
 ```

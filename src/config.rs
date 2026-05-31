@@ -15,12 +15,13 @@
 //! reproduce; existing env-only deployments are unchanged.
 
 use anyhow::{Context, Result};
+use schemars::JsonSchema;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
 /// The whole config file. All sections are optional so a minimal
 /// `version = 1` document is a valid Ra config.
-#[derive(Debug, Default, Clone, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RaConfig {
     /// Schema version. Currently 1; future breaks bump it.
@@ -59,7 +60,7 @@ fn default_version() -> u32 {
     1
 }
 
-#[derive(Debug, Default, Clone, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RunSection {
     /// Print the Ra banner on stderr at startup. Default true.
@@ -79,7 +80,7 @@ fn default_true() -> bool {
     true
 }
 
-#[derive(Debug, Default, Clone, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ObsSection {
     /// `stderr` | `file` | `otel` | `none`. Maps to `RA_OBS_BACKEND`.
@@ -92,7 +93,7 @@ pub struct ObsSection {
     pub otel_endpoint: Option<String>,
 }
 
-#[derive(Debug, Default, Clone, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ModelSelectorSection {
     /// Name of the entry in `[[models]]` to use by default.
@@ -102,7 +103,7 @@ pub struct ModelSelectorSection {
 
 /// One entry in `[[models]]`. Mirrors HCP's `[model]` shape but lifted
 /// into an array so Ra can advertise a catalog at session/new time.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ModelEntrySection {
     pub name: String,
@@ -120,7 +121,7 @@ pub struct ModelEntrySection {
     pub api_key: Option<String>,
 }
 
-#[derive(Debug, Default, Clone, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ToolsSection {
     /// Builtin tool allow-list. Empty Vec = all enabled (default).
@@ -129,7 +130,7 @@ pub struct ToolsSection {
     pub builtin: Vec<String>,
 }
 
-#[derive(Debug, Default, Clone, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SkillsSection {
     #[serde(default = "default_true")]
@@ -140,7 +141,7 @@ pub struct SkillsSection {
     pub paths: Vec<String>,
 }
 
-#[derive(Debug, Default, Clone, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PromptsSection {
     #[serde(default = "default_true")]
@@ -151,7 +152,7 @@ pub struct PromptsSection {
     pub paths: Vec<String>,
 }
 
-#[derive(Debug, Default, Clone, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct A2aSection {
     #[serde(default)]
@@ -160,7 +161,7 @@ pub struct A2aSection {
     pub remote_agents: Vec<A2aRemoteAgent>,
 }
 
-#[derive(Debug, Default, Clone, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct A2aServeSection {
     #[serde(default)]
@@ -169,7 +170,7 @@ pub struct A2aServeSection {
     pub grpc_port: Option<u16>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct A2aRemoteAgent {
     pub name: String,
@@ -178,7 +179,7 @@ pub struct A2aRemoteAgent {
     pub auth: Option<AuthSpec>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AuthSpec {
     /// Env var holding a Bearer token to send as `Authorization`.
@@ -186,14 +187,14 @@ pub struct AuthSpec {
     pub bearer_env: Option<String>,
 }
 
-#[derive(Debug, Default, Clone, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct McpSection {
     #[serde(default)]
     pub servers: Vec<McpServer>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct McpServer {
     pub name: String,
@@ -220,7 +221,7 @@ fn default_stdio() -> String {
     "stdio".to_string()
 }
 
-#[derive(Debug, Default, Clone, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SessionSection {
     /// `default` | `plan` | `ask`.
@@ -231,7 +232,7 @@ pub struct SessionSection {
     pub trajectory_dir: Option<String>,
 }
 
-#[derive(Debug, Default, Clone, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct HooksSection {
     #[serde(default)]
@@ -244,7 +245,7 @@ pub struct HooksSection {
     pub agent_end: Vec<Hook>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Hook {
     /// Regex matched against the tool name (PreToolUse/PostToolUse) or
@@ -273,7 +274,7 @@ fn default_hook_timeout() -> f64 {
 /// We walk the cwd up to the git root and concatenate every AGENTS.md
 /// we find, "nearest-file-wins" by ordering them root→leaf so deeper
 /// files appear later in the system prompt and override.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AgentsMdSection {
     /// Default true. Set false to disable AGENTS.md auto-discovery
@@ -291,7 +292,7 @@ impl Default for AgentsMdSection {
 /// `[resources]` — extra plain-text files concatenated into the system
 /// prompt verbatim. Less structured than `[skills]`; useful for ad-hoc
 /// system prompts or repo conventions kept in a non-AGENTS.md file.
-#[derive(Debug, Default, Clone, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ResourcesSection {
     /// Optional path to a single primary system prompt file.

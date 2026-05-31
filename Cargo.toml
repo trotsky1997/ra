@@ -12,6 +12,10 @@ path = "src/lib.rs"
 name = "ra"
 path = "src/main.rs"
 
+[[bin]]
+name = "gen-schema"
+path = "src/bin/gen-schema.rs"
+
 [dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "process", "io-util", "io-std", "fs", "time"] }
 serde = { version = "1", features = ["derive"] }

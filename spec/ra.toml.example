@@ -1,0 +1,107 @@
+# Sample Ra config — drop me at ~/.ra.toml or pass --config
+
+version = 1
+
+# ─── Run / data dirs ────────────────────────────────────────────────
+[run]
+banner = true
+# data_dir = "~/.local/share/ra"   # ATIF + ATOF root
+# default_cwd = "."
+
+# ─── Observability ──────────────────────────────────────────────────
+[obs]
+backend = "stderr"                 # stderr | file | otel | none
+# otel_endpoint = "http://localhost:4318"
+
+# ─── Models ─────────────────────────────────────────────────────────
+[model]
+default = "pi"                     # picks one of [[models]] below
+
+[[models]]
+name        = "pi"
+backend     = "openai"
+model_id    = "gpt-5.5"
+base_url    = "https://pi-api-us.macaron.xin/v1/"
+api_key_env = "PI_API_KEY"
+
+[[models]]
+name        = "anthropic"
+backend     = "anthropic"
+model_id    = "claude-opus-4-5"
+api_key_env = "ANTHROPIC_API_KEY"
+
+# ─── Tools allow-list (empty = all builtins enabled) ────────────────
+[tools]
+builtin = ["read", "bash"]
+
+# ─── Skills (agentskills.io v1) ─────────────────────────────────────
+[skills]
+enabled = true
+paths = [
+  "./skills/**/SKILL.md",
+  "~/.ra/skills/**/SKILL.md",
+]
+
+# ─── Prompt templates → slash commands ──────────────────────────────
+[prompts]
+enabled = true
+paths = [
+  "./prompts/*.md",
+  "~/.ra/prompts/*.md",
+]
+
+# ─── AGENTS.md auto-discovery (agents.md) ───────────────────────────
+[agents_md]
+enabled = true
+
+# ─── A2A (server + remote agents) ───────────────────────────────────
+[a2a.serve]
+http_port = 3000
+grpc_port = 50051
+
+# [[a2a.remote_agents]]
+# name = "helper"
+# url  = "http://localhost:3001"
+# auth.bearer_env = "HELPER_TOKEN"
+
+# ─── MCP servers ────────────────────────────────────────────────────
+# [[mcp.servers]]
+# name      = "fs"
+# transport = "stdio"
+# command   = "npx"
+# args      = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+
+# [[mcp.servers]]
+# name      = "github"
+# transport = "http"
+# url       = "http://localhost:3030/mcp"
+# auth.bearer_env = "GH_TOKEN"
+
+# ─── Lifecycle hooks ────────────────────────────────────────────────
+# [[hooks.pre_tool_use]]
+# matcher    = "bash"          # regex against tool name
+# command    = "./hooks/audit.sh"
+# timeout_s  = 2.0
+# run_async  = false
+
+# [[hooks.post_tool_use]]
+# matcher = ".*"
+# command = "./hooks/log.sh"
+
+# [[hooks.user_prompt_submit]]
+# matcher = ".*"
+# command = "./hooks/sanitize.sh"
+
+# [[hooks.agent_end]]
+# matcher = ".*"
+# command = "./hooks/cleanup.sh"
+
+# ─── Session ────────────────────────────────────────────────────────
+[session]
+mode = "default"                   # default | plan | ask
+# trajectory_dir = "~/.local/share/ra/sessions"
+
+# ─── Plain-text resources (system prompt files) ─────────────────────
+# [resources]
+# system_prompt_path = "./prompts/system.md"
+# append_system_prompt_paths = ["./prompts/style.md"]

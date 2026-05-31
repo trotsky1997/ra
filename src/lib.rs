@@ -7,6 +7,7 @@ pub mod config;
 pub mod events;
 pub mod hooks;
 pub mod llm_model;
+pub mod mcp;
 pub mod model;
 pub mod nemo_obs;
 pub mod session;

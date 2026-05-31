@@ -303,6 +303,7 @@ async fn run_acp(config: &ra::config::RaConfig) -> anyhow::Result<()> {
     let (model, factory) = build_model(config);
     let mut extra_tools = ra::a2a_tool::load_remote_tools_from_env().await;
     extra_tools.extend(load_a2a_tools_from_config(config).await);
+    extra_tools.extend(ra::mcp::load_mcp_tools(&config.mcp.servers).await);
     let (system_prompt, prompt_templates) = load_skills_and_prompts(config);
     let hooks = build_hooks(config);
     ra::acp_server::run(model, factory, extra_tools, system_prompt, prompt_templates, hooks)
@@ -325,6 +326,7 @@ async fn run_serve(
     let (model, factory) = build_model(config);
     let mut extra_tools = ra::a2a_tool::load_remote_tools_from_env().await;
     extra_tools.extend(load_a2a_tools_from_config(config).await);
+    extra_tools.extend(ra::mcp::load_mcp_tools(&config.mcp.servers).await);
     let (system_prompt, prompt_templates) = load_skills_and_prompts(config);
     let hooks = build_hooks(config);
     ra::a2a_server::run(

@@ -36,6 +36,7 @@ tiktoken-rs = "0.11"
 toml = "0.8"
 serde_yaml = "0.9"
 regex = "1"
+rmcp = { version = "1.7", features = ["client", "transport-child-process", "transport-streamable-http-client", "transport-streamable-http-client-reqwest"] }
 globset = "0.4"
 shellexpand = "3"
 nemo-relay = { git = "https://github.com/NVIDIA/NeMo-Relay.git", branch = "main" }

@@ -56,8 +56,13 @@ pub struct ToolSpec {
 /// 一个完全本地的假模型，方便不挂 API key 也能看到完整 turn loop。
 ///
 /// 规则：
-/// - 用户最后一条消息以 `bash:` 开头  → 发起 bash 调用
-/// - 用户最后一条消息以 `read:` 开头  → 发起 read 调用
+/// - 用户最后一条消息以 `bash:`  开头  → 发起 bash 调用
+/// - 用户最后一条消息以 `read:`  开头  → 发起 read 调用
+/// - `write:<path>|<content>`           → 发起 write 调用
+/// - `edit:<path>|<old>|<new>`          → 发起 edit 调用
+/// - `grep:<pattern>[ <path>]`          → 发起 grep 调用
+/// - `find:<pattern>[ <path>]`          → 发起 find 调用
+/// - `ls:[<path>]`                       → 发起 ls 调用
 /// - 上一条是 ToolResult                → 把结果转述一下并结束
 /// - 否则                                → 按字符流式回显
 pub struct MockModel;
@@ -105,6 +110,102 @@ impl Model for MockModel {
                         id: format!("call_{}", rand_id()),
                         name: "read".into(),
                         input: serde_json::json!({ "path": path }),
+                    }),
+                    ModelChunk::End { stop_reason: StopReason::ToolUse },
+                ]
+            }
+            Some(Message::User { content }) if content.starts_with("write:") => {
+                // write:<path>|<content>
+                let body = content.trim_start_matches("write:").trim_start();
+                let (path, text) = body.split_once('|').unwrap_or((body, ""));
+                vec![
+                    ModelChunk::TextDelta(format!("Writing {}...\n", path)),
+                    ModelChunk::ToolCall(ToolCall {
+                        id: format!("call_{}", rand_id()),
+                        name: "write".into(),
+                        input: serde_json::json!({
+                            "path": path.trim(),
+                            "content": text,
+                        }),
+                    }),
+                    ModelChunk::End { stop_reason: StopReason::ToolUse },
+                ]
+            }
+            Some(Message::User { content }) if content.starts_with("edit:") => {
+                // edit:<path>|<old>|<new>
+                let body = content.trim_start_matches("edit:").trim_start();
+                let mut parts = body.splitn(3, '|');
+                let path = parts.next().unwrap_or("").trim();
+                let old = parts.next().unwrap_or("");
+                let new_s = parts.next().unwrap_or("");
+                vec![
+                    ModelChunk::TextDelta(format!("Editing {}...\n", path)),
+                    ModelChunk::ToolCall(ToolCall {
+                        id: format!("call_{}", rand_id()),
+                        name: "edit".into(),
+                        input: serde_json::json!({
+                            "path": path,
+                            "old_string": old,
+                            "new_string": new_s,
+                        }),
+                    }),
+                    ModelChunk::End { stop_reason: StopReason::ToolUse },
+                ]
+            }
+            Some(Message::User { content }) if content.starts_with("grep:") => {
+                // grep:<pattern>[ <path>]
+                let body = content.trim_start_matches("grep:").trim();
+                let (pat, path) = match body.find(' ') {
+                    Some(idx) => (&body[..idx], Some(body[idx + 1..].trim().to_string())),
+                    None => (body, None),
+                };
+                let mut input = serde_json::json!({ "pattern": pat });
+                if let Some(p) = path {
+                    input["path"] = serde_json::Value::String(p);
+                }
+                vec![
+                    ModelChunk::TextDelta(format!("Grepping for {}...\n", pat)),
+                    ModelChunk::ToolCall(ToolCall {
+                        id: format!("call_{}", rand_id()),
+                        name: "grep".into(),
+                        input,
+                    }),
+                    ModelChunk::End { stop_reason: StopReason::ToolUse },
+                ]
+            }
+            Some(Message::User { content }) if content.starts_with("find:") => {
+                // find:<pattern>[ <path>]
+                let body = content.trim_start_matches("find:").trim();
+                let (pat, path) = match body.find(' ') {
+                    Some(idx) => (&body[..idx], Some(body[idx + 1..].trim().to_string())),
+                    None => (body, None),
+                };
+                let mut input = serde_json::json!({ "pattern": pat });
+                if let Some(p) = path {
+                    input["path"] = serde_json::Value::String(p);
+                }
+                vec![
+                    ModelChunk::TextDelta(format!("Finding {}...\n", pat)),
+                    ModelChunk::ToolCall(ToolCall {
+                        id: format!("call_{}", rand_id()),
+                        name: "find".into(),
+                        input,
+                    }),
+                    ModelChunk::End { stop_reason: StopReason::ToolUse },
+                ]
+            }
+            Some(Message::User { content }) if content.starts_with("ls:") => {
+                let path = content.trim_start_matches("ls:").trim().to_string();
+                let mut input = serde_json::json!({});
+                if !path.is_empty() {
+                    input["path"] = serde_json::Value::String(path.clone());
+                }
+                vec![
+                    ModelChunk::TextDelta(format!("Listing {}...\n", path)),
+                    ModelChunk::ToolCall(ToolCall {
+                        id: format!("call_{}", rand_id()),
+                        name: "ls".into(),
+                        input,
                     }),
                     ModelChunk::End { stop_reason: StopReason::ToolUse },
                 ]

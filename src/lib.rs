@@ -22,4 +22,6 @@ pub use llm_model::{LlmModel, LlmModelConfig};
 pub use model::{Message, MockModel, Model, ModelChunk, StopReason, ToolSpec};
 pub use session::{PromptOutcome, Session};
 pub use tool_ctx::{ClientHandle, PermissionOutcome, TerminalRunResult, ToolCtx};
-pub use tools::{BashTool, ReadTool, Tool};
+pub use tools::{
+    default_builtins, BashTool, EditTool, FindTool, GrepTool, LsTool, ReadTool, Tool, WriteTool,
+};

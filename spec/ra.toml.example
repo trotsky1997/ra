@@ -31,8 +31,20 @@ model_id    = "claude-opus-4-5"
 api_key_env = "ANTHROPIC_API_KEY"
 
 # ─── Tools allow-list (empty = all builtins enabled) ────────────────
+# Available builtins:
+#   read   — read a file (ACP fs reverse-call when host editor is connected)
+#   write  — write a file
+#   edit   — replace a literal substring inside a file (Claude Code shape)
+#   bash   — run a shell command (ACP terminal reverse-call when available)
+#   grep   — search file contents via ripgrep (rg)         [needs `rg`]
+#   find   — find files by name via fd                     [needs `fd`/`fdfind`]
+#   ls     — list directory via eza (or exa)               [needs `eza`/`exa`]
+# An empty list (or omitted section) ships every tool whose external
+# binary is on PATH; missing binaries are logged once at startup and
+# the tool is silently dropped.
 [tools]
-builtin = ["read", "bash"]
+# builtin = ["read", "write", "edit", "bash", "grep", "find", "ls"]
+builtin = []
 
 # ─── Skills (agentskills.io v1) ─────────────────────────────────────
 [skills]

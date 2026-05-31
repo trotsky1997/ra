@@ -46,7 +46,7 @@ use crate::nemo_obs;
 use crate::session::Session;
 use crate::session_runner::{RunOutcome, RunnerEvent, RunnerHost, SessionRunner};
 use crate::store::SessionStore;
-use crate::tools::{BashTool, ReadTool, Tool};
+use crate::tools::Tool;
 
 /// Top-level A2A server state. Mirrors `acp_server::SharedState` but
 /// trimmed to only what the A2A path needs (no AcpClientHandle wiring,
@@ -76,8 +76,10 @@ impl A2aState {
         prompt_templates: Arc<std::collections::HashMap<String, String>>,
         hooks: Option<Arc<crate::hooks::HookEngine>>,
     ) -> Self {
-        let mut tools: Vec<Arc<dyn Tool>> = vec![Arc::new(ReadTool), Arc::new(BashTool)];
-        tools.extend(extra_tools);
+        // Full tool catalog supplied by the caller (main.rs); see
+        // `tools::default_builtins` for the allow-list filter and missing
+        // external-binary detection.
+        let tools = extra_tools;
         Self {
             model,
             model_factory,

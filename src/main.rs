@@ -3,7 +3,7 @@ use std::sync::Arc;
 use clap::{Parser, Subcommand};
 use llm::builder::LLMBackend;
 use ra::{
-    acp_server::ModelFactory, BashTool, Event, LlmModel, LlmModelConfig, MockModel, Model, ReadTool,
+    acp_server::ModelFactory, default_builtins, Event, LlmModel, LlmModelConfig, MockModel, Model,
     Session,
 };
 use tokio::io::{self, AsyncWriteExt};
@@ -312,7 +312,8 @@ async fn run_acp(config: &ra::config::RaConfig) -> anyhow::Result<()> {
     }
     eprintln!("[ra] starting ACP server on stdio (protocol v1)");
     let (model, factory) = build_model(config);
-    let mut extra_tools = ra::a2a_tool::load_remote_tools_from_env().await;
+    let mut extra_tools = default_builtins(&config.tools.builtin);
+    extra_tools.extend(ra::a2a_tool::load_remote_tools_from_env().await);
     extra_tools.extend(load_a2a_tools_from_config(config).await);
     extra_tools.extend(ra::mcp::load_mcp_tools(&config.mcp.servers).await);
     let (system_prompt, prompt_templates) = load_skills_and_prompts(config);
@@ -335,7 +336,8 @@ async fn run_serve(
     }
     eprintln!("[ra] starting A2A server (HTTP :{http_port}, gRPC :{grpc_port})");
     let (model, factory) = build_model(config);
-    let mut extra_tools = ra::a2a_tool::load_remote_tools_from_env().await;
+    let mut extra_tools = default_builtins(&config.tools.builtin);
+    extra_tools.extend(ra::a2a_tool::load_remote_tools_from_env().await);
     extra_tools.extend(load_a2a_tools_from_config(config).await);
     extra_tools.extend(ra::mcp::load_mcp_tools(&config.mcp.servers).await);
     let (system_prompt, prompt_templates) = load_skills_and_prompts(config);
@@ -424,10 +426,7 @@ async fn run_print(prompt: Option<String>, config: &ra::config::RaConfig) -> any
     let (model, _factory) = build_model(config);
 
     let hooks = build_hooks(config);
-    let mut sess = Session::new(
-        model,
-        vec![Arc::new(ReadTool), Arc::new(BashTool)],
-    );
+    let mut sess = Session::new(model, default_builtins(&config.tools.builtin));
     if let Some(h) = hooks {
         sess = sess.with_hooks(h);
     }

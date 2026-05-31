@@ -53,7 +53,7 @@ use crate::session::Session;
 use crate::session_runner::{RunOutcome, RunnerEvent, RunnerHost, SessionRunner, ToolKindHint};
 use crate::store::SessionStore;
 use crate::tool_ctx::{ClientHandle, PermissionOutcome, TerminalRunResult};
-use crate::tools::{BashTool, ReadTool, Tool};
+use crate::tools::Tool;
 
 /// The mode catalogue Ra advertises. We don't actually change behavior between
 /// modes today; the field is mostly cosmetic and lets clients show a picker.
@@ -204,8 +204,10 @@ impl SharedState {
     ) -> Self {
         let available_models = model_factory.available();
         let default_cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
-        let mut tools: Vec<Arc<dyn Tool>> = vec![Arc::new(ReadTool), Arc::new(BashTool)];
-        tools.extend(extra_tools);
+        // The full tool catalog is passed in by the caller (main.rs) so the
+        // `[tools] builtin` allow-list and missing-binary detection live in
+        // one place. Empty input is allowed but unusual.
+        let tools = extra_tools;
         Self {
             model,
             model_factory,

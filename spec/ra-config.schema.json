@@ -101,6 +101,17 @@
     "A2aServeSection": {
       "type": "object",
       "properties": {
+        "auth": {
+          "description": "Optional Bearer token gate. When set, every JSON-RPC, REST, and gRPC request must carry `Authorization: Bearer <env-value>` (or the gRPC `authorization` metadata key). The well-known agent-card endpoint is exempted so unauthenticated callers can discover the auth scheme.",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AuthSpec"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "grpc_port": {
           "default": null,
           "type": [
@@ -168,9 +179,9 @@
           "default": false,
           "type": "boolean"
         },
-        "timeout_s": {
-          "description": "Hard timeout in seconds. Default 5.",
-          "default": 5.0,
+        "timeout": {
+          "description": "Hard timeout in seconds. Default 60. Accepted under `timeout` (Claude Code spelling) or the legacy `timeout_s`.",
+          "default": 60.0,
           "type": "number",
           "format": "double"
         }
@@ -180,25 +191,27 @@
     "HooksSection": {
       "type": "object",
       "properties": {
-        "agent_end": {
+        "PostToolUse": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/Hook"
           }
         },
-        "post_tool_use": {
+        "PreToolUse": {
+          "description": "PreToolUse hooks (Claude Code spec name). Also accepted under the legacy snake_case alias `pre_tool_use`.",
           "type": "array",
           "items": {
             "$ref": "#/definitions/Hook"
           }
         },
-        "pre_tool_use": {
+        "Stop": {
+          "description": "Claude Code calls this `Stop` (assistant finished). Legacy alias `agent_end` still works.",
           "type": "array",
           "items": {
             "$ref": "#/definitions/Hook"
           }
         },
-        "user_prompt_submit": {
+        "UserPromptSubmit": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/Hook"

@@ -78,21 +78,34 @@ grpc_port = 50051
 # auth.bearer_env = "GH_TOKEN"
 
 # ─── Lifecycle hooks ────────────────────────────────────────────────
-# [[hooks.pre_tool_use]]
-# matcher    = "bash"          # regex against tool name
-# command    = "./hooks/audit.sh"
-# timeout_s  = 2.0
-# run_async  = false
+# Wire format follows the Claude Code hooks spec
+# (https://code.claude.com/docs/en/hooks.md): the hook receives a JSON
+# payload on stdin (`hook_event_name`, `session_id`, `cwd`, `tool_name`,
+# `tool_input`, `tool_response`, `prompt`, …) and may print a JSON
+# decision on stdout (top-level `decision: "block"` + `reason`,
+# `hookSpecificOutput.permissionDecision: "deny"`,
+# `hookSpecificOutput.additionalContext`, `continue: false` + `stopReason`).
+# Exit code 2 also blocks; stderr becomes the reason.
+#
+# Legacy snake_case keys (`pre_tool_use`, `post_tool_use`,
+# `user_prompt_submit`, `agent_end`) and `timeout_s` are still accepted
+# as aliases for backwards-compatibility.
 
-# [[hooks.post_tool_use]]
+# [[hooks.PreToolUse]]
+# matcher = "bash"             # regex against tool name
+# command = "./hooks/audit.sh"
+# timeout = 2                  # seconds; default 60
+# run_async = false
+
+# [[hooks.PostToolUse]]
 # matcher = ".*"
 # command = "./hooks/log.sh"
 
-# [[hooks.user_prompt_submit]]
+# [[hooks.UserPromptSubmit]]
 # matcher = ".*"
 # command = "./hooks/sanitize.sh"
 
-# [[hooks.agent_end]]
+# [[hooks.Stop]]
 # matcher = ".*"
 # command = "./hooks/cleanup.sh"
 

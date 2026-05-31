@@ -242,14 +242,18 @@ pub struct SessionSection {
 #[derive(Debug, Default, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct HooksSection {
-    #[serde(default)]
+    /// PreToolUse hooks (Claude Code spec name). Also accepted under
+    /// the legacy snake_case alias `pre_tool_use`.
+    #[serde(default, alias = "pre_tool_use", rename = "PreToolUse")]
     pub pre_tool_use: Vec<Hook>,
-    #[serde(default)]
+    #[serde(default, alias = "post_tool_use", rename = "PostToolUse")]
     pub post_tool_use: Vec<Hook>,
-    #[serde(default)]
+    #[serde(default, alias = "user_prompt_submit", rename = "UserPromptSubmit")]
     pub user_prompt_submit: Vec<Hook>,
-    #[serde(default)]
-    pub agent_end: Vec<Hook>,
+    /// Claude Code calls this `Stop` (assistant finished). Legacy alias
+    /// `agent_end` still works.
+    #[serde(default, alias = "agent_end", rename = "Stop")]
+    pub stop: Vec<Hook>,
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -261,11 +265,12 @@ pub struct Hook {
     pub matcher: String,
     /// Shell command to invoke. Receives the event JSON on stdin.
     pub command: String,
-    /// Hard timeout in seconds. Default 5.
-    #[serde(default = "default_hook_timeout")]
-    pub timeout_s: f64,
+    /// Hard timeout in seconds. Default 60. Accepted under `timeout`
+    /// (Claude Code spelling) or the legacy `timeout_s`.
+    #[serde(default = "default_hook_timeout", alias = "timeout_s")]
+    pub timeout: f64,
     /// Fire-and-forget: don't wait for response.
-    #[serde(default)]
+    #[serde(default, alias = "async")]
     pub run_async: bool,
 }
 
@@ -274,7 +279,7 @@ fn default_match_all() -> String {
 }
 
 fn default_hook_timeout() -> f64 {
-    5.0
+    60.0
 }
 
 /// `[agents_md]` — auto-discover AGENTS.md files (https://agents.md/).
@@ -454,10 +459,10 @@ args = ["@modelcontextprotocol/server-filesystem", "/tmp"]
 [session]
 mode = "default"
 
-[[hooks.pre_tool_use]]
+[[hooks.PreToolUse]]
 matcher = "bash"
 command = "./hooks/audit.sh"
-timeout_s = 2.0
+timeout = 2.0
 "#;
         let cfg: RaConfig = toml::from_str(toml_doc).unwrap();
         assert_eq!(cfg.models.len(), 1);
@@ -468,5 +473,26 @@ timeout_s = 2.0
         assert_eq!(cfg.mcp.servers.len(), 1);
         assert_eq!(cfg.hooks.pre_tool_use.len(), 1);
         assert_eq!(cfg.hooks.pre_tool_use[0].matcher, "bash");
+    }
+
+    #[test]
+    fn parse_legacy_hook_aliases() {
+        // Existing user configs use the snake_case names — they must
+        // keep working after the Claude-Code rename.
+        let toml_doc = r#"
+version = 1
+
+[[hooks.pre_tool_use]]
+matcher = "bash"
+command = "./hooks/audit.sh"
+timeout_s = 1.5
+
+[[hooks.agent_end]]
+command = "./hooks/cleanup.sh"
+"#;
+        let cfg: RaConfig = toml::from_str(toml_doc).unwrap();
+        assert_eq!(cfg.hooks.pre_tool_use.len(), 1);
+        assert!((cfg.hooks.pre_tool_use[0].timeout - 1.5).abs() < f64::EPSILON);
+        assert_eq!(cfg.hooks.stop.len(), 1);
     }
 }

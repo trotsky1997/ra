@@ -185,7 +185,7 @@ impl SessionRunner {
             // final state (including any TextDelta drained by the bus
             // race in run_input_inner).
             if let Some(hooks) = self.session.hooks() {
-                hooks.agent_end(Some(&self.session_id)).await;
+                hooks.stop(Some(&self.session_id)).await;
             }
             result
         })
@@ -200,16 +200,27 @@ impl SessionRunner {
     {
         on_event(RunnerEvent::Started);
 
-        // UserPromptSubmit hook (if any). A deny short-circuits the
+        // UserPromptSubmit hook (if any). A block short-circuits the
         // whole turn loop and surfaces the reason as agent text.
+        // `additionalContext` is prepended as a system-style preamble to
+        // the user prompt so the model sees it on the same turn.
+        let mut user_text = user_text;
         if let Some(hooks) = self.session.hooks() {
-            if let Some(reason) = hooks
+            let decision = hooks
                 .user_prompt_submit(Some(&self.session_id), &user_text)
-                .await
-            {
-                on_event(RunnerEvent::TextDelta(format!("[denied by hook] {reason}")));
-                hooks.agent_end(Some(&self.session_id)).await;
+                .await;
+            if let Some(reason) = decision.stop.clone() {
+                on_event(RunnerEvent::TextDelta(format!("[stopped by hook] {reason}")));
+                hooks.stop(Some(&self.session_id)).await;
                 return RunOutcome::Failed(reason);
+            }
+            if let Some(reason) = decision.block.clone() {
+                on_event(RunnerEvent::TextDelta(format!("[blocked by hook] {reason}")));
+                hooks.stop(Some(&self.session_id)).await;
+                return RunOutcome::Failed(reason);
+            }
+            if let Some(extra) = decision.additional_context {
+                user_text = format!("[hook context]\n{extra}\n\n{user_text}");
             }
         }
 

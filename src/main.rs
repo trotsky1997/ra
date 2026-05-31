@@ -423,10 +423,15 @@ async fn run_print(prompt: Option<String>, config: &ra::config::RaConfig) -> any
     let prompt = prompt.unwrap_or_else(|| "bash:echo hello from ra && uname -sr".to_string());
     let (model, _factory) = build_model(config);
 
-    let session = Arc::new(Session::new(
+    let hooks = build_hooks(config);
+    let mut sess = Session::new(
         model,
         vec![Arc::new(ReadTool), Arc::new(BashTool)],
-    ));
+    );
+    if let Some(h) = hooks {
+        sess = sess.with_hooks(h);
+    }
+    let session = Arc::new(sess);
 
     let mut rx = session.subscribe();
     let printer = tokio::spawn(async move {

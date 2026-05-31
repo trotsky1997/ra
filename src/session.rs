@@ -319,12 +319,12 @@ impl Session {
                 .clone();
 
             // PreToolUse hook: any deny short-circuits the tool entirely.
-            let pre_deny = if let Some(h) = &self.hooks {
+            let pre_decision = if let Some(h) = &self.hooks {
                 h.pre_tool_use(self.session_id.as_deref(), &call.name, &call.input).await
             } else {
-                None
+                crate::hooks::HookDecision::allow()
             };
-            if let Some(reason) = pre_deny {
+            if let Some(reason) = pre_decision.block.clone() {
                 let result = ToolResult {
                     call_id: call.id.clone(),
                     is_error: true,
@@ -354,9 +354,15 @@ impl Session {
                 },
             };
 
-            // PostToolUse hook: may rewrite the output text.
+            // Splice PreToolUse `additionalContext` next to the result so
+            // the model sees it on the next turn.
+            if let Some(extra) = pre_decision.additional_context {
+                result.content = format!("{}\n\n[hook context]\n{extra}", result.content);
+            }
+
+            // PostToolUse hook: may block, kill, or append context.
             if let Some(h) = &self.hooks {
-                let new_content = h
+                let post = h
                     .post_tool_use(
                         self.session_id.as_deref(),
                         &call.name,
@@ -364,8 +370,13 @@ impl Session {
                         &result.content,
                     )
                     .await;
-                if new_content != result.content {
-                    result.content = new_content;
+                if let Some(reason) = post.block {
+                    result.is_error = true;
+                    result.content =
+                        format!("{}\n\n[blocked by PostToolUse hook] {reason}", result.content);
+                }
+                if let Some(extra) = post.additional_context {
+                    result.content = format!("{}\n\n[hook context]\n{extra}", result.content);
                 }
             }
 

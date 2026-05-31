@@ -218,15 +218,8 @@ src/
 
 ## Project status
 
-Working: streaming text + parallel tool calls + multi-turn tool loop,
-real LLM backends (Anthropic / OpenAI / Google / pi / …), ACP v1
-end-to-end, A2A bidirectional, MCP stdio + HTTP, ATIF/ATOF on disk,
-**session resumption from a saved trajectory** (`ra resume <id>` /
-`ra sessions`, plus auto-resume on the A2A path), HCP TOML config,
-skills/prompts/AGENTS.md system-prompt unification, native
-[skills.sh](https://github.com/vercel-labs/skills) discovery,
-Claude-Code-shaped hooks, optional Bearer auth on A2A serve, RTK
-output compression, **interactive TUI behind `--features tui`**.
-
-Not yet: internal-Rust replacements for ripgrep / fd / eza
-(planned).
+What's done, what's next, and the anti-roadmap (deliberate non-goals)
+all live in [ROADMAP.md](ROADMAP.md). Contributors and AI coding
+agents working on this repo should also read [CLAUDE.md](CLAUDE.md)
+for build commands, project conventions, and the load-bearing
+invariants of the hot files.

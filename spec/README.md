@@ -2,6 +2,11 @@
 
 Authoritative schemas / specs for every protocol Ra speaks or persists to.
 
+> **Looking for something else?** The project status and what's next
+> live in [`../ROADMAP.md`](../ROADMAP.md); build commands and project
+> conventions are in [`../CLAUDE.md`](../CLAUDE.md); the runtime tool
+> reference is [`tools.md`](tools.md).
+
 | File                              | What                                                    | Origin                                                    | Validated |
 |-----------------------------------|---------------------------------------------------------|-----------------------------------------------------------|-----------|
 | **ACP — Agent Client Protocol**   |                                                         |                                                           |           |

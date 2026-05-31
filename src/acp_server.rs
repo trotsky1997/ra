@@ -173,6 +173,12 @@ struct SharedState {
     /// Default cwd for `session/list` when the client doesn't pin one.
     /// We treat the agent's launch cwd as a sensible fallback.
     default_cwd: PathBuf,
+    /// System prompt loaded from skills (if any). Injected into every
+    /// new Session at create_session time.
+    system_prompt: Option<String>,
+    /// Prompt templates keyed by slash-command name. Injected into the
+    /// SessionRunner so `/<name>` expands into LLM input.
+    prompt_templates: Arc<std::collections::HashMap<String, String>>,
 }
 
 /// Resolve a model id (sent by the client over `session/set_model`) to a `Model`
@@ -190,6 +196,8 @@ impl SharedState {
         model: Arc<dyn Model>,
         model_factory: Arc<dyn ModelFactory>,
         extra_tools: Vec<Arc<dyn Tool>>,
+        system_prompt: Option<String>,
+        prompt_templates: Arc<std::collections::HashMap<String, String>>,
     ) -> Self {
         let available_models = model_factory.available();
         let default_cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
@@ -203,10 +211,12 @@ impl SharedState {
             sessions: DashMap::new(),
             session_cwds: DashMap::new(),
             default_cwd,
+            system_prompt,
+            prompt_templates,
         }
     }
 
-    fn create_session(
+    async fn create_session(
         &self,
         id: &str,
         client: Arc<dyn ClientHandle>,
@@ -216,6 +226,9 @@ impl SharedState {
             Session::new(self.model.clone(), self.tools.clone())
                 .with_client(client, id.to_string()),
         );
+        if let Some(sp) = &self.system_prompt {
+            s.set_system_prompt(sp.clone()).await;
+        }
         self.sessions.insert(id.to_string(), s.clone());
         self.session_cwds.insert(id.to_string(), cwd);
         s
@@ -464,9 +477,17 @@ pub async fn run(
     model: Arc<dyn Model>,
     model_factory: Arc<dyn ModelFactory>,
     extra_tools: Vec<Arc<dyn Tool>>,
+    system_prompt: Option<String>,
+    prompt_templates: Arc<std::collections::HashMap<String, String>>,
 ) -> AcpResult<()> {
     crate::nemo_obs::init();
-    let state = Arc::new(SharedState::new(model, model_factory, extra_tools));
+    let state = Arc::new(SharedState::new(
+        model,
+        model_factory,
+        extra_tools,
+        system_prompt,
+        prompt_templates,
+    ));
 
     // Each handler closure is FnMut, so we clone the Arc into each one.
     let s_init = state.clone();
@@ -504,7 +525,7 @@ pub async fn run(
                 let id = format!("ra_{}", Ulid::new());
                 let handle: Arc<dyn ClientHandle> =
                     Arc::new(AcpClientHandle { cx: cx.clone() });
-                s_new.create_session(&id, handle, req.cwd.clone());
+                s_new.create_session(&id, handle, req.cwd.clone()).await;
                 // Persist an empty trajectory upfront so the session shows up
                 // in session/list immediately (not just after first prompt).
                 s_new.save_session(&id).await;
@@ -542,7 +563,8 @@ pub async fn run(
                 // owns the spawn body, slash dispatch, observability scope,
                 // event forwarding and final save.
                 let host: Arc<dyn RunnerHost> = s_prompt.clone();
-                let runner = SessionRunner::new(session, session_id.to_string(), host);
+                let runner = SessionRunner::new(session, session_id.to_string(), host)
+                    .with_prompt_templates(s_prompt.prompt_templates.clone());
 
                 let cx_for_task = cx.clone();
                 let session_id_for_cb = session_id.clone();
@@ -611,7 +633,7 @@ pub async fn run(
                 let new_id = format!("ra_{}", Ulid::new());
                 let handle: Arc<dyn ClientHandle> =
                     Arc::new(AcpClientHandle { cx: cx.clone() });
-                let child = s_fork.create_session(&new_id, handle, req.cwd.clone());
+                let child = s_fork.create_session(&new_id, handle, req.cwd.clone()).await;
                 let snapshot = parent.snapshot_messages().await;
                 child.restore_messages(snapshot).await;
                 s_fork.save_session(&new_id).await;
@@ -650,7 +672,7 @@ pub async fn run(
                 let messages = atif_codec::decode(&traj);
                 let handle: Arc<dyn ClientHandle> =
                     Arc::new(AcpClientHandle { cx: cx.clone() });
-                let session = s_load.create_session(&id, handle, cwd);
+                let session = s_load.create_session(&id, handle, cwd).await;
                 session.restore_messages(messages).await;
                 let resp = LoadSessionResponse::default();
                 responder.respond(resp)
@@ -734,7 +756,7 @@ pub async fn run(
                 let messages = atif_codec::decode(&traj);
                 let handle: Arc<dyn ClientHandle> =
                     Arc::new(AcpClientHandle { cx: cx.clone() });
-                let session = s_resume.create_session(&id, handle, cwd);
+                let session = s_resume.create_session(&id, handle, cwd).await;
                 session.restore_messages(messages).await;
                 let resp = ResumeSessionResponse::default();
                 responder.respond(resp)

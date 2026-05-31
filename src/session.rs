@@ -37,6 +37,9 @@ pub struct Session {
     /// value is stored as a JSON Value to round-trip both string-id and
     /// boolean payloads.
     config: RwLock<HashMap<String, serde_json::Value>>,
+    /// Optional system-style preamble prepended to every turn's history.
+    /// Populated from skill bodies; not part of the persisted message log.
+    system_prompt: RwLock<Option<String>>,
 }
 
 /// Result of one `prompt()` call.
@@ -65,7 +68,19 @@ impl Session {
             session_id: None,
             mode: RwLock::new("default".into()),
             config: RwLock::new(HashMap::new()),
+            system_prompt: RwLock::new(None),
         }
+    }
+
+    /// Set or replace the system-style preamble injected at the head of
+    /// every turn's history. Pass an empty string to clear.
+    pub async fn set_system_prompt(&self, sp: impl Into<String>) {
+        let s = sp.into();
+        *self.system_prompt.write().await = if s.is_empty() { None } else { Some(s) };
+    }
+
+    pub async fn system_prompt(&self) -> Option<String> {
+        self.system_prompt.read().await.clone()
     }
 
     /// Hot-swap the active model. Used by `session/set_model` (ACP unstable).
@@ -221,6 +236,18 @@ impl Session {
         let _ = self.tx.send(Event::TurnStart);
 
         let history = self.messages.lock().await.clone();
+        // Prepend the system-style preamble (if any) as a synthetic User
+        // message tagged with [SYSTEM]. graniet/llm's ChatRole only has
+        // User/Assistant, so we route system content through user with a
+        // marker; most providers cooperate.
+        let history = if let Some(sp) = self.system_prompt.read().await.clone() {
+            let mut h = Vec::with_capacity(history.len() + 1);
+            h.push(Message::User { content: format!("[SYSTEM]\n{sp}") });
+            h.extend(history);
+            h
+        } else {
+            history
+        };
         let specs: Vec<ToolSpec> = self
             .tools
             .values()

@@ -49,6 +49,10 @@ pub struct RaConfig {
     pub session: SessionSection,
     #[serde(default)]
     pub hooks: HooksSection,
+    #[serde(default)]
+    pub agents_md: AgentsMdSection,
+    #[serde(default)]
+    pub resources: ResourcesSection,
 }
 
 fn default_version() -> u32 {
@@ -263,6 +267,39 @@ fn default_match_all() -> String {
 
 fn default_hook_timeout() -> f64 {
     5.0
+}
+
+/// `[agents_md]` — auto-discover AGENTS.md files (https://agents.md/).
+/// We walk the cwd up to the git root and concatenate every AGENTS.md
+/// we find, "nearest-file-wins" by ordering them root→leaf so deeper
+/// files appear later in the system prompt and override.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentsMdSection {
+    /// Default true. Set false to disable AGENTS.md auto-discovery
+    /// (some projects ship one but want Ra to ignore it).
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+impl Default for AgentsMdSection {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
+/// `[resources]` — extra plain-text files concatenated into the system
+/// prompt verbatim. Less structured than `[skills]`; useful for ad-hoc
+/// system prompts or repo conventions kept in a non-AGENTS.md file.
+#[derive(Debug, Default, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResourcesSection {
+    /// Optional path to a single primary system prompt file.
+    #[serde(default)]
+    pub system_prompt_path: Option<String>,
+    /// Additional files appended after the primary one.
+    #[serde(default)]
+    pub append_system_prompt_paths: Vec<String>,
 }
 
 // ---------- loading -----------------------------------------------------

@@ -59,6 +59,10 @@ pub struct A2aState {
     /// Map task_id → live Ra Session. A2A `Task` ↔ Ra `Session`.
     sessions: DashMap<String, Arc<Session>>,
     cwd: std::path::PathBuf,
+    /// System prompt seeded into every new Session, mirroring acp_server.
+    system_prompt: Option<String>,
+    /// Slash command templates handed to the SessionRunner.
+    prompt_templates: Arc<std::collections::HashMap<String, String>>,
 }
 
 impl A2aState {
@@ -66,6 +70,8 @@ impl A2aState {
         model: Arc<dyn Model>,
         model_factory: Arc<dyn ModelFactory>,
         extra_tools: Vec<Arc<dyn Tool>>,
+        system_prompt: Option<String>,
+        prompt_templates: Arc<std::collections::HashMap<String, String>>,
     ) -> Self {
         let mut tools: Vec<Arc<dyn Tool>> = vec![Arc::new(ReadTool), Arc::new(BashTool)];
         tools.extend(extra_tools);
@@ -75,14 +81,19 @@ impl A2aState {
             tools,
             sessions: DashMap::new(),
             cwd: std::env::current_dir().unwrap_or_else(|_| "/".into()),
+            system_prompt,
+            prompt_templates,
         }
     }
 
-    fn get_or_create(&self, task_id: &str) -> Arc<Session> {
+    async fn get_or_create(&self, task_id: &str) -> Arc<Session> {
         if let Some(s) = self.sessions.get(task_id) {
             return s.clone();
         }
         let s = Arc::new(Session::new(self.model.clone(), self.tools.clone()));
+        if let Some(sp) = &self.system_prompt {
+            s.set_system_prompt(sp.clone()).await;
+        }
         self.sessions.insert(task_id.to_string(), s.clone());
         s
     }
@@ -166,9 +177,10 @@ impl AgentExecutor for RaExecutor {
         let task_id_for_run = task_id.clone();
         let context_id_for_run = context_id.clone();
         tokio::spawn(async move {
-            let session = state.get_or_create(&task_id_for_run);
+            let session = state.get_or_create(&task_id_for_run).await;
             let host: Arc<dyn RunnerHost> = state.clone();
-            let runner = SessionRunner::new(session, task_id_for_run.to_string(), host);
+            let runner = SessionRunner::new(session, task_id_for_run.to_string(), host)
+                .with_prompt_templates(state.prompt_templates.clone());
 
             let mut accumulated = String::new();
             let outcome = runner
@@ -337,10 +349,18 @@ pub async fn run(
     http_port: u16,
     grpc_port: u16,
     extra_tools: Vec<Arc<dyn Tool>>,
+    system_prompt: Option<String>,
+    prompt_templates: Arc<std::collections::HashMap<String, String>>,
 ) -> Result<()> {
     nemo_obs::init();
 
-    let state = Arc::new(A2aState::new(model, model_factory, extra_tools));
+    let state = Arc::new(A2aState::new(
+        model,
+        model_factory,
+        extra_tools,
+        system_prompt,
+        prompt_templates,
+    ));
     let executor = RaExecutor { state: state.clone() };
     let handler = Arc::new(DefaultRequestHandler::new(executor, InMemoryTaskStore::new()));
 

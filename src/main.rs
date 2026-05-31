@@ -303,7 +303,8 @@ async fn run_acp(config: &ra::config::RaConfig) -> anyhow::Result<()> {
     let (model, factory) = build_model(config);
     let mut extra_tools = ra::a2a_tool::load_remote_tools_from_env().await;
     extra_tools.extend(load_a2a_tools_from_config(config).await);
-    ra::acp_server::run(model, factory, extra_tools)
+    let (system_prompt, prompt_templates) = load_skills_and_prompts(config);
+    ra::acp_server::run(model, factory, extra_tools, system_prompt, prompt_templates)
         .await
         .map_err(|e| anyhow::anyhow!("{e:?}"))?;
     Ok(())
@@ -323,7 +324,60 @@ async fn run_serve(
     let (model, factory) = build_model(config);
     let mut extra_tools = ra::a2a_tool::load_remote_tools_from_env().await;
     extra_tools.extend(load_a2a_tools_from_config(config).await);
-    ra::a2a_server::run(model, factory, http_port, grpc_port, extra_tools).await
+    let (system_prompt, prompt_templates) = load_skills_and_prompts(config);
+    ra::a2a_server::run(
+        model,
+        factory,
+        http_port,
+        grpc_port,
+        extra_tools,
+        system_prompt,
+        prompt_templates,
+    )
+    .await
+}
+
+/// Read `[skills]`, `[prompts]`, `[agents_md]`, and `[resources]` and
+/// return the composed system prompt + slash-template map.
+fn load_skills_and_prompts(
+    config: &ra::config::RaConfig,
+) -> (Option<String>, Arc<std::collections::HashMap<String, String>>) {
+    let mut bundle = ra::skills::ResourceBundle::default();
+
+    if config.skills.enabled && !config.skills.paths.is_empty() {
+        bundle.skills = ra::skills::load_skills(&config.skills.paths);
+        if !bundle.skills.is_empty() {
+            eprintln!("[ra] loaded {} skill(s)", bundle.skills.len());
+        }
+    }
+    if config.prompts.enabled {
+        bundle.prompts = ra::skills::load_prompts(&config.prompts.paths);
+        if !bundle.prompts.is_empty() {
+            eprintln!("[ra] loaded {} prompt template(s)", bundle.prompts.len());
+        }
+    }
+    if config.agents_md.enabled {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
+        bundle.agents_md = ra::skills::discover_agents_md(&cwd);
+        if !bundle.agents_md.is_empty() {
+            eprintln!("[ra] discovered {} AGENTS.md file(s)", bundle.agents_md.len());
+        }
+    }
+    let mut plain_paths = Vec::new();
+    if let Some(p) = &config.resources.system_prompt_path {
+        plain_paths.push(p.clone());
+    }
+    plain_paths.extend(config.resources.append_system_prompt_paths.clone());
+    if !plain_paths.is_empty() {
+        bundle.plain = ra::skills::load_plain_resources(&plain_paths);
+        if !bundle.plain.is_empty() {
+            eprintln!("[ra] loaded {} plain resource(s)", bundle.plain.len());
+        }
+    }
+
+    let system_prompt = bundle.build_system_prompt();
+    let templates = bundle.prompt_map();
+    (system_prompt, Arc::new(templates))
 }
 
 async fn run_print(prompt: Option<String>, config: &ra::config::RaConfig) -> anyhow::Result<()> {

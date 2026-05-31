@@ -10,6 +10,7 @@ pub mod model;
 pub mod nemo_obs;
 pub mod session;
 pub mod session_runner;
+pub mod skills;
 pub mod store;
 pub mod tool_ctx;
 pub mod tools;

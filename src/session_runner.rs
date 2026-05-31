@@ -102,7 +102,7 @@ struct SlashCommand {
 
 const SLASH_COMMANDS: &[&str] = &["clear", "compact", "models", "mode"];
 
-fn parse_slash_command(text: &str) -> Option<SlashCommand> {
+fn parse_slash_command(text: &str, extra_names: &[&str]) -> Option<SlashCommand> {
     let trimmed = text.trim_start();
     let rest = trimmed.strip_prefix('/')?;
     if rest.is_empty() {
@@ -113,7 +113,9 @@ fn parse_slash_command(text: &str) -> Option<SlashCommand> {
         None => (rest, ""),
     };
     let name_lc = name.to_lowercase();
-    if !SLASH_COMMANDS.contains(&name_lc.as_str()) {
+    let known = SLASH_COMMANDS.contains(&name_lc.as_str())
+        || extra_names.iter().any(|n| *n == name_lc);
+    if !known {
         return None;
     }
     Some(SlashCommand { name: name_lc, args: args.to_string() })
@@ -125,11 +127,33 @@ pub struct SessionRunner {
     session: Arc<Session>,
     session_id: String,
     host: Arc<dyn RunnerHost>,
+    /// Map of slash command name → template body. When the user message
+    /// is `/<name>` (no args) or `/<name> <args>`, the body is sent to
+    /// the LLM as the actual prompt instead. Built from disk via
+    /// `crate::skills::load_prompts` and injected from the host.
+    prompt_templates: Arc<std::collections::HashMap<String, String>>,
 }
 
 impl SessionRunner {
     pub fn new(session: Arc<Session>, session_id: String, host: Arc<dyn RunnerHost>) -> Self {
-        Self { session, session_id, host }
+        Self {
+            session,
+            session_id,
+            host,
+            prompt_templates: Arc::new(std::collections::HashMap::new()),
+        }
+    }
+
+    /// Builder: attach a set of prompt templates. The slash dispatcher
+    /// will fire any `/<name>` whose name matches a key here, sending
+    /// the value as the LLM prompt.
+    #[must_use]
+    pub fn with_prompt_templates(
+        mut self,
+        templates: Arc<std::collections::HashMap<String, String>>,
+    ) -> Self {
+        self.prompt_templates = templates;
+        self
     }
 
     /// Drive one user input through the session. Each `RunnerEvent` is
@@ -169,16 +193,29 @@ impl SessionRunner {
         F: FnMut(RunnerEvent) + Send,
     {
         on_event(RunnerEvent::Started);
-        if let Some(cmd) = parse_slash_command(&user_text) {
-            self.run_slash(&cmd, on_event).await;
-            return RunOutcome::Completed;
+        let template_names: Vec<&str> = self.prompt_templates.keys().map(|s| s.as_str()).collect();
+        let mut effective_text = user_text;
+        if let Some(cmd) = parse_slash_command(&effective_text, &template_names) {
+            // Built-in slash commands run server-side; user-defined prompt
+            // templates expand into a fresh prompt that *does* hit the LLM.
+            if SLASH_COMMANDS.contains(&cmd.name.as_str()) {
+                self.run_slash(&cmd, on_event).await;
+                return RunOutcome::Completed;
+            }
+            if let Some(body) = self.prompt_templates.get(&cmd.name).cloned() {
+                effective_text = if cmd.args.is_empty() {
+                    body
+                } else {
+                    format!("{body}\n\n{}", cmd.args)
+                };
+            }
         }
 
         // Subscribe BEFORE prompt() so we don't miss the first events.
         let mut rx = self.session.subscribe();
         let session = self.session.clone();
         let prompt_fut: BoxFuture<'_, Result<PromptOutcome>> =
-            Box::pin(async move { session.prompt(user_text).await });
+            Box::pin(async move { session.prompt(effective_text).await });
 
         // Pump events from the broadcast channel into the callback while
         // the prompt future runs concurrently. Stops when AgentEnd is

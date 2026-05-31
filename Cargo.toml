@@ -3,6 +3,12 @@ name = "ra"
 version = "0.1.0"
 edition = "2021"
 description = "Ra — rust-native agent. Sun god, illuminating tools."
+license = "MIT"
+repository = "https://github.com/trotsky1997/ra"
+homepage = "https://github.com/trotsky1997/ra"
+readme = "README.md"
+keywords = ["agent", "llm", "acp", "a2a", "mcp"]
+categories = ["command-line-utilities"]
 
 [lib]
 name = "ra"

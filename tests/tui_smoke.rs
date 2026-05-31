@@ -19,3 +19,32 @@ fn tui_module_compiles_under_feature() {
     // the regression we want to catch.
     let _ = ra::tui::run;
 }
+
+/// The TUI's `TuiEvent` enum is the public contract for anyone who
+/// wants to observe / test the UI layer (default consumer is the
+/// ATOF bridge). Confirm it round-trips through a broadcast bus
+/// without touching a real terminal.
+#[tokio::test]
+async fn tui_event_bus_round_trips_every_variant() {
+    use ra::tui::TuiEvent;
+    use tokio::sync::broadcast;
+
+    let (tx, mut rx) = broadcast::channel::<TuiEvent>(16);
+
+    let messages = vec![
+        TuiEvent::Started,
+        TuiEvent::Submitted("hello".into()),
+        TuiEvent::Cancelled,
+        TuiEvent::Scrolled(3),
+        TuiEvent::Session(ra::Event::TurnStart),
+        TuiEvent::Quit,
+    ];
+    for m in &messages {
+        tx.send(m.clone()).expect("broadcast send");
+    }
+
+    for expected in &messages {
+        let got = rx.recv().await.expect("broadcast recv");
+        assert_eq!(format!("{got:?}"), format!("{expected:?}"));
+    }
+}

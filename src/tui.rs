@@ -64,11 +64,26 @@ pub async fn run(config: &RaConfig) -> Result<()> {
             "ra tui requires an interactive terminal (stdin/stdout must be a TTY)"
         );
     }
+    // Initialise ATOF / NeMo Relay once per process — same call ACP
+    // and A2A make. Idempotent inside nemo_obs.
+    crate::nemo_obs::init();
+
     let session = build_session(config).await?;
     let mut app = TuiApp::new(session.clone()).await?;
-    app.run_loop().await?;
+
+    // Wrap the entire interactive loop in one Agent-typed scope so
+    // every nested LLM/tool/hook scope nests under it in the trace.
+    // `with_task_scope` pins the task-local stack across .await points
+    // so scopes pop cleanly across worker-thread migrations.
+    let outcome = crate::nemo_obs::with_task_scope(async {
+        let _agent = crate::nemo_obs::agent_scope("tui/session");
+        app.run_loop().await
+    })
+    .await;
+
+    let _ = app.ui_tx.send(TuiEvent::Quit);
     app.save_trajectory(config).await;
-    Ok(())
+    outcome
 }
 
 /// Refuse to start if stdin isn't a TTY — opentui's raw-mode setup
@@ -187,7 +202,25 @@ fn build_model_factory(_config: &RaConfig) -> EnvFirstModel {
     EnvFirstModel
 }
 
-// ---- TuiApp ---------------------------------------------------------------
+/// UI-layer events emitted by the TUI as the user drives it. Exposed
+/// over a `tokio::sync::broadcast` so anyone (default consumer:
+/// `nemo_obs`/ATOF; future: tests, log sinks) can observe what
+/// happened in the chat without scraping the renderer.
+#[derive(Debug, Clone)]
+pub enum TuiEvent {
+    /// TUI started (after Session is built and the renderer is up).
+    Started,
+    /// User submitted a prompt; carries the trimmed text.
+    Submitted(String),
+    /// User pressed Ctrl-C while a prompt was running.
+    Cancelled,
+    /// User scrolled the scrollback by `delta` lines (positive = up).
+    Scrolled(i32),
+    /// One Session-bus event, threaded through verbatim.
+    Session(Event),
+    /// TUI is exiting cleanly.
+    Quit,
+}
 
 struct TuiApp {
     session: Arc<Session>,
@@ -196,6 +229,12 @@ struct TuiApp {
     parser: InputParser,
     stdin_rx: mpsc::UnboundedReceiver<u8>,
     event_rx: broadcast::Receiver<Event>,
+
+    /// UI-layer event bus. The TUI publishes here whenever something
+    /// observable happens; the default consumer (spawned in `new`)
+    /// translates events into ATOF marks so TUI sessions show up in
+    /// observability traces. Public-facing for testing too.
+    ui_tx: broadcast::Sender<TuiEvent>,
 
     chat: Vec<ChatEntry>,
     current_text: String,
@@ -246,6 +285,12 @@ impl TuiApp {
         });
 
         let event_rx = session.subscribe();
+        let (ui_tx, _) = broadcast::channel::<TuiEvent>(128);
+        // Default consumer: bridge UI events into ATOF marks so TUI
+        // sessions show up in observability traces alongside ACP/A2A
+        // sessions. Spawned once and detached; if everyone stops
+        // sending the channel just closes and the task exits.
+        spawn_atof_bridge(ui_tx.subscribe());
         let mut app = Self {
             session,
             renderer,
@@ -253,6 +298,7 @@ impl TuiApp {
             parser: InputParser::new(),
             stdin_rx: rx,
             event_rx,
+            ui_tx,
             chat: vec![ChatEntry::System(
                 "Ra TUI — type a prompt and press Enter. Ctrl-C cancels, Ctrl-D quits.".into(),
             )],
@@ -266,6 +312,7 @@ impl TuiApp {
             width,
             height,
         };
+        let _ = app.ui_tx.send(TuiEvent::Started);
         app.draw()?;
         Ok(app)
     }
@@ -307,6 +354,10 @@ impl TuiApp {
     }
 
     fn on_session_event(&mut self, e: Event) {
+        // Re-publish on the UI bus so the ATOF bridge (and any other
+        // subscriber) sees the event in TUI-context, even though it
+        // originated from the Session bus.
+        let _ = self.ui_tx.send(TuiEvent::Session(e.clone()));
         match e {
             Event::AgentStart | Event::TurnStart | Event::TurnEnd => {}
             Event::AgentEnd => {
@@ -384,10 +435,22 @@ impl TuiApp {
             KeyCode::Char(c) if !ctrl => {
                 self.input_buf.push(c);
             }
-            KeyCode::Up => self.scroll = self.scroll.saturating_add(1),
-            KeyCode::Down => self.scroll = self.scroll.saturating_sub(1),
-            KeyCode::PageUp => self.scroll = self.scroll.saturating_add(10),
-            KeyCode::PageDown => self.scroll = self.scroll.saturating_sub(10),
+            KeyCode::Up => {
+                self.scroll = self.scroll.saturating_add(1);
+                let _ = self.ui_tx.send(TuiEvent::Scrolled(1));
+            }
+            KeyCode::Down => {
+                self.scroll = self.scroll.saturating_sub(1);
+                let _ = self.ui_tx.send(TuiEvent::Scrolled(-1));
+            }
+            KeyCode::PageUp => {
+                self.scroll = self.scroll.saturating_add(10);
+                let _ = self.ui_tx.send(TuiEvent::Scrolled(10));
+            }
+            KeyCode::PageDown => {
+                self.scroll = self.scroll.saturating_sub(10);
+                let _ = self.ui_tx.send(TuiEvent::Scrolled(-10));
+            }
             _ => {}
         }
     }
@@ -400,6 +463,7 @@ impl TuiApp {
                 s.cancel().await;
             });
             self.chat.push(ChatEntry::System("(cancelled)".into()));
+            let _ = self.ui_tx.send(TuiEvent::Cancelled);
             return;
         }
         // No prompt running: double-tap quits.
@@ -423,11 +487,19 @@ impl TuiApp {
         }
         self.chat.push(ChatEntry::User(text.clone()));
         self.scroll = 0;
+        let _ = self.ui_tx.send(TuiEvent::Submitted(text.clone()));
         let s = self.session.clone();
         self.in_flight = Some(tokio::spawn(async move {
-            if let Err(e) = s.prompt(text).await {
-                eprintln!("[ra::tui] prompt error: {e:#}");
-            }
+            // Each submission gets its own LLM-typed sibling scope so
+            // a single TUI session shows separate "tui/prompt" arcs in
+            // ATOF when multiple prompts run back-to-back.
+            crate::nemo_obs::with_task_scope(async move {
+                let _scope = crate::nemo_obs::agent_scope("tui/prompt");
+                if let Err(e) = s.prompt(text).await {
+                    eprintln!("[ra::tui] prompt error: {e:#}");
+                }
+            })
+            .await;
         }));
     }
 
@@ -602,4 +674,41 @@ fn short_json(v: &serde_json::Value, max: usize) -> String {
         let cut: String = s.chars().take(max.saturating_sub(1)).collect();
         format!("{cut}…")
     }
+}
+
+/// Default UI-event consumer: translates each `TuiEvent` into a NeMo
+/// Relay `mark` so TUI sessions appear alongside ACP / A2A sessions
+/// in ATOF traces. Spawned once from `TuiApp::new` and detached;
+/// exits when every `ui_tx` clone is dropped.
+fn spawn_atof_bridge(mut rx: broadcast::Receiver<TuiEvent>) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            match rx.recv().await {
+                Ok(ev) => {
+                    let label = match &ev {
+                        TuiEvent::Started => "tui.started".to_string(),
+                        TuiEvent::Submitted(_) => "tui.submitted".to_string(),
+                        TuiEvent::Cancelled => "tui.cancelled".to_string(),
+                        TuiEvent::Scrolled(_) => continue, // too noisy for ATOF
+                        TuiEvent::Quit => "tui.quit".to_string(),
+                        TuiEvent::Session(e) => match e {
+                            // Session-bus events already get their own
+                            // ATOF scopes lower in the stack
+                            // (llm.stream, tool.<name>, hook.*); we
+                            // just emit one extra "tui.turn.*" mark
+                            // for the boundaries so a TUI-only
+                            // observer can still tell turns apart.
+                            Event::AgentStart => "tui.turn.start".to_string(),
+                            Event::AgentEnd => "tui.turn.end".to_string(),
+                            Event::Error(_) => "tui.turn.error".to_string(),
+                            _ => continue,
+                        },
+                    };
+                    crate::nemo_obs::mark(&label);
+                }
+                Err(broadcast::error::RecvError::Closed) => break,
+                Err(broadcast::error::RecvError::Lagged(_)) => {} // tolerable
+            }
+        }
+    })
 }

@@ -179,6 +179,8 @@ struct SharedState {
     /// Prompt templates keyed by slash-command name. Injected into the
     /// SessionRunner so `/<name>` expands into LLM input.
     prompt_templates: Arc<std::collections::HashMap<String, String>>,
+    /// Optional lifecycle hooks engine, attached to every Session.
+    hooks: Option<Arc<crate::hooks::HookEngine>>,
 }
 
 /// Resolve a model id (sent by the client over `session/set_model`) to a `Model`
@@ -198,6 +200,7 @@ impl SharedState {
         extra_tools: Vec<Arc<dyn Tool>>,
         system_prompt: Option<String>,
         prompt_templates: Arc<std::collections::HashMap<String, String>>,
+        hooks: Option<Arc<crate::hooks::HookEngine>>,
     ) -> Self {
         let available_models = model_factory.available();
         let default_cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
@@ -213,6 +216,7 @@ impl SharedState {
             default_cwd,
             system_prompt,
             prompt_templates,
+            hooks,
         }
     }
 
@@ -222,10 +226,12 @@ impl SharedState {
         client: Arc<dyn ClientHandle>,
         cwd: PathBuf,
     ) -> Arc<Session> {
-        let s = Arc::new(
-            Session::new(self.model.clone(), self.tools.clone())
-                .with_client(client, id.to_string()),
-        );
+        let mut s = Session::new(self.model.clone(), self.tools.clone())
+            .with_client(client, id.to_string());
+        if let Some(h) = &self.hooks {
+            s = s.with_hooks(h.clone());
+        }
+        let s = Arc::new(s);
         if let Some(sp) = &self.system_prompt {
             s.set_system_prompt(sp.clone()).await;
         }
@@ -479,6 +485,7 @@ pub async fn run(
     extra_tools: Vec<Arc<dyn Tool>>,
     system_prompt: Option<String>,
     prompt_templates: Arc<std::collections::HashMap<String, String>>,
+    hooks: Option<Arc<crate::hooks::HookEngine>>,
 ) -> AcpResult<()> {
     crate::nemo_obs::init();
     let state = Arc::new(SharedState::new(
@@ -487,6 +494,7 @@ pub async fn run(
         extra_tools,
         system_prompt,
         prompt_templates,
+        hooks,
     ));
 
     // Each handler closure is FnMut, so we clone the Arc into each one.

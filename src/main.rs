@@ -304,7 +304,8 @@ async fn run_acp(config: &ra::config::RaConfig) -> anyhow::Result<()> {
     let mut extra_tools = ra::a2a_tool::load_remote_tools_from_env().await;
     extra_tools.extend(load_a2a_tools_from_config(config).await);
     let (system_prompt, prompt_templates) = load_skills_and_prompts(config);
-    ra::acp_server::run(model, factory, extra_tools, system_prompt, prompt_templates)
+    let hooks = build_hooks(config);
+    ra::acp_server::run(model, factory, extra_tools, system_prompt, prompt_templates, hooks)
         .await
         .map_err(|e| anyhow::anyhow!("{e:?}"))?;
     Ok(())
@@ -325,6 +326,7 @@ async fn run_serve(
     let mut extra_tools = ra::a2a_tool::load_remote_tools_from_env().await;
     extra_tools.extend(load_a2a_tools_from_config(config).await);
     let (system_prompt, prompt_templates) = load_skills_and_prompts(config);
+    let hooks = build_hooks(config);
     ra::a2a_server::run(
         model,
         factory,
@@ -333,8 +335,19 @@ async fn run_serve(
         extra_tools,
         system_prompt,
         prompt_templates,
+        hooks,
     )
     .await
+}
+
+fn build_hooks(config: &ra::config::RaConfig) -> Option<Arc<ra::hooks::HookEngine>> {
+    let engine = ra::hooks::HookEngine::from_config(&config.hooks);
+    if engine.is_empty() {
+        None
+    } else {
+        eprintln!("[ra] hooks: configured");
+        Some(Arc::new(engine))
+    }
 }
 
 /// Read `[skills]`, `[prompts]`, `[agents_md]`, and `[resources]` and

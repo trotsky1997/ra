@@ -63,6 +63,8 @@ pub struct A2aState {
     system_prompt: Option<String>,
     /// Slash command templates handed to the SessionRunner.
     prompt_templates: Arc<std::collections::HashMap<String, String>>,
+    /// Optional lifecycle hooks attached to every Session.
+    hooks: Option<Arc<crate::hooks::HookEngine>>,
 }
 
 impl A2aState {
@@ -72,6 +74,7 @@ impl A2aState {
         extra_tools: Vec<Arc<dyn Tool>>,
         system_prompt: Option<String>,
         prompt_templates: Arc<std::collections::HashMap<String, String>>,
+        hooks: Option<Arc<crate::hooks::HookEngine>>,
     ) -> Self {
         let mut tools: Vec<Arc<dyn Tool>> = vec![Arc::new(ReadTool), Arc::new(BashTool)];
         tools.extend(extra_tools);
@@ -83,6 +86,7 @@ impl A2aState {
             cwd: std::env::current_dir().unwrap_or_else(|_| "/".into()),
             system_prompt,
             prompt_templates,
+            hooks,
         }
     }
 
@@ -90,7 +94,11 @@ impl A2aState {
         if let Some(s) = self.sessions.get(task_id) {
             return s.clone();
         }
-        let s = Arc::new(Session::new(self.model.clone(), self.tools.clone()));
+        let mut s = Session::new(self.model.clone(), self.tools.clone());
+        if let Some(h) = &self.hooks {
+            s = s.with_hooks(h.clone());
+        }
+        let s = Arc::new(s);
         if let Some(sp) = &self.system_prompt {
             s.set_system_prompt(sp.clone()).await;
         }
@@ -351,6 +359,7 @@ pub async fn run(
     extra_tools: Vec<Arc<dyn Tool>>,
     system_prompt: Option<String>,
     prompt_templates: Arc<std::collections::HashMap<String, String>>,
+    hooks: Option<Arc<crate::hooks::HookEngine>>,
 ) -> Result<()> {
     nemo_obs::init();
 
@@ -360,6 +369,7 @@ pub async fn run(
         extra_tools,
         system_prompt,
         prompt_templates,
+        hooks,
     ));
     let executor = RaExecutor { state: state.clone() };
     let handler = Arc::new(DefaultRequestHandler::new(executor, InMemoryTaskStore::new()));

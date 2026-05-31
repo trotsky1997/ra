@@ -40,6 +40,9 @@ pub struct Session {
     /// Optional system-style preamble prepended to every turn's history.
     /// Populated from skill bodies; not part of the persisted message log.
     system_prompt: RwLock<Option<String>>,
+    /// Optional hook engine that fires PreToolUse / PostToolUse around
+    /// every tool execution. None = no hooks configured.
+    hooks: Option<Arc<crate::hooks::HookEngine>>,
 }
 
 /// Result of one `prompt()` call.
@@ -69,7 +72,20 @@ impl Session {
             mode: RwLock::new("default".into()),
             config: RwLock::new(HashMap::new()),
             system_prompt: RwLock::new(None),
+            hooks: None,
         }
+    }
+
+    /// Builder-style: attach a hook engine that will fire around every
+    /// tool execution and at prompt boundaries.
+    #[must_use]
+    pub fn with_hooks(mut self, hooks: Arc<crate::hooks::HookEngine>) -> Self {
+        self.hooks = Some(hooks);
+        self
+    }
+
+    pub fn hooks(&self) -> Option<&Arc<crate::hooks::HookEngine>> {
+        self.hooks.as_ref()
     }
 
     /// Set or replace the system-style preamble injected at the head of
@@ -302,13 +318,30 @@ impl Session {
                 .ok_or_else(|| anyhow!("unknown tool: {}", call.name))?
                 .clone();
 
+            // PreToolUse hook: any deny short-circuits the tool entirely.
+            let pre_deny = if let Some(h) = &self.hooks {
+                h.pre_tool_use(self.session_id.as_deref(), &call.name, &call.input).await
+            } else {
+                None
+            };
+            if let Some(reason) = pre_deny {
+                let result = ToolResult {
+                    call_id: call.id.clone(),
+                    is_error: true,
+                    content: format!("denied by hook: {reason}"),
+                };
+                let _ = self.tx.send(Event::ToolCallEnd(result.clone()));
+                self.messages.lock().await.push(Message::ToolResult(result));
+                continue;
+            }
+
             let ctx = ToolCtx {
                 events: self.tx.clone(),
                 client: self.client.clone(),
                 session_id: self.session_id.clone(),
             };
             let exec = tool.execute(&call.id, call.input.clone(), &ctx).await;
-            let result = match exec {
+            let mut result = match exec {
                 Ok(text) => ToolResult {
                     call_id: call.id.clone(),
                     is_error: false,
@@ -320,6 +353,21 @@ impl Session {
                     content: format!("{e:#}"),
                 },
             };
+
+            // PostToolUse hook: may rewrite the output text.
+            if let Some(h) = &self.hooks {
+                let new_content = h
+                    .post_tool_use(
+                        self.session_id.as_deref(),
+                        &call.name,
+                        &call.input,
+                        &result.content,
+                    )
+                    .await;
+                if new_content != result.content {
+                    result.content = new_content;
+                }
+            }
 
             let _ = self.tx.send(Event::ToolCallEnd(result.clone()));
             self.messages

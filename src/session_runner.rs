@@ -181,6 +181,12 @@ impl SessionRunner {
             let used = self.session.estimate_used_tokens().await;
             on_event(RunnerEvent::UsageReport { used, size: used_size });
             on_event(RunnerEvent::Finished(result.clone()));
+            // AgentEnd hook fires last, so log/cleanup tools see the
+            // final state (including any TextDelta drained by the bus
+            // race in run_input_inner).
+            if let Some(hooks) = self.session.hooks() {
+                hooks.agent_end(Some(&self.session_id)).await;
+            }
             result
         })
         .await;
@@ -193,6 +199,20 @@ impl SessionRunner {
         F: FnMut(RunnerEvent) + Send,
     {
         on_event(RunnerEvent::Started);
+
+        // UserPromptSubmit hook (if any). A deny short-circuits the
+        // whole turn loop and surfaces the reason as agent text.
+        if let Some(hooks) = self.session.hooks() {
+            if let Some(reason) = hooks
+                .user_prompt_submit(Some(&self.session_id), &user_text)
+                .await
+            {
+                on_event(RunnerEvent::TextDelta(format!("[denied by hook] {reason}")));
+                hooks.agent_end(Some(&self.session_id)).await;
+                return RunOutcome::Failed(reason);
+            }
+        }
+
         let template_names: Vec<&str> = self.prompt_templates.keys().map(|s| s.as_str()).collect();
         let mut effective_text = user_text;
         if let Some(cmd) = parse_slash_command(&effective_text, &template_names) {

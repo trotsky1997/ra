@@ -190,7 +190,8 @@ async fn run_acp() -> anyhow::Result<()> {
     eprintln!("{BANNER}");
     eprintln!("[ra] starting ACP server on stdio (protocol v1)");
     let (model, factory) = build_model();
-    ra::acp_server::run(model, factory)
+    let extra_tools = ra::a2a_tool::load_remote_tools_from_env().await;
+    ra::acp_server::run(model, factory, extra_tools)
         .await
         .map_err(|e| anyhow::anyhow!("{e:?}"))?;
     Ok(())
@@ -200,7 +201,8 @@ async fn run_serve(http_port: u16, grpc_port: u16) -> anyhow::Result<()> {
     eprintln!("{BANNER}");
     eprintln!("[ra] starting A2A server (HTTP :{http_port}, gRPC :{grpc_port})");
     let (model, factory) = build_model();
-    ra::a2a_server::run(model, factory, http_port, grpc_port).await
+    let extra_tools = ra::a2a_tool::load_remote_tools_from_env().await;
+    ra::a2a_server::run(model, factory, http_port, grpc_port, extra_tools).await
 }
 
 async fn run_print(prompt: Option<String>) -> anyhow::Result<()> {

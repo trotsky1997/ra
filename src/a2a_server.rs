@@ -62,11 +62,17 @@ pub struct A2aState {
 }
 
 impl A2aState {
-    pub fn new(model: Arc<dyn Model>, model_factory: Arc<dyn ModelFactory>) -> Self {
+    pub fn new(
+        model: Arc<dyn Model>,
+        model_factory: Arc<dyn ModelFactory>,
+        extra_tools: Vec<Arc<dyn Tool>>,
+    ) -> Self {
+        let mut tools: Vec<Arc<dyn Tool>> = vec![Arc::new(ReadTool), Arc::new(BashTool)];
+        tools.extend(extra_tools);
         Self {
             model,
             model_factory,
-            tools: vec![Arc::new(ReadTool), Arc::new(BashTool)],
+            tools,
             sessions: DashMap::new(),
             cwd: std::env::current_dir().unwrap_or_else(|_| "/".into()),
         }
@@ -330,10 +336,11 @@ pub async fn run(
     model_factory: Arc<dyn ModelFactory>,
     http_port: u16,
     grpc_port: u16,
+    extra_tools: Vec<Arc<dyn Tool>>,
 ) -> Result<()> {
     nemo_obs::init();
 
-    let state = Arc::new(A2aState::new(model, model_factory));
+    let state = Arc::new(A2aState::new(model, model_factory, extra_tools));
     let executor = RaExecutor { state: state.clone() };
     let handler = Arc::new(DefaultRequestHandler::new(executor, InMemoryTaskStore::new()));
 

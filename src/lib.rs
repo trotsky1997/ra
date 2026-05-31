@@ -1,4 +1,5 @@
 pub mod a2a_server;
+pub mod a2a_tool;
 pub mod acp_server;
 pub mod atif;
 pub mod atif_codec;

@@ -186,14 +186,20 @@ pub trait ModelFactory: Send + Sync {
 }
 
 impl SharedState {
-    fn new(model: Arc<dyn Model>, model_factory: Arc<dyn ModelFactory>) -> Self {
+    fn new(
+        model: Arc<dyn Model>,
+        model_factory: Arc<dyn ModelFactory>,
+        extra_tools: Vec<Arc<dyn Tool>>,
+    ) -> Self {
         let available_models = model_factory.available();
         let default_cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
+        let mut tools: Vec<Arc<dyn Tool>> = vec![Arc::new(ReadTool), Arc::new(BashTool)];
+        tools.extend(extra_tools);
         Self {
             model,
             model_factory,
             available_models,
-            tools: vec![Arc::new(ReadTool), Arc::new(BashTool)],
+            tools,
             sessions: DashMap::new(),
             session_cwds: DashMap::new(),
             default_cwd,
@@ -457,9 +463,10 @@ impl ClientHandle for AcpClientHandle {
 pub async fn run(
     model: Arc<dyn Model>,
     model_factory: Arc<dyn ModelFactory>,
+    extra_tools: Vec<Arc<dyn Tool>>,
 ) -> AcpResult<()> {
     crate::nemo_obs::init();
-    let state = Arc::new(SharedState::new(model, model_factory));
+    let state = Arc::new(SharedState::new(model, model_factory, extra_tools));
 
     // Each handler closure is FnMut, so we clone the Arc into each one.
     let s_init = state.clone();

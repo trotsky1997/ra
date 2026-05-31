@@ -157,6 +157,22 @@ pub fn load_skills(patterns: &[String]) -> Vec<Skill> {
         .collect()
 }
 
+/// The default skill-discovery globs Ra scans when
+/// `[skills] discover = true`. Deliberately small: just Ra's own
+/// project + global folder, plus the cross-agent `./.agents/skills/`
+/// + `~/.agents/skills/` layout. Anything else (per-agent
+/// `.claude/skills/`, catalog-style `skills/.curated/`, …) goes
+/// in `[skills] paths` explicitly so the discovery surface stays
+/// predictable.
+pub fn default_discover_globs() -> Vec<String> {
+    vec![
+        "./.ra/skills/**/SKILL.md".to_string(),
+        "~/.ra/skills/**/SKILL.md".to_string(),
+        "./.agents/skills/**/SKILL.md".to_string(),
+        "~/.agents/skills/**/SKILL.md".to_string(),
+    ]
+}
+
 pub fn load_prompts(patterns: &[String]) -> Vec<PromptTemplate> {
     expand_globs(patterns, "prompts")
         .into_iter()

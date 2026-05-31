@@ -132,15 +132,36 @@ pub struct ToolsSection {
     pub builtin: Vec<String>,
 }
 
-#[derive(Debug, Default, Clone, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SkillsSection {
+    /// Master switch. Default true.
     #[serde(default = "default_true")]
     pub enabled: bool,
-    /// Glob patterns; expanded against `~` and the current working
-    /// directory. Each match is loaded as a SKILL.md.
+    /// Auto-discover skills from the standard skills.sh layouts:
+    /// `./.ra/skills/`, `~/.ra/skills/`, plus the shared cross-agent
+    /// folders `.claude/skills/`, `.cursor/skills/`, `.codex/skills/`,
+    /// `.kiro/skills/`, `.opencode/skills/` and the catalog-style
+    /// `skills/`, `skills/.curated/`, `skills/.experimental/`,
+    /// `skills/.system/`. Default true so `npx skills add` and bare
+    /// project layouts Just Work.
+    #[serde(default = "default_true")]
+    pub discover: bool,
+    /// Extra glob patterns expanded against `~` and the cwd. Each match
+    /// is loaded as a SKILL.md, on top of (and de-duplicated against)
+    /// whatever `discover` finds.
     #[serde(default)]
     pub paths: Vec<String>,
+}
+
+impl Default for SkillsSection {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            discover: true,
+            paths: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Default, Clone, Deserialize, JsonSchema)]

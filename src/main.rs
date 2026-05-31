@@ -394,10 +394,21 @@ fn load_skills_and_prompts(
 ) -> (Option<String>, Arc<std::collections::HashMap<String, String>>) {
     let mut bundle = ra::skills::ResourceBundle::default();
 
-    if config.skills.enabled && !config.skills.paths.is_empty() {
-        bundle.skills = ra::skills::load_skills(&config.skills.paths);
-        if !bundle.skills.is_empty() {
-            eprintln!("[ra] loaded {} skill(s)", bundle.skills.len());
+    if config.skills.enabled {
+        // Auto-discover from .ra/skills/ + per-agent skills.sh layouts,
+        // and union with whatever the user listed in `[skills] paths`.
+        // expand_globs de-dupes by absolute path, so an explicit path
+        // that overlaps a discovery glob is still loaded once.
+        let mut all_patterns: Vec<String> = Vec::new();
+        if config.skills.discover {
+            all_patterns.extend(ra::skills::default_discover_globs());
+        }
+        all_patterns.extend(config.skills.paths.iter().cloned());
+        if !all_patterns.is_empty() {
+            bundle.skills = ra::skills::load_skills(&all_patterns);
+            if !bundle.skills.is_empty() {
+                eprintln!("[ra] loaded {} skill(s)", bundle.skills.len());
+            }
         }
     }
     if config.prompts.enabled {
@@ -440,11 +451,15 @@ async fn run_print(prompt: Option<String>, config: &ra::config::RaConfig) -> any
 
     let hooks = build_hooks(config);
     let rtk = ra::RtkRewriter::from_config(&config.rtk);
+    let (system_prompt, _templates) = load_skills_and_prompts(config);
     let mut sess = Session::new(model, default_builtins(&config.tools.builtin)).with_rtk(rtk);
     if let Some(h) = hooks {
         sess = sess.with_hooks(h);
     }
     let session = Arc::new(sess);
+    if let Some(sp) = system_prompt {
+        session.set_system_prompt(sp).await;
+    }
 
     let printer = spawn_event_printer(session.subscribe());
 
@@ -552,11 +567,15 @@ async fn run_resume(
     let (model, _factory) = build_model(config);
     let hooks = build_hooks(config);
     let rtk = ra::RtkRewriter::from_config(&config.rtk);
+    let (system_prompt, _templates) = load_skills_and_prompts(config);
     let mut sess = Session::new(model, default_builtins(&config.tools.builtin)).with_rtk(rtk);
     if let Some(h) = hooks {
         sess = sess.with_hooks(h);
     }
     let session = Arc::new(sess);
+    if let Some(sp) = system_prompt {
+        session.set_system_prompt(sp).await;
+    }
     session.restore_messages(messages).await;
 
     let printer = spawn_event_printer(session.subscribe());

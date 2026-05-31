@@ -35,7 +35,11 @@ The eye watching from the banner is 𓂀 (U+13080).
   SKILL.md files (YAML frontmatter, progressive disclosure),
   user-defined slash-command prompt templates, and
   [agents.md](https://agents.md/) auto-discovery, all unified through a
-  single resource bundle that becomes the agent's system prompt.
+  single resource bundle that becomes the agent's system prompt. Ships
+  native [skills.sh](https://github.com/vercel-labs/skills) support:
+  `npx skills add <repo> -a universal` lands SKILL.md files in
+  `./.agents/skills/` and Ra picks them up automatically — no config
+  needed.
 - **HCP-flavored TOML config.** Single `ra.toml` (or `~/.ra.toml`)
   configures models, tools, skills, prompts, hooks, MCP servers, A2A
   serve/auth, remote A2A agents, observability backend, …

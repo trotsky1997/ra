@@ -47,12 +47,20 @@ api_key_env = "ANTHROPIC_API_KEY"
 builtin = []
 
 # ─── Skills (agentskills.io v1) ─────────────────────────────────────
+# Native skills.sh (https://github.com/vercel-labs/skills) integration:
+# `discover = true` (default) auto-loads SKILL.md files from
+#   ./.ra/skills/                 — project-local Ra skills
+#   ~/.ra/skills/                 — user-global Ra skills
+#   ./.agents/skills/             — cross-agent project layout
+#                                   (matches `npx skills add ... -a universal`)
+#   ~/.agents/skills/             — cross-agent global layout
+# Anything else (per-agent `.claude/skills/`, catalog-style
+# `skills/.curated/`, …) goes in `paths` explicitly.
 [skills]
 enabled = true
-paths = [
-  "./skills/**/SKILL.md",
-  "~/.ra/skills/**/SKILL.md",
-]
+discover = true
+paths = []
+# paths = ["./.claude/skills/**/SKILL.md"]   # opt-in per-agent layouts
 
 # ─── Prompt templates → slash commands ──────────────────────────────
 [prompts]

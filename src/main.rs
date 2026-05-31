@@ -279,16 +279,27 @@ fn apply_obs_config(obs: &ra::config::ObsSection) {
     }
 }
 
-/// Build A2aTool list from `[[a2a.remote_agents]]`. Compose with the
-/// env-based path; both sources are union'd.
+/// Build A2aTool list from `[[a2a.remote_agents]]`. Each agent may carry
+/// `auth.bearer_env` to point at a Bearer-token env var; when present, we
+/// resolve it here and bake it into the per-agent reqwest client.
 async fn load_a2a_tools_from_config(
     config: &ra::config::RaConfig,
 ) -> Vec<Arc<dyn ra::Tool>> {
     let mut out: Vec<Arc<dyn ra::Tool>> = Vec::new();
     for agent in &config.a2a.remote_agents {
-        // Future: honour agent.auth.bearer_env when A2aTool grows auth.
-        let entry = format!("{}={}", agent.name, agent.url);
-        for t in ra::a2a_tool::load_remote_tools_from_env_string(&entry).await {
+        let bearer = agent
+            .auth
+            .as_ref()
+            .and_then(|a| a.bearer_env.as_ref())
+            .and_then(|env| std::env::var(env).ok())
+            .filter(|s| !s.is_empty());
+        if let Some(t) = ra::a2a_tool::load_remote_tool_with_bearer(
+            &agent.name,
+            &agent.url,
+            bearer.as_deref(),
+        )
+        .await
+        {
             out.push(t);
         }
     }
@@ -329,6 +340,14 @@ async fn run_serve(
     extra_tools.extend(ra::mcp::load_mcp_tools(&config.mcp.servers).await);
     let (system_prompt, prompt_templates) = load_skills_and_prompts(config);
     let hooks = build_hooks(config);
+    let bearer = config
+        .a2a
+        .serve
+        .auth
+        .as_ref()
+        .and_then(|a| a.bearer_env.as_ref())
+        .and_then(|env| std::env::var(env).ok())
+        .filter(|s| !s.is_empty());
     ra::a2a_server::run(
         model,
         factory,
@@ -338,6 +357,7 @@ async fn run_serve(
         system_prompt,
         prompt_templates,
         hooks,
+        bearer,
     )
     .await
 }

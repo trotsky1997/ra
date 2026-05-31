@@ -168,6 +168,13 @@ pub struct A2aServeSection {
     pub http_port: Option<u16>,
     #[serde(default)]
     pub grpc_port: Option<u16>,
+    /// Optional Bearer token gate. When set, every JSON-RPC, REST, and
+    /// gRPC request must carry `Authorization: Bearer <env-value>` (or
+    /// the gRPC `authorization` metadata key). The well-known agent-card
+    /// endpoint is exempted so unauthenticated callers can discover the
+    /// auth scheme.
+    #[serde(default)]
+    pub auth: Option<AuthSpec>,
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]

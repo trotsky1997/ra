@@ -2464,6 +2464,7 @@ dependencies = [
  "nemo-relay",
  "regex",
  "reqwest 0.12.28",
+ "reqwest 0.13.4",
  "rmcp",
  "schemars 0.8.22",
  "serde",

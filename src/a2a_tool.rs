@@ -155,6 +155,38 @@ pub async fn load_remote_tools_from_env_string(raw: &str) -> Vec<Arc<dyn Tool>> 
 }
 
 async fn build_tool(name: &str, url: &str) -> Result<A2aTool> {
+    build_tool_with_bearer(name, url, None).await
+}
+
+/// Public entry point for config-driven loading: build one A2aTool for
+/// the given remote agent, optionally carrying a Bearer token. Errors
+/// are logged and `None` is returned so a single dead remote does not
+/// block the rest of the catalog.
+pub async fn load_remote_tool_with_bearer(
+    name: &str,
+    url: &str,
+    bearer: Option<&str>,
+) -> Option<Arc<dyn Tool>> {
+    match build_tool_with_bearer(name, url, bearer).await {
+        Ok(t) => {
+            eprintln!(
+                "[ra::a2a-tool] registered remote agent '{name}' → {url}{}",
+                if bearer.is_some() { " (auth)" } else { "" }
+            );
+            Some(Arc::new(t) as Arc<dyn Tool>)
+        }
+        Err(e) => {
+            eprintln!("[ra::a2a-tool] skipping '{name}' ({url}) — {e:#}");
+            None
+        }
+    }
+}
+
+async fn build_tool_with_bearer(
+    name: &str,
+    url: &str,
+    bearer: Option<&str>,
+) -> Result<A2aTool> {
     // Sanitize tool name for LLM function-calling: must match
     // [a-zA-Z0-9_-]+ on most providers. Slugify naively.
     let tool_name = format!(
@@ -168,7 +200,13 @@ async fn build_tool(name: &str, url: &str) -> Result<A2aTool> {
             .collect::<String>()
     );
 
-    let resolver = AgentCardResolver::new(None);
+    // Build a single reqwest client with the Authorization header
+    // pre-baked, then thread it through every transport so card
+    // resolution and method calls all carry the bearer.
+    let client = make_reqwest_client(bearer)
+        .with_context(|| format!("build authenticated reqwest client for {name}"))?;
+
+    let resolver = AgentCardResolver::new(client.clone());
     let card: AgentCard = resolver
         .resolve(url)
         .await
@@ -176,15 +214,15 @@ async fn build_tool(name: &str, url: &str) -> Result<A2aTool> {
     let description = build_description(&card);
 
     let factory = A2AClientFactory::builder()
-        .register(Arc::new(JsonRpcTransportFactory::new(None)))
-        .register(Arc::new(RestTransportFactory::new(None)))
+        .register(Arc::new(JsonRpcTransportFactory::new(client.clone())))
+        .register(Arc::new(RestTransportFactory::new(client.clone())))
         .preferred_bindings(vec![
             TRANSPORT_PROTOCOL_JSONRPC.to_string(),
             TRANSPORT_PROTOCOL_HTTP_JSON.to_string(),
         ])
         .build();
 
-    let client = factory
+    let a2a_client = factory
         .create_from_card(&card)
         .await
         .with_context(|| format!("build a2a client from card for {name}"))?;
@@ -192,8 +230,29 @@ async fn build_tool(name: &str, url: &str) -> Result<A2aTool> {
     Ok(A2aTool {
         name: tool_name,
         description,
-        client: Arc::new(client),
+        client: Arc::new(a2a_client),
     })
+}
+
+/// Build a reqwest 0.13 client with `Authorization: Bearer <token>` baked in
+/// when a token is supplied. Returns None on `bearer=None` to let the
+/// caller pass `None` to a2a-client's helpers and use the default client.
+///
+/// Note: a2a-rs uses reqwest 0.13 while the rest of Ra is on 0.12; we
+/// alias the 0.13 crate as `reqwest13` so the two coexist.
+fn make_reqwest_client(bearer: Option<&str>) -> Result<Option<reqwest13::Client>> {
+    let Some(token) = bearer.filter(|t| !t.is_empty()) else {
+        return Ok(None);
+    };
+    let mut headers = reqwest13::header::HeaderMap::new();
+    let value = format!("Bearer {token}");
+    let header_value = reqwest13::header::HeaderValue::from_str(&value)
+        .map_err(|e| anyhow::anyhow!("invalid bearer token: {e}"))?;
+    headers.insert(reqwest13::header::AUTHORIZATION, header_value);
+    let client = reqwest13::Client::builder()
+        .default_headers(headers)
+        .build()?;
+    Ok(Some(client))
 }
 
 fn build_description(card: &AgentCard) -> String {

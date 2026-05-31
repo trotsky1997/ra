@@ -17,10 +17,10 @@
 use std::sync::Arc;
 
 use a2a::{
-    AgentCapabilities, AgentCard, AgentInterface, AgentProvider, AgentSkill, A2AError, Message,
-    Part, PartContent, Role, StreamResponse, Task, TaskState, TaskStatus,
-    TaskStatusUpdateEvent, TRANSPORT_PROTOCOL_GRPC, TRANSPORT_PROTOCOL_HTTP_JSON,
-    TRANSPORT_PROTOCOL_JSONRPC,
+    AgentCapabilities, AgentCard, AgentInterface, AgentProvider, AgentSkill, A2AError,
+    HttpAuthSecurityScheme, Message, Part, PartContent, Role, SecurityRequirement,
+    SecurityScheme, StreamResponse, Task, TaskState, TaskStatus, TaskStatusUpdateEvent,
+    TRANSPORT_PROTOCOL_GRPC, TRANSPORT_PROTOCOL_HTTP_JSON, TRANSPORT_PROTOCOL_JSONRPC,
 };
 use a2a_grpc::GrpcHandler;
 use a2a_pb::proto::a2a_service_server::A2aServiceServer;
@@ -279,7 +279,58 @@ fn collect_text(msg: &Option<Message>) -> String {
     out
 }
 
-fn build_card(http_port: u16, grpc_port: u16) -> AgentCard {
+// --- auth helpers ----------------------------------------------------------
+
+async fn bearer_middleware(
+    expected: Arc<String>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> std::result::Result<axum::response::Response, axum::http::StatusCode> {
+    let header = req
+        .headers()
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let token = header.strip_prefix("Bearer ").unwrap_or("").trim();
+    if !constant_time_eq(token.as_bytes(), expected.as_bytes()) {
+        return Err(axum::http::StatusCode::UNAUTHORIZED);
+    }
+    Ok(next.run(req).await)
+}
+
+fn check_grpc_bearer(
+    expected: &Option<String>,
+    req: tonic::Request<()>,
+) -> std::result::Result<tonic::Request<()>, tonic::Status> {
+    let Some(expected) = expected else {
+        return Ok(req);
+    };
+    let header = req
+        .metadata()
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let token = header.strip_prefix("Bearer ").unwrap_or("").trim();
+    if !constant_time_eq(token.as_bytes(), expected.as_bytes()) {
+        return Err(tonic::Status::unauthenticated(
+            "missing or invalid bearer token",
+        ));
+    }
+    Ok(req)
+}
+
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff: u8 = 0;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
+fn build_card(http_port: u16, grpc_port: u16, require_bearer: bool) -> AgentCard {
     AgentCard {
         name: "Ra".to_string(),
         description: "Rust-native agent. ACP-native, A2A-compatible. Speaks bash and read tools.".to_string(),
@@ -342,8 +393,31 @@ fn build_card(http_port: u16, grpc_port: u16) -> AgentCard {
                 TRANSPORT_PROTOCOL_GRPC,
             ),
         ],
-        security_schemes: None,
-        security_requirements: None,
+        security_schemes: if require_bearer {
+            let mut schemes = std::collections::HashMap::new();
+            schemes.insert(
+                "bearer".to_string(),
+                SecurityScheme::HttpAuth(HttpAuthSecurityScheme {
+                    scheme: "bearer".to_string(),
+                    description: Some(
+                        "Send `Authorization: Bearer <token>` on every request \
+                         (token expected in the env var configured at server start)."
+                            .to_string(),
+                    ),
+                    bearer_format: Some("opaque".to_string()),
+                }),
+            );
+            Some(schemes)
+        } else {
+            None
+        },
+        security_requirements: if require_bearer {
+            let mut req: SecurityRequirement = std::collections::HashMap::new();
+            req.insert("bearer".to_string(), vec![]);
+            Some(vec![req])
+        } else {
+            None
+        },
         documentation_url: None,
         icon_url: None,
         signatures: None,
@@ -360,6 +434,7 @@ pub async fn run(
     system_prompt: Option<String>,
     prompt_templates: Arc<std::collections::HashMap<String, String>>,
     hooks: Option<Arc<crate::hooks::HookEngine>>,
+    bearer_token: Option<String>,
 ) -> Result<()> {
     nemo_obs::init();
 
@@ -374,15 +449,38 @@ pub async fn run(
     let executor = RaExecutor { state: state.clone() };
     let handler = Arc::new(DefaultRequestHandler::new(executor, InMemoryTaskStore::new()));
 
-    let card = build_card(http_port, grpc_port);
+    let require_bearer = bearer_token.is_some();
+    let card = build_card(http_port, grpc_port, require_bearer);
     let card_producer = Arc::new(StaticAgentCard::new(card));
 
-    let app = axum::Router::new()
+    // Public router: agent-card endpoint stays unauthenticated so
+    // discovery still works.
+    let public = agent_card_router(card_producer);
+
+    // Protected routers: gated by Bearer middleware when configured.
+    let mut protected = axum::Router::new()
         .nest("/jsonrpc", jsonrpc_router(handler.clone()))
-        .nest("/rest", rest_router(handler.clone()))
-        .merge(agent_card_router(card_producer));
+        .nest("/rest", rest_router(handler.clone()));
+    if let Some(tok) = bearer_token.clone() {
+        let expected = Arc::new(tok);
+        protected = protected.layer(axum::middleware::from_fn(
+            move |req: axum::extract::Request, next: axum::middleware::Next| {
+                let expected = expected.clone();
+                async move { bearer_middleware(expected, req, next).await }
+            },
+        ));
+    }
+
+    let app = public.merge(protected);
 
     let grpc_service = A2aServiceServer::new(GrpcHandler::new(handler));
+    let grpc_token = bearer_token.clone();
+    let grpc_service = tonic::service::interceptor::InterceptedService::new(
+        grpc_service,
+        move |req: tonic::Request<()>| -> std::result::Result<tonic::Request<()>, tonic::Status> {
+            check_grpc_bearer(&grpc_token, req)
+        },
+    );
 
     let http_addr = format!("0.0.0.0:{http_port}");
     let grpc_addr = format!("0.0.0.0:{grpc_port}");
@@ -395,6 +493,9 @@ pub async fn run(
     eprintln!("[ra::a2a] JSON-RPC:    http://localhost:{http_port}/jsonrpc");
     eprintln!("[ra::a2a] REST:        http://localhost:{http_port}/rest");
     eprintln!("[ra::a2a] gRPC:        http://localhost:{grpc_port}");
+    if require_bearer {
+        eprintln!("[ra::a2a] auth: Bearer required on /jsonrpc, /rest, gRPC");
+    }
 
     tokio::select! {
         result = axum::serve(http_listener, app).into_future() => {

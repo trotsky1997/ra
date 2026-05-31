@@ -26,6 +26,11 @@ futures = "0.3"
 tokio-stream = "0.1"
 anyhow = "1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+# a2a-rs ecosystem (a2a-client / a2a-server) is on reqwest 0.13 — alias the
+# matching version under a separate name so we can hand-build clients that
+# their transport factories accept (Authorization headers etc.) without
+# breaking llm/nemo-relay which still pin 0.12.
+reqwest13 = { package = "reqwest", version = "0.13", default-features = false, features = ["rustls", "json", "stream"] }
 llm = { version = "1.2", default-features = false, features = ["openai", "anthropic", "google", "deepseek", "ollama", "groq", "xai"] }
 agent-client-protocol = { git = "https://github.com/trotsky1997/rust-sdk.git", branch = "feat/unstable-feature-passthrough", features = ["unstable"] }
 dashmap = "6"

@@ -52,6 +52,15 @@ enum Cmd {
         #[arg(long, default_value_t = 50051)]
         grpc_port: u16,
     },
+    /// Resume a previously-saved trajectory and continue with a new prompt.
+    Resume {
+        /// Session id (the bare ULID, e.g. `01ABC…`). See `ra sessions` to list.
+        id: String,
+        /// Follow-up prompt sent after the saved history is hydrated.
+        prompt: String,
+    },
+    /// List saved sessions in the current cwd's bucket.
+    Sessions,
 }
 
 #[tokio::main]
@@ -67,6 +76,8 @@ async fn main() -> anyhow::Result<()> {
         Some(Cmd::Serve { http_port, grpc_port }) => {
             run_serve(http_port, grpc_port, &config).await
         }
+        Some(Cmd::Resume { id, prompt }) => run_resume(&id, prompt, &config).await,
+        Some(Cmd::Sessions) => run_list_sessions(&config).await,
         None => run_print(cli.prompt, &config).await,
     }
 }
@@ -432,8 +443,32 @@ async fn run_print(prompt: Option<String>, config: &ra::config::RaConfig) -> any
     }
     let session = Arc::new(sess);
 
-    let mut rx = session.subscribe();
-    let printer = tokio::spawn(async move {
+    let printer = spawn_event_printer(session.subscribe());
+
+    let _outcome = session.prompt(prompt).await?;
+    printer.await?;
+
+    // Persist the trajectory to disk so `ra resume <id>` can pick it up.
+    // ACP/A2A paths do this through SessionRunner; the print-mode path
+    // doesn't currently use SessionRunner, so we save inline here.
+    let session_id = ulid::Ulid::new().to_string();
+    let cwd = std::env::current_dir()?;
+    if let Ok(store) = ra::store::SessionStore::for_cwd(&cwd) {
+        let messages = session.snapshot_messages().await;
+        let traj =
+            ra::atif_codec::encode(&session_id, build_model_name(config), &messages);
+        match store.save(&traj).await {
+            Ok(_) => eprintln!("[ra] saved session {session_id} (resume with `ra resume {session_id} <prompt>`)"),
+            Err(e) => eprintln!("[ra] warning: could not save session: {e:#}"),
+        }
+    }
+    Ok(())
+}
+
+fn spawn_event_printer(
+    mut rx: tokio::sync::broadcast::Receiver<Event>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
         let mut stdout = io::stdout();
         loop {
             match rx.recv().await {
@@ -484,9 +519,90 @@ async fn run_print(prompt: Option<String>, config: &ra::config::RaConfig) -> any
                 Err(_) => break,
             }
         }
-    });
+    })
+}
 
+/// Resume a saved trajectory from disk and continue with a new prompt.
+/// Bucket comes from the current cwd (same key SessionStore uses to save).
+async fn run_resume(
+    id: &str,
+    prompt: String,
+    config: &ra::config::RaConfig,
+) -> anyhow::Result<()> {
+    if config.run.banner {
+        eprintln!("{BANNER}");
+    }
+
+    let cwd = std::env::current_dir()?;
+    let store = ra::store::SessionStore::for_cwd(&cwd)?;
+    let traj = store
+        .load(id)
+        .await
+        .map_err(|e| anyhow::anyhow!("load session {id}: {e:#}"))?;
+    let messages = ra::atif_codec::decode(&traj);
+    eprintln!(
+        "[ra] resumed session {id}: {} messages from {}",
+        messages.len(),
+        store.path_for(id).display()
+    );
+
+    let (model, _factory) = build_model(config);
+    let hooks = build_hooks(config);
+    let mut sess = Session::new(model, default_builtins(&config.tools.builtin));
+    if let Some(h) = hooks {
+        sess = sess.with_hooks(h);
+    }
+    let session = Arc::new(sess);
+    session.restore_messages(messages).await;
+
+    let printer = spawn_event_printer(session.subscribe());
     let _outcome = session.prompt(prompt).await?;
     printer.await?;
+
+    // Persist the (now-extended) trajectory back to disk so the same id
+    // continues to resolve to the latest history.
+    let updated = session.snapshot_messages().await;
+    let model_name = build_model_name(config);
+    let traj = ra::atif_codec::encode(id, model_name, &updated);
+    if let Err(e) = store.save(&traj).await {
+        eprintln!("[ra] warning: failed to save resumed trajectory: {e:#}");
+    }
     Ok(())
+}
+
+/// `ra sessions` — list saved sessions in the current cwd's bucket.
+async fn run_list_sessions(_config: &ra::config::RaConfig) -> anyhow::Result<()> {
+    let cwd = std::env::current_dir()?;
+    let store = ra::store::SessionStore::for_cwd(&cwd)?;
+    let metas = store.list().await?;
+    if metas.is_empty() {
+        eprintln!(
+            "[ra] no saved sessions in bucket {}",
+            store.bucket().display()
+        );
+        return Ok(());
+    }
+    println!("# saved sessions in {}", store.bucket().display());
+    for m in metas {
+        let modified = chrono::DateTime::<chrono::Utc>::from(m.modified)
+            .format("%Y-%m-%d %H:%M:%S UTC");
+        match m.title.as_deref() {
+            Some(title) => println!("{}\t{modified}\t{title}", m.session_id),
+            None => println!("{}\t{modified}", m.session_id),
+        }
+    }
+    Ok(())
+}
+
+/// Try to recover the default model id for trajectory metadata.
+/// Best-effort: if no models are configured (mock-only run), returns None.
+fn build_model_name(config: &ra::config::RaConfig) -> Option<String> {
+    if config.models.is_empty() {
+        return None;
+    }
+    config
+        .model
+        .default
+        .clone()
+        .or_else(|| config.models.first().map(|m| m.name.clone()))
 }

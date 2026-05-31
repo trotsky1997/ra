@@ -104,6 +104,32 @@ impl A2aState {
         if let Some(sp) = &self.system_prompt {
             s.set_system_prompt(sp.clone()).await;
         }
+        // Resume: if an ATIF trajectory exists on disk for this task id,
+        // hydrate the message log from it. Lets A2A clients reconnect to
+        // a prior task and keep the model's context, or pick up where a
+        // crashed `ra serve` left off.
+        if let Ok(store) = SessionStore::for_cwd(&self.cwd) {
+            if store.path_for(task_id).exists() {
+                match store.load(task_id).await {
+                    Ok(traj) => {
+                        let messages = crate::atif_codec::decode(&traj);
+                        if !messages.is_empty() {
+                            eprintln!(
+                                "[ra::a2a] resumed session {task_id} ({} messages from disk)",
+                                messages.len()
+                            );
+                            s.restore_messages(messages).await;
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "[ra::a2a] could not load saved session {task_id}: {e:#}; \
+                             starting fresh"
+                        );
+                    }
+                }
+            }
+        }
         self.sessions.insert(task_id.to_string(), s.clone());
         s
     }

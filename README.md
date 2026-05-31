@@ -92,6 +92,18 @@ cargo run -- serve --http-port 3000 --grpc-port 50051
 # gRPC:          localhost:50051
 ```
 
+To pick up a saved trajectory and continue the conversation:
+
+```bash
+ra sessions                     # list saved sessions in this cwd's bucket
+ra resume <id> "follow-up prompt"
+```
+
+A2A clients reconnecting with a known `task_id` are auto-resumed —
+the server hydrates the message log from disk before processing the
+new turn, so editors / agent-team teammates can pick up exactly where
+they left off across `ra serve` restarts.
+
 ## Configuration
 
 A minimal `ra.toml`:
@@ -185,9 +197,10 @@ src/
 Working: streaming text + parallel tool calls + multi-turn tool loop,
 real LLM backends (Anthropic / OpenAI / Google / pi / …), ACP v1
 end-to-end, A2A bidirectional, MCP stdio + HTTP, ATIF/ATOF on disk,
-HCP TOML config, skills/prompts/AGENTS.md system-prompt unification,
-Claude-Code-shaped hooks, optional Bearer auth on A2A serve.
+**session resumption from a saved trajectory** (`ra resume <id>` /
+`ra sessions`, plus auto-resume on the A2A path), HCP TOML config,
+skills/prompts/AGENTS.md system-prompt unification, Claude-Code-shaped
+hooks, optional Bearer auth on A2A serve.
 
-Not yet: interactive TUI, session resumption from a saved trajectory,
-internal-Rust replacements for ripgrep/fd/eza (planned — see issue
-tracker once the repo has one).
+Not yet: interactive TUI, internal-Rust replacements for ripgrep / fd
+/ eza (planned).

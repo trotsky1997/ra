@@ -3,6 +3,7 @@ pub mod a2a_tool;
 pub mod acp_server;
 pub mod atif;
 pub mod atif_codec;
+pub mod config;
 pub mod events;
 pub mod llm_model;
 pub mod model;

@@ -27,6 +27,11 @@ struct Cli {
 
     /// Legacy positional prompt; equivalent to `ra run <PROMPT>`.
     prompt: Option<String>,
+
+    /// Path to TOML config (defaults to RA_CONFIG env, then ./ra.toml,
+    /// then ~/.ra.toml).
+    #[arg(long, global = true)]
+    config: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -52,12 +57,17 @@ enum Cmd {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    let config = ra::config::RaConfig::load(cli.config.as_deref())?;
+    apply_run_config(&config.run);
+    apply_obs_config(&config.obs);
 
     match cli.cmd {
-        Some(Cmd::Acp) => run_acp().await,
-        Some(Cmd::Run { prompt }) => run_print(prompt).await,
-        Some(Cmd::Serve { http_port, grpc_port }) => run_serve(http_port, grpc_port).await,
-        None => run_print(cli.prompt).await,
+        Some(Cmd::Acp) => run_acp(&config).await,
+        Some(Cmd::Run { prompt }) => run_print(prompt, &config).await,
+        Some(Cmd::Serve { http_port, grpc_port }) => {
+            run_serve(http_port, grpc_port, &config).await
+        }
+        None => run_print(cli.prompt, &config).await,
     }
 }
 
@@ -168,17 +178,59 @@ impl ModelFactory for EnvModelFactory {
 }
 
 /// Build the default Model + a factory for runtime model swapping.
-fn build_model() -> (Arc<dyn Model>, Arc<dyn ModelFactory>) {
-    let factory = EnvModelFactory::new();
+/// Build the default Model + a factory for runtime model swapping.
+///
+/// Resolution: if the loaded config has any `[[models]]` entries, those
+/// drive the factory. Otherwise we fall back to the env-only path
+/// (ANTHROPIC_API_KEY / OPENAI_API_KEY / PI_API_KEY).
+fn build_model(config: &ra::config::RaConfig) -> (Arc<dyn Model>, Arc<dyn ModelFactory>) {
+    let factory = if !config.models.is_empty() {
+        let mut entries = Vec::with_capacity(config.models.len());
+        for m in &config.models {
+            let backend = match parse_backend(&m.backend) {
+                Some(b) => b,
+                None => {
+                    eprintln!("[ra::config] unknown backend '{}' for model '{}', skipping", m.backend, m.name);
+                    continue;
+                }
+            };
+            let api_key = match m.resolve_api_key() {
+                Some(k) => k,
+                None => {
+                    eprintln!("[ra::config] no API key for model '{}', skipping", m.name);
+                    continue;
+                }
+            };
+            entries.push(ModelEntry {
+                id: format!("{}/{}", m.name, m.model_id),
+                name: format!("{} {}", m.name, m.model_id),
+                backend,
+                api_key,
+                backend_model: m.model_id.clone(),
+                base_url: m.base_url.clone(),
+            });
+        }
+        // Honour explicit default if specified
+        if let Some(default_name) = &config.model.default {
+            if let Some(idx) = entries.iter().position(|e| e.id.starts_with(&format!("{}/", default_name))) {
+                if idx != 0 {
+                    entries.swap(0, idx);
+                }
+            } else {
+                eprintln!("[ra::config] model.default = '{default_name}' not found in [[models]]");
+            }
+        }
+        EnvModelFactory { entries }
+    } else {
+        EnvModelFactory::new()
+    };
+
     let model: Arc<dyn Model> = if let Some(entry) = factory.first().cloned() {
         eprintln!(
             "[ra] default model: {} (backend={:?})",
             entry.id, entry.backend
         );
-        // Build via factory to keep the resolution path identical to set_model.
-        factory
-            .build(&entry.id)
-            .expect("default model build failed")
+        factory.build(&entry.id).expect("default model build failed")
     } else {
         eprintln!("[ra] no API key set; using MockModel");
         Arc::new(MockModel)
@@ -186,30 +238,101 @@ fn build_model() -> (Arc<dyn Model>, Arc<dyn ModelFactory>) {
     (model, Arc::new(factory))
 }
 
-async fn run_acp() -> anyhow::Result<()> {
-    eprintln!("{BANNER}");
+/// Map config backend string → llm crate enum.
+fn parse_backend(s: &str) -> Option<LLMBackend> {
+    match s.to_ascii_lowercase().as_str() {
+        "openai" => Some(LLMBackend::OpenAI),
+        "anthropic" => Some(LLMBackend::Anthropic),
+        "google" => Some(LLMBackend::Google),
+        "deepseek" => Some(LLMBackend::DeepSeek),
+        "ollama" => Some(LLMBackend::Ollama),
+        "groq" => Some(LLMBackend::Groq),
+        "xai" => Some(LLMBackend::XAI),
+        _ => None,
+    }
+}
+
+/// Apply the `[run]` section of the config: data_dir → RA_HOME, etc.
+/// Mutates process env so downstream code (which already reads env) picks
+/// up the new values.
+fn apply_run_config(run: &ra::config::RunSection) {
+    if let Some(d) = &run.data_dir {
+        let expanded = shellexpand::tilde(d).to_string();
+        // SAFETY: process env is single-threaded at this point (main).
+        unsafe { std::env::set_var("RA_HOME", expanded) };
+    }
+}
+
+/// Apply the `[obs]` section: copies into the env vars `nemo_obs::init`
+/// already reads, so the existing observability code path is the one
+/// source of truth.
+fn apply_obs_config(obs: &ra::config::ObsSection) {
+    if let Some(b) = &obs.backend {
+        if !b.is_empty() && std::env::var("RA_OBS_BACKEND").is_err() {
+            unsafe { std::env::set_var("RA_OBS_BACKEND", b) };
+        }
+    }
+    if let Some(ep) = &obs.otel_endpoint {
+        if !ep.is_empty() && std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").is_err() {
+            unsafe { std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", ep) };
+        }
+    }
+}
+
+/// Build A2aTool list from `[[a2a.remote_agents]]`. Compose with the
+/// env-based path; both sources are union'd.
+async fn load_a2a_tools_from_config(
+    config: &ra::config::RaConfig,
+) -> Vec<Arc<dyn ra::Tool>> {
+    let mut out: Vec<Arc<dyn ra::Tool>> = Vec::new();
+    for agent in &config.a2a.remote_agents {
+        // Future: honour agent.auth.bearer_env when A2aTool grows auth.
+        let entry = format!("{}={}", agent.name, agent.url);
+        for t in ra::a2a_tool::load_remote_tools_from_env_string(&entry).await {
+            out.push(t);
+        }
+    }
+    out
+}
+
+async fn run_acp(config: &ra::config::RaConfig) -> anyhow::Result<()> {
+    if config.run.banner {
+        eprintln!("{BANNER}");
+    }
     eprintln!("[ra] starting ACP server on stdio (protocol v1)");
-    let (model, factory) = build_model();
-    let extra_tools = ra::a2a_tool::load_remote_tools_from_env().await;
+    let (model, factory) = build_model(config);
+    let mut extra_tools = ra::a2a_tool::load_remote_tools_from_env().await;
+    extra_tools.extend(load_a2a_tools_from_config(config).await);
     ra::acp_server::run(model, factory, extra_tools)
         .await
         .map_err(|e| anyhow::anyhow!("{e:?}"))?;
     Ok(())
 }
 
-async fn run_serve(http_port: u16, grpc_port: u16) -> anyhow::Result<()> {
-    eprintln!("{BANNER}");
+async fn run_serve(
+    http_port: u16,
+    grpc_port: u16,
+    config: &ra::config::RaConfig,
+) -> anyhow::Result<()> {
+    let http_port = config.a2a.serve.http_port.unwrap_or(http_port);
+    let grpc_port = config.a2a.serve.grpc_port.unwrap_or(grpc_port);
+    if config.run.banner {
+        eprintln!("{BANNER}");
+    }
     eprintln!("[ra] starting A2A server (HTTP :{http_port}, gRPC :{grpc_port})");
-    let (model, factory) = build_model();
-    let extra_tools = ra::a2a_tool::load_remote_tools_from_env().await;
+    let (model, factory) = build_model(config);
+    let mut extra_tools = ra::a2a_tool::load_remote_tools_from_env().await;
+    extra_tools.extend(load_a2a_tools_from_config(config).await);
     ra::a2a_server::run(model, factory, http_port, grpc_port, extra_tools).await
 }
 
-async fn run_print(prompt: Option<String>) -> anyhow::Result<()> {
-    eprintln!("{BANNER}");
+async fn run_print(prompt: Option<String>, config: &ra::config::RaConfig) -> anyhow::Result<()> {
+    if config.run.banner {
+        eprintln!("{BANNER}");
+    }
 
     let prompt = prompt.unwrap_or_else(|| "bash:echo hello from ra && uname -sr".to_string());
-    let (model, _factory) = build_model();
+    let (model, _factory) = build_model(config);
 
     let session = Arc::new(Session::new(
         model,

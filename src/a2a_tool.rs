@@ -117,10 +117,20 @@ pub async fn load_remote_tools_from_env() -> Vec<Arc<dyn Tool>> {
         Ok(s) if !s.is_empty() => s,
         _ => return Vec::new(),
     };
+    load_remote_tools_from_env_string(&raw).await
+}
+
+/// Same as `load_remote_tools_from_env` but takes the agent list inline,
+/// for callers (config loader) that have already parsed it elsewhere.
+/// Format: `name1=url1,name2=url2`.
+pub async fn load_remote_tools_from_env_string(raw: &str) -> Vec<Arc<dyn Tool>> {
     let mut tools: Vec<Arc<dyn Tool>> = Vec::new();
     for entry in raw.split(',') {
+        if entry.trim().is_empty() {
+            continue;
+        }
         let Some((name, url)) = entry.split_once('=') else {
-            eprintln!("[ra::a2a-tool] skipping malformed RA_A2A_AGENTS entry: {entry}");
+            eprintln!("[ra::a2a-tool] skipping malformed entry: {entry}");
             continue;
         };
         match build_tool(name.trim(), url.trim()).await {

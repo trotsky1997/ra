@@ -33,6 +33,9 @@ sha2 = "0.10"
 hex = "0.4"
 tempfile = "3"
 tiktoken-rs = "0.11"
+toml = "0.8"
+globset = "0.4"
+shellexpand = "3"
 nemo-relay = { git = "https://github.com/NVIDIA/NeMo-Relay.git", branch = "main" }
 a2a-lf = { git = "https://github.com/a2aproject/a2a-rs.git", rev = "7676ec9f2ef53a0daafb08d8ea0d4436e3075078" }
 a2a-server-lf = { git = "https://github.com/a2aproject/a2a-rs.git", rev = "7676ec9f2ef53a0daafb08d8ea0d4436e3075078" }

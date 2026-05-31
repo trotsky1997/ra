@@ -1202,6 +1202,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "globset"
+version = "0.4.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "52dfc19153a48bde0cbd630453615c8151bce3a5adfac7a0aebfbf0a1e1f57e3"
+dependencies = [
+ "aho-corasick",
+ "bstr",
+ "log",
+ "regex-automata",
+ "regex-syntax",
+]
+
+[[package]]
 name = "h2"
 version = "0.4.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2419,6 +2432,7 @@ dependencies = [
  "dashmap",
  "dirs 5.0.1",
  "futures",
+ "globset",
  "hex",
  "llm",
  "nemo-relay",
@@ -2427,11 +2441,13 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "shellexpand",
  "tempfile",
  "tiktoken-rs",
  "tokio",
  "tokio-stream",
  "tokio-util",
+ "toml",
  "tonic",
  "ulid",
 ]
@@ -3135,6 +3151,15 @@ name = "shell-words"
 version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc6fe69c597f9c37bfeeeeeb33da3530379845f10be461a66d16d03eca2ded77"
+
+[[package]]
+name = "shellexpand"
+version = "3.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32824fab5e16e6c4d86dc1ba84489390419a39f97699852b66480bb87d297ed8"
+dependencies = [
+ "dirs 6.0.0",
+]
 
 [[package]]
 name = "shlex"

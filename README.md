@@ -18,10 +18,13 @@ The eye watching from the banner is 𓂀 (U+13080).
 
 ## What you get
 
-- **One binary, three personalities.** `ra run` for one-shot prompts,
+- **One binary, four personalities.** `ra run` for one-shot prompts,
   `ra acp` to serve as an ACP agent over stdio for editors (Zed,
   Neovim ACP, …), `ra serve` to expose itself as an A2A agent over
-  HTTP/JSON-RPC + REST + gRPC.
+  HTTP/JSON-RPC + REST + gRPC, and **`ra tui`** for an interactive
+  terminal chat (requires `--features tui`, which pulls in
+  [opentui_rust](https://github.com/Dicklesworthstone/opentui_rust)
+  and needs nightly Rust).
 - **Built-in tool set.** `read`, `write`, `edit`, `bash`, plus
   `grep` (ripgrep), `find` (fd), `ls` (eza/exa). External-binary tools
   detect themselves at startup; missing dependencies are logged once
@@ -107,6 +110,17 @@ To pick up a saved trajectory and continue the conversation:
 ```bash
 ra sessions                     # list saved sessions in this cwd's bucket
 ra resume <id> "follow-up prompt"
+```
+
+To launch the interactive terminal UI (requires nightly Rust + the
+`tui` feature, since opentui_rust uses edition 2024):
+
+```bash
+rustup toolchain install nightly
+cargo +nightly run --features tui --bin ra -- tui
+# Type a prompt, Enter submits. Ctrl-C cancels a running prompt;
+# press Ctrl-D or Ctrl-C twice to quit. Trajectory is saved on exit
+# under the same bucket `ra resume` reads from.
 ```
 
 A2A clients reconnecting with a known `task_id` are auto-resumed —
@@ -209,8 +223,10 @@ real LLM backends (Anthropic / OpenAI / Google / pi / …), ACP v1
 end-to-end, A2A bidirectional, MCP stdio + HTTP, ATIF/ATOF on disk,
 **session resumption from a saved trajectory** (`ra resume <id>` /
 `ra sessions`, plus auto-resume on the A2A path), HCP TOML config,
-skills/prompts/AGENTS.md system-prompt unification, Claude-Code-shaped
-hooks, optional Bearer auth on A2A serve.
+skills/prompts/AGENTS.md system-prompt unification, native
+[skills.sh](https://github.com/vercel-labs/skills) discovery,
+Claude-Code-shaped hooks, optional Bearer auth on A2A serve, RTK
+output compression, **interactive TUI behind `--features tui`**.
 
-Not yet: interactive TUI, internal-Rust replacements for ripgrep / fd
-/ eza (planned).
+Not yet: internal-Rust replacements for ripgrep / fd / eza
+(planned).

@@ -16,6 +16,8 @@ pub mod skills;
 pub mod store;
 pub mod tool_ctx;
 pub mod tools;
+#[cfg(feature = "tui")]
+pub mod tui;
 
 pub use events::{Event, ToolCall, ToolResult};
 pub use llm_model::{LlmModel, LlmModelConfig};

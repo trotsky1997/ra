@@ -1,0 +1,605 @@
+//! Interactive terminal UI for Ra, backed by opentui_rust.
+//!
+//! Layout: a bordered chat scrollback occupies most of the screen, with
+//! a 3-row input box pinned to the bottom. The user types into the
+//! input box; pressing Enter submits via `Session::prompt`. Streaming
+//! TextDelta / ToolCallStart / ToolCallEnd events arrive on the
+//! Session's broadcast bus and update the chat in real time.
+//!
+//! opentui_rust is a renderer engine, not a widget framework — we
+//! hand-roll the layout with `OptimizedBuffer::draw_text` /
+//! `draw_box`. The `Renderer` is `!Send` so we keep render and input
+//! handling on the main thread; only the Session prompt-future is
+//! spawned, and it communicates back exclusively via the broadcast bus.
+//!
+//! Gated behind the `tui` cargo feature because opentui_rust requires
+//! nightly Rust (edition 2024).
+
+use std::collections::HashMap;
+use std::io::Read;
+use std::sync::Arc;
+use std::time::Duration;
+
+use anyhow::Result;
+use opentui_rust::buffer::BoxStyle;
+use opentui_rust::input::{Event as InputEvent, InputParser, KeyCode, KeyEvent, KeyModifiers};
+use opentui_rust::renderer::RendererOptions;
+use opentui_rust::terminal::{enable_raw_mode, terminal_size};
+use opentui_rust::{Renderer, Rgba, Style};
+use tokio::sync::{broadcast, mpsc};
+
+use crate::config::RaConfig;
+use crate::events::Event;
+use crate::session::Session;
+use crate::tools::default_builtins;
+
+/// One rendered line in the scrollback. Kept minimal; everything else
+/// is derived (palette, prefix, wrap) at draw time.
+#[derive(Debug, Clone)]
+enum ChatEntry {
+    User(String),
+    Agent(String),
+    Tool {
+        name: String,
+        input: serde_json::Value,
+        output: String,
+        is_error: bool,
+    },
+    System(String),
+}
+
+/// In-flight tool call collation. `ToolCallStart` opens an entry,
+/// `ToolCallUpdate` appends chunks, `ToolCallEnd` closes it.
+#[derive(Debug, Clone, Default)]
+struct PartialTool {
+    name: String,
+    input: serde_json::Value,
+    chunks: String,
+}
+
+/// Public entry point — wired into `main.rs` behind `#[cfg(feature = "tui")]`.
+pub async fn run(config: &RaConfig) -> Result<()> {
+    if !is_a_tty() {
+        anyhow::bail!(
+            "ra tui requires an interactive terminal (stdin/stdout must be a TTY)"
+        );
+    }
+    let session = build_session(config).await?;
+    let mut app = TuiApp::new(session.clone()).await?;
+    app.run_loop().await?;
+    app.save_trajectory(config).await;
+    Ok(())
+}
+
+/// Refuse to start if stdin isn't a TTY — opentui's raw-mode setup
+/// would otherwise spew terminal escapes at whatever we're piped to.
+fn is_a_tty() -> bool {
+    use std::os::fd::AsRawFd;
+    // SAFETY: libc::isatty just queries the fd; no aliasing concerns.
+    let stdin_fd = std::io::stdin().as_raw_fd();
+    let stdout_fd = std::io::stdout().as_raw_fd();
+    unsafe { libc::isatty(stdin_fd) == 1 && libc::isatty(stdout_fd) == 1 }
+}
+
+/// Build the Session the same way `run_print` does — model + tools +
+/// hooks + RTK + system prompt — so TUI mode honours every config knob.
+async fn build_session(config: &RaConfig) -> Result<Arc<Session>> {
+    use crate::skills::ResourceBundle;
+    let factory = build_model_factory(config);
+    let model = factory
+        .first_model()
+        .ok_or_else(|| anyhow::anyhow!("no model configured; set ANTHROPIC_API_KEY / OPENAI_API_KEY / PI_API_KEY or [[models]] in ra.toml"))?;
+
+    let hooks_engine = crate::hooks::HookEngine::from_config(&config.hooks);
+    let hooks = if hooks_engine.is_empty() {
+        None
+    } else {
+        Some(Arc::new(hooks_engine))
+    };
+    let rtk = crate::tools::RtkRewriter::from_config(&config.rtk);
+
+    let mut bundle = ResourceBundle::default();
+    if config.skills.enabled {
+        let mut globs = if config.skills.discover {
+            crate::skills::default_discover_globs()
+        } else {
+            Vec::new()
+        };
+        globs.extend(config.skills.paths.iter().cloned());
+        bundle.skills = crate::skills::load_skills(&globs);
+    }
+    if config.prompts.enabled {
+        bundle.prompts = crate::skills::load_prompts(&config.prompts.paths);
+    }
+    if config.agents_md.enabled {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
+        bundle.agents_md = crate::skills::discover_agents_md(&cwd);
+    }
+    let system_prompt = bundle.build_system_prompt();
+
+    let mut sess = Session::new(model, default_builtins(&config.tools.builtin)).with_rtk(rtk);
+    if let Some(h) = hooks {
+        sess = sess.with_hooks(h);
+    }
+    let session = Arc::new(sess);
+    if let Some(sp) = system_prompt {
+        session.set_system_prompt(sp).await;
+    }
+    Ok(session)
+}
+
+// ---- Tiny model-factory shim ---------------------------------------------
+//
+// `main.rs` already encapsulates env-var → Model resolution behind its own
+// EnvModelFactory. We don't want to copy 80 lines or move that helper to a
+// public location for one caller, so the TUI uses a thin trait that the
+// caller (main.rs) plugs in via `crate::config`. For now we duplicate just
+// enough: load Anthropic / OpenAI / pi keys from env and pick the first.
+
+trait FirstModel {
+    fn first_model(&self) -> Option<Arc<dyn crate::model::Model>>;
+}
+
+struct EnvFirstModel;
+impl FirstModel for EnvFirstModel {
+    fn first_model(&self) -> Option<Arc<dyn crate::model::Model>> {
+        // Anthropic
+        if let Ok(k) = std::env::var("ANTHROPIC_API_KEY") {
+            if !k.is_empty() {
+                let model = std::env::var("RA_MODEL").unwrap_or_else(|_| "claude-opus-4-5".into());
+                return crate::llm_model::LlmModel::build(crate::llm_model::LlmModelConfig {
+                    backend: llm::builder::LLMBackend::Anthropic,
+                    api_key: k, model, base_url: None,
+                }).ok().map(|m| Arc::new(m) as Arc<dyn crate::model::Model>);
+            }
+        }
+        // OpenAI
+        if let Ok(k) = std::env::var("OPENAI_API_KEY") {
+            if !k.is_empty() {
+                let model = std::env::var("RA_MODEL").unwrap_or_else(|_| "gpt-4.1-mini".into());
+                let base_url = std::env::var("OPENAI_BASE_URL").ok();
+                return crate::llm_model::LlmModel::build(crate::llm_model::LlmModelConfig {
+                    backend: llm::builder::LLMBackend::OpenAI,
+                    api_key: k, model, base_url,
+                }).ok().map(|m| Arc::new(m) as Arc<dyn crate::model::Model>);
+            }
+        }
+        // pi (Responses API endpoint)
+        if let Ok(k) = std::env::var("PI_API_KEY") {
+            if !k.is_empty() {
+                let base = std::env::var("PI_BASE_URL")
+                    .unwrap_or_else(|_| "https://pi-api-us.macaron.xin/v1/".into());
+                let model = std::env::var("PI_MODEL")
+                    .or_else(|_| std::env::var("RA_MODEL"))
+                    .unwrap_or_else(|_| "gpt-5.5".into());
+                return crate::llm_model::LlmModel::build(crate::llm_model::LlmModelConfig {
+                    backend: llm::builder::LLMBackend::OpenAI,
+                    api_key: k, model, base_url: Some(base),
+                }).ok().map(|m| Arc::new(m) as Arc<dyn crate::model::Model>);
+            }
+        }
+        // Fall back to MockModel so the TUI is still demoable without keys.
+        Some(Arc::new(crate::model::MockModel) as Arc<dyn crate::model::Model>)
+    }
+}
+
+fn build_model_factory(_config: &RaConfig) -> EnvFirstModel {
+    EnvFirstModel
+}
+
+// ---- TuiApp ---------------------------------------------------------------
+
+struct TuiApp {
+    session: Arc<Session>,
+    renderer: Renderer,
+    _raw_guard: opentui_rust::terminal::RawModeGuard,
+    parser: InputParser,
+    stdin_rx: mpsc::UnboundedReceiver<u8>,
+    event_rx: broadcast::Receiver<Event>,
+
+    chat: Vec<ChatEntry>,
+    current_text: String,
+    current_tools: HashMap<String, PartialTool>,
+    input_buf: String,
+    scroll: usize,
+
+    in_flight: Option<tokio::task::JoinHandle<()>>,
+    last_ctrl_c: Option<std::time::Instant>,
+    quit: bool,
+    width: u32,
+    height: u32,
+}
+
+impl TuiApp {
+    async fn new(session: Arc<Session>) -> Result<Self> {
+        let (tw, th) = terminal_size().unwrap_or((100, 32));
+        let width = u32::from(tw);
+        let height = u32::from(th);
+        let opts = RendererOptions {
+            use_alt_screen: true,
+            hide_cursor: false,
+            enable_mouse: false,
+            ..Default::default()
+        };
+        let renderer = Renderer::new_with_options(width, height, opts)?;
+        let raw_guard = enable_raw_mode()?;
+
+        // stdin → mpsc bridge: reading stdin blocks the OS thread, so we
+        // do it on a dedicated blocking task and ship bytes back.
+        let (tx, rx) = mpsc::unbounded_channel::<u8>();
+        std::thread::spawn(move || {
+            let mut stdin = std::io::stdin();
+            let mut buf = [0u8; 64];
+            loop {
+                match stdin.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        for &b in &buf[..n] {
+                            if tx.send(b).is_err() {
+                                return;
+                            }
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+
+        let event_rx = session.subscribe();
+        let mut app = Self {
+            session,
+            renderer,
+            _raw_guard: raw_guard,
+            parser: InputParser::new(),
+            stdin_rx: rx,
+            event_rx,
+            chat: vec![ChatEntry::System(
+                "Ra TUI — type a prompt and press Enter. Ctrl-C cancels, Ctrl-D quits.".into(),
+            )],
+            current_text: String::new(),
+            current_tools: HashMap::new(),
+            input_buf: String::new(),
+            scroll: 0,
+            in_flight: None,
+            last_ctrl_c: None,
+            quit: false,
+            width,
+            height,
+        };
+        app.draw()?;
+        Ok(app)
+    }
+
+    async fn run_loop(&mut self) -> Result<()> {
+        let mut tick = tokio::time::interval(Duration::from_millis(33));
+        let mut input_buf: Vec<u8> = Vec::new();
+        while !self.quit {
+            tokio::select! {
+                biased;
+                ev = self.event_rx.recv() => match ev {
+                    Ok(e) => self.on_session_event(e),
+                    Err(broadcast::error::RecvError::Closed) => break,
+                    Err(broadcast::error::RecvError::Lagged(_)) => {}
+                },
+                Some(byte) = self.stdin_rx.recv() => {
+                    input_buf.push(byte);
+                    while !input_buf.is_empty() {
+                        match self.parser.parse(&input_buf) {
+                            Ok((evt, consumed)) => {
+                                input_buf.drain(..consumed);
+                                self.on_input_event(evt);
+                            }
+                            Err(_) => break, // incomplete or empty
+                        }
+                    }
+                },
+                _ = tick.tick() => {}
+            }
+            // Settle the in-flight handle.
+            if let Some(h) = &self.in_flight {
+                if h.is_finished() {
+                    self.in_flight = None;
+                }
+            }
+            self.draw()?;
+        }
+        Ok(())
+    }
+
+    fn on_session_event(&mut self, e: Event) {
+        match e {
+            Event::AgentStart | Event::TurnStart | Event::TurnEnd => {}
+            Event::AgentEnd => {
+                // Flush any in-flight assistant text into the scrollback.
+                if !self.current_text.is_empty() {
+                    self.chat.push(ChatEntry::Agent(std::mem::take(&mut self.current_text)));
+                }
+            }
+            Event::TextDelta(s) | Event::ThinkingDelta(s) => {
+                self.current_text.push_str(&s);
+            }
+            Event::ToolCallStart(c) => {
+                self.flush_current_text();
+                self.current_tools.insert(c.id.clone(), PartialTool {
+                    name: c.name.clone(),
+                    input: c.input.clone(),
+                    chunks: String::new(),
+                });
+            }
+            Event::ToolCallUpdate { id, chunk } => {
+                if let Some(t) = self.current_tools.get_mut(&id) {
+                    if !t.chunks.is_empty() {
+                        t.chunks.push('\n');
+                    }
+                    t.chunks.push_str(&chunk);
+                }
+            }
+            Event::ToolCallEnd(r) => {
+                let partial = self.current_tools.remove(&r.call_id);
+                let (name, input) = partial
+                    .map(|p| (p.name, p.input))
+                    .unwrap_or_else(|| ("?".into(), serde_json::Value::Null));
+                self.chat.push(ChatEntry::Tool {
+                    name,
+                    input,
+                    output: r.content,
+                    is_error: r.is_error,
+                });
+            }
+            Event::Error(e) => {
+                self.chat.push(ChatEntry::System(format!("error: {e}")));
+            }
+        }
+    }
+
+    fn flush_current_text(&mut self) {
+        if !self.current_text.is_empty() {
+            self.chat.push(ChatEntry::Agent(std::mem::take(&mut self.current_text)));
+        }
+    }
+
+    fn on_input_event(&mut self, ev: InputEvent) {
+        let key = match ev {
+            InputEvent::Key(k) => k,
+            InputEvent::Resize(r) => {
+                self.width = u32::from(r.width);
+                self.height = u32::from(r.height);
+                let _ = self.renderer.resize(self.width, self.height);
+                return;
+            }
+            _ => return,
+        };
+        self.handle_key(key);
+    }
+
+    fn handle_key(&mut self, k: KeyEvent) {
+        let ctrl = k.modifiers.contains(KeyModifiers::CTRL);
+        match k.code {
+            KeyCode::Char('c') if ctrl => self.handle_ctrl_c(),
+            KeyCode::Char('d') if ctrl => self.quit = true,
+            KeyCode::Enter => self.submit(),
+            KeyCode::Backspace => {
+                self.input_buf.pop();
+            }
+            KeyCode::Char(c) if !ctrl => {
+                self.input_buf.push(c);
+            }
+            KeyCode::Up => self.scroll = self.scroll.saturating_add(1),
+            KeyCode::Down => self.scroll = self.scroll.saturating_sub(1),
+            KeyCode::PageUp => self.scroll = self.scroll.saturating_add(10),
+            KeyCode::PageDown => self.scroll = self.scroll.saturating_sub(10),
+            _ => {}
+        }
+    }
+
+    fn handle_ctrl_c(&mut self) {
+        if self.in_flight.is_some() {
+            // First Ctrl-C cancels the running prompt.
+            let s = self.session.clone();
+            tokio::spawn(async move {
+                s.cancel().await;
+            });
+            self.chat.push(ChatEntry::System("(cancelled)".into()));
+            return;
+        }
+        // No prompt running: double-tap quits.
+        let now = std::time::Instant::now();
+        match self.last_ctrl_c {
+            Some(t) if now.duration_since(t) < Duration::from_secs(2) => self.quit = true,
+            _ => {
+                self.last_ctrl_c = Some(now);
+                self.chat.push(ChatEntry::System(
+                    "(press Ctrl-C again to quit, or Ctrl-D)".into(),
+                ));
+            }
+        }
+    }
+
+    fn submit(&mut self) {
+        let text = self.input_buf.trim().to_string();
+        self.input_buf.clear();
+        if text.is_empty() {
+            return;
+        }
+        self.chat.push(ChatEntry::User(text.clone()));
+        self.scroll = 0;
+        let s = self.session.clone();
+        self.in_flight = Some(tokio::spawn(async move {
+            if let Err(e) = s.prompt(text).await {
+                eprintln!("[ra::tui] prompt error: {e:#}");
+            }
+        }));
+    }
+
+    async fn save_trajectory(&self, config: &RaConfig) {
+        let cwd = match std::env::current_dir() {
+            Ok(p) => p,
+            Err(_) => return,
+        };
+        let store = match crate::store::SessionStore::for_cwd(&cwd) {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        let messages = self.session.snapshot_messages().await;
+        if messages.is_empty() {
+            return;
+        }
+        let id = ulid::Ulid::new().to_string();
+        let model_name = config.model.default.clone()
+            .or_else(|| config.models.first().map(|m| m.name.clone()));
+        let traj = crate::atif_codec::encode(&id, model_name, &messages);
+        if let Err(e) = store.save(&traj).await {
+            eprintln!("[ra::tui] failed to save session: {e:#}");
+        } else {
+            eprintln!(
+                "[ra::tui] saved session {id} (resume with `ra resume {id} <prompt>`)"
+            );
+        }
+    }
+
+    fn draw(&mut self) -> Result<()> {
+        let width = self.width;
+        let height = self.height;
+
+        // Precompute everything that needs `&self` BEFORE we hold a
+        // `&mut buffer`, otherwise the borrow checker (rightly)
+        // complains about overlapping borrows of `self`.
+        let input_h: u32 = 3;
+        let chat_h = height.saturating_sub(input_h);
+        let inner_w = width.saturating_sub(2);
+        let inner_h = chat_h.saturating_sub(2);
+        let lines = self.render_chat_lines(inner_w as usize);
+
+        let buf = self.renderer.buffer();
+        buf.clear(Rgba::from_rgb_u8(15, 17, 26));
+
+        // Borders.
+        let border_style = Style::fg(Rgba::from_rgb_u8(80, 88, 110));
+        if width >= 2 && chat_h >= 2 {
+            buf.draw_box(0, 0, width, chat_h, BoxStyle::rounded(border_style));
+        }
+        if width >= 2 && input_h >= 2 {
+            buf.draw_box(0, chat_h, width, input_h, BoxStyle::rounded(border_style));
+        }
+
+        // ---- Chat scrollback ---------------------------------------
+        let total = lines.len();
+        let scroll = self.scroll.min(total.saturating_sub(inner_h as usize));
+        let end = total.saturating_sub(scroll);
+        let start = end.saturating_sub(inner_h as usize);
+        for (i, (style, text)) in lines[start..end].iter().enumerate() {
+            buf.draw_text(1, 1 + i as u32, text, *style);
+        }
+
+        // ---- Input box ---------------------------------------------
+        let prompt = "> ";
+        let mut shown = format!("{prompt}{}", self.input_buf);
+        let max = (inner_w as usize).saturating_sub(1);
+        if shown.chars().count() > max {
+            let drop_n = shown.chars().count() - max;
+            shown = shown.chars().skip(drop_n).collect();
+        }
+        let input_style = if self.in_flight.is_some() {
+            Style::fg(Rgba::from_rgb_u8(140, 140, 140))
+        } else {
+            Style::fg(Rgba::WHITE)
+        };
+        buf.draw_text(1, chat_h + 1, &shown, input_style);
+
+        // Status pill in the input border, right side.
+        let status = if self.in_flight.is_some() {
+            "[thinking…]"
+        } else {
+            "[ready]"
+        };
+        let status_x = width.saturating_sub(status.len() as u32 + 1);
+        if status_x > 0 {
+            buf.draw_text(
+                status_x,
+                chat_h,
+                status,
+                Style::fg(Rgba::from_rgb_u8(120, 200, 120)),
+            );
+        }
+
+        self.renderer.present()?;
+        Ok(())
+    }
+
+    /// Build a flat (style, text) list for the scrollback. Each
+    /// ChatEntry expands into one or more wrapped lines.
+    fn render_chat_lines(&self, width: usize) -> Vec<(Style, String)> {
+        let user = Style::fg(Rgba::from_rgb_u8(120, 180, 240));
+        let agent = Style::fg(Rgba::WHITE);
+        let agent_dim = Style::fg(Rgba::from_rgb_u8(180, 180, 180));
+        let tool_ok = Style::fg(Rgba::from_rgb_u8(140, 220, 140));
+        let tool_err = Style::fg(Rgba::from_rgb_u8(240, 130, 130));
+        let sys = Style::fg(Rgba::from_rgb_u8(150, 130, 200));
+
+        let mut out: Vec<(Style, String)> = Vec::new();
+        for entry in &self.chat {
+            match entry {
+                ChatEntry::User(s) => {
+                    push_wrapped(&mut out, user, &format!("you  ▸ {s}"), width);
+                    out.push((user, String::new()));
+                }
+                ChatEntry::Agent(s) => {
+                    push_wrapped(&mut out, agent, &format!("ra   ▸ {s}"), width);
+                    out.push((agent, String::new()));
+                }
+                ChatEntry::Tool { name, input, output, is_error } => {
+                    let style = if *is_error { tool_err } else { tool_ok };
+                    let head = format!("tool ▸ {name}({})", short_json(input, 60));
+                    push_wrapped(&mut out, style, &head, width);
+                    let head_out = output
+                        .lines()
+                        .take(8)
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    push_wrapped(&mut out, agent_dim, &head_out, width);
+                    out.push((style, String::new()));
+                }
+                ChatEntry::System(s) => {
+                    push_wrapped(&mut out, sys, &format!("· {s}"), width);
+                }
+            }
+        }
+        // In-flight assistant streaming.
+        if !self.current_text.is_empty() {
+            push_wrapped(&mut out, agent, &format!("ra   ▸ {}", self.current_text), width);
+        }
+        out
+    }
+}
+
+fn push_wrapped(out: &mut Vec<(Style, String)>, style: Style, text: &str, width: usize) {
+    if width == 0 {
+        return;
+    }
+    for line in text.lines() {
+        if line.is_empty() {
+            out.push((style, String::new()));
+            continue;
+        }
+        // Naive char-based wrap; good enough for ASCII / CJK is double-wide
+        // but opentui handles width at draw time.
+        let mut start = 0usize;
+        let chars: Vec<char> = line.chars().collect();
+        while start < chars.len() {
+            let end = (start + width).min(chars.len());
+            let chunk: String = chars[start..end].iter().collect();
+            out.push((style, chunk));
+            start = end;
+        }
+    }
+}
+
+fn short_json(v: &serde_json::Value, max: usize) -> String {
+    let s = serde_json::to_string(v).unwrap_or_default();
+    if s.chars().count() <= max {
+        s
+    } else {
+        let cut: String = s.chars().take(max.saturating_sub(1)).collect();
+        format!("{cut}…")
+    }
+}

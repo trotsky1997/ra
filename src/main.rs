@@ -61,6 +61,9 @@ enum Cmd {
     },
     /// List saved sessions in the current cwd's bucket.
     Sessions,
+    /// Interactive terminal UI. Requires the `tui` cargo feature
+    /// (and a nightly toolchain — opentui_rust uses edition 2024).
+    Tui,
 }
 
 #[tokio::main]
@@ -78,8 +81,23 @@ async fn main() -> anyhow::Result<()> {
         }
         Some(Cmd::Resume { id, prompt }) => run_resume(&id, prompt, &config).await,
         Some(Cmd::Sessions) => run_list_sessions(&config).await,
+        Some(Cmd::Tui) => run_tui(&config).await,
         None => run_print(cli.prompt, &config).await,
     }
+}
+
+#[cfg(feature = "tui")]
+async fn run_tui(config: &ra::config::RaConfig) -> anyhow::Result<()> {
+    ra::tui::run(config).await
+}
+
+#[cfg(not(feature = "tui"))]
+async fn run_tui(_config: &ra::config::RaConfig) -> anyhow::Result<()> {
+    eprintln!(
+        "[ra] this binary was built without the `tui` feature; \
+         rebuild with `cargo +nightly build --features tui` (opentui_rust requires nightly)"
+    );
+    Ok(())
 }
 
 /// One advertised model option. The id is what the client sends back over

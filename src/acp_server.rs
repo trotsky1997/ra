@@ -181,6 +181,8 @@ struct SharedState {
     prompt_templates: Arc<std::collections::HashMap<String, String>>,
     /// Optional lifecycle hooks engine, attached to every Session.
     hooks: Option<Arc<crate::hooks::HookEngine>>,
+    /// RTK rewriter applied to every Session built from this state.
+    rtk: crate::tools::RtkRewriter,
 }
 
 /// Resolve a model id (sent by the client over `session/set_model`) to a `Model`
@@ -201,6 +203,7 @@ impl SharedState {
         system_prompt: Option<String>,
         prompt_templates: Arc<std::collections::HashMap<String, String>>,
         hooks: Option<Arc<crate::hooks::HookEngine>>,
+        rtk: crate::tools::RtkRewriter,
     ) -> Self {
         let available_models = model_factory.available();
         let default_cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
@@ -219,6 +222,7 @@ impl SharedState {
             system_prompt,
             prompt_templates,
             hooks,
+            rtk,
         }
     }
 
@@ -229,7 +233,8 @@ impl SharedState {
         cwd: PathBuf,
     ) -> Arc<Session> {
         let mut s = Session::new(self.model.clone(), self.tools.clone())
-            .with_client(client, id.to_string());
+            .with_client(client, id.to_string())
+            .with_rtk(self.rtk.clone());
         if let Some(h) = &self.hooks {
             s = s.with_hooks(h.clone());
         }
@@ -488,6 +493,7 @@ pub async fn run(
     system_prompt: Option<String>,
     prompt_templates: Arc<std::collections::HashMap<String, String>>,
     hooks: Option<Arc<crate::hooks::HookEngine>>,
+    rtk: crate::tools::RtkRewriter,
 ) -> AcpResult<()> {
     crate::nemo_obs::init();
     let state = Arc::new(SharedState::new(
@@ -497,6 +503,7 @@ pub async fn run(
         system_prompt,
         prompt_templates,
         hooks,
+        rtk,
     ));
 
     // Each handler closure is FnMut, so we clone the Arc into each one.

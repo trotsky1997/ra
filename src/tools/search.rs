@@ -5,9 +5,17 @@
 //! drops it with a one-line log; the agent's tool catalog stays valid
 //! and the LLM never sees a tool it can't use.
 //!
+//! When [`RtkRewriter`](crate::tools::RtkRewriter) is configured on the
+//! ToolCtx, each tool first asks RTK to rewrite the shell-equivalent of
+//! the command it's about to run (`rg ...`, `fd ...`, `eza ...`). If
+//! RTK has a recipe (almost always for these binaries), the rewritten
+//! command runs through `/bin/sh -c` and we get RTK's compressed
+//! output; otherwise we exec the binary directly via argv.
+//!
 //! Output is captured combined stdout+stderr, truncated by the tool to
 //! ~64 KiB so a stray `find /` doesn't blow up the model's context.
 
+use crate::events::Event;
 use crate::tool_ctx::ToolCtx;
 use crate::tools::core::Tool;
 use anyhow::{Context, Result};
@@ -30,13 +38,78 @@ fn locate(candidates: &[&str]) -> Option<PathBuf> {
     None
 }
 
-async fn run_capture(mut cmd: Command, scope: &'static str) -> Result<String> {
+/// Run a tool by either asking RTK to rewrite its shell-form first, or
+/// executing the argv directly. `argv[0]` is the binary path; the rest
+/// are arguments. `scope` is the ATOF scope label.
+///
+/// `call_id` is used solely so the `[rtk] ...` notice can be threaded
+/// onto the broadcast bus next to the tool's own ToolCallUpdate stream.
+async fn run_with_rtk(
+    argv: Vec<String>,
+    ctx: &ToolCtx,
+    call_id: &str,
+    scope: &'static str,
+) -> Result<String> {
     let _scope = crate::nemo_obs::tool_scope(scope);
-    let out = cmd
-        .stdin(std::process::Stdio::null())
-        .output()
-        .await
-        .context("spawn external binary")?;
+
+    let rewritten = if ctx.rtk.is_active() {
+        // RTK matches commands by their canonical name. Pass the basename
+        // (so `/usr/bin/rg` looks like `rg`) and normalise the Debian
+        // alias `fdfind` → `fd` so RTK's recipe table catches it.
+        let probe = canonical_probe(&argv);
+        ctx.rtk.rewrite(&probe).await
+    } else {
+        None
+    };
+
+    let out = match rewritten {
+        Some(rewritten) => {
+            let _ = ctx.events.send(Event::ToolCallUpdate {
+                id: call_id.to_string(),
+                chunk: format!("[rtk] {} → {}", canonical_probe(&argv), rewritten),
+            });
+            tokio::process::Command::new("/bin/sh")
+                .arg("-c")
+                .arg(&rewritten)
+                .stdin(std::process::Stdio::null())
+                .output()
+                .await
+                .with_context(|| format!("spawn `{rewritten}`"))?
+        }
+        None => {
+            let mut cmd = Command::new(&argv[0]);
+            for a in &argv[1..] {
+                cmd.arg(a);
+            }
+            cmd.stdin(std::process::Stdio::null())
+                .output()
+                .await
+                .context("spawn external binary")?
+        }
+    };
+    finish_capture(out)
+}
+
+/// Build the shell-form string that RTK's rewrite table looks up. Strips
+/// the binary's directory (`/usr/bin/rg` → `rg`) and aliases the Debian
+/// `fdfind` back to its upstream name `fd` so RTK matches.
+fn canonical_probe(argv: &[String]) -> String {
+    if argv.is_empty() {
+        return String::new();
+    }
+    let mut bin = std::path::Path::new(&argv[0])
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| argv[0].clone());
+    if bin == "fdfind" {
+        bin = "fd".into();
+    }
+    let mut argv = argv.to_vec();
+    argv[0] = bin;
+    quote_argv(&argv)
+}
+
+fn finish_capture(out: std::process::Output) -> Result<String> {
     let mut combined = String::from_utf8_lossy(&out.stdout).into_owned();
     if !out.stderr.is_empty() {
         if !combined.is_empty() && !combined.ends_with('\n') {
@@ -56,7 +129,6 @@ async fn run_capture(mut cmd: Command, scope: &'static str) -> Result<String> {
         combined.push_str(&format!("\n[… {dropped} bytes truncated]"));
     }
     if combined.is_empty() {
-        // Surface exit code so the model can tell "no matches" from success.
         if let Some(code) = out.status.code() {
             if code != 0 {
                 return Ok(format!("(no output, exit {code})"));
@@ -64,6 +136,27 @@ async fn run_capture(mut cmd: Command, scope: &'static str) -> Result<String> {
         }
     }
     Ok(combined)
+}
+
+/// Quote an argv list back into a single shell-safe command string for
+/// RTK to look up by canonical form.
+fn quote_argv(argv: &[String]) -> String {
+    argv.iter()
+        .map(|a| {
+            if a.is_empty()
+                || a.chars().any(|c| {
+                    c.is_whitespace()
+                        || matches!(c, '"' | '\'' | '\\' | '$' | '`' | '*' | '?' | '|' | '&' | ';' | '<' | '>' | '(' | ')' | '[' | ']' | '{' | '}' | '#' | '!')
+                })
+            {
+                let escaped = a.replace('\'', "'\\''");
+                format!("'{escaped}'")
+            } else {
+                a.clone()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 // ---------- GrepTool (ripgrep) --------------------------------------------
@@ -127,42 +220,50 @@ impl Tool for GrepTool {
 
     async fn execute(
         &self,
-        _call_id: &str,
+        call_id: &str,
         input: serde_json::Value,
-        _ctx: &ToolCtx,
+        ctx: &ToolCtx,
     ) -> Result<String> {
         let p: GrepParams =
             serde_json::from_value(input).context("invalid params for grep")?;
 
-        let mut cmd = Command::new(&self.bin);
-        cmd.arg("--color=never").arg("--line-number");
+        let mut argv: Vec<String> = vec![
+            self.bin.display().to_string(),
+            "--color=never".into(),
+            "--line-number".into(),
+        ];
         if p.case_insensitive {
-            cmd.arg("-i");
+            argv.push("-i".into());
         }
         if p.fixed_string {
-            cmd.arg("-F");
+            argv.push("-F".into());
         }
         if p.files_with_matches {
-            cmd.arg("-l");
+            argv.push("-l".into());
         }
         if let Some(g) = &p.glob {
-            cmd.arg("--glob").arg(g);
+            argv.push("--glob".into());
+            argv.push(g.clone());
         }
         if let Some(t) = &p.file_type {
-            cmd.arg("--type").arg(t);
+            argv.push("--type".into());
+            argv.push(t.clone());
         }
         if let Some(n) = p.max_count {
-            cmd.arg("--max-count").arg(n.to_string());
+            argv.push("--max-count".into());
+            argv.push(n.to_string());
         }
         if let Some(n) = p.context {
-            cmd.arg("--context").arg(n.to_string());
+            argv.push("--context".into());
+            argv.push(n.to_string());
         }
-        cmd.arg("--").arg(&p.pattern);
+        argv.push("--".into());
+        argv.push(p.pattern.clone());
         if let Some(path) = &p.path {
-            cmd.arg(path);
+            argv.push(path.clone());
         }
 
-        run_capture(cmd, "grep").await
+        run_with_rtk(argv, ctx, call_id, "grep").await
     }
 }
 
@@ -226,41 +327,46 @@ impl Tool for FindTool {
 
     async fn execute(
         &self,
-        _call_id: &str,
+        call_id: &str,
         input: serde_json::Value,
-        _ctx: &ToolCtx,
+        ctx: &ToolCtx,
     ) -> Result<String> {
         let p: FindParams =
             serde_json::from_value(input).context("invalid params for find")?;
 
-        let mut cmd = Command::new(&self.bin);
-        cmd.arg("--color=never");
+        let mut argv: Vec<String> = vec![
+            self.bin.display().to_string(),
+            "--color=never".into(),
+        ];
         if p.glob {
-            cmd.arg("--glob");
+            argv.push("--glob".into());
         }
         if p.hidden {
-            cmd.arg("--hidden");
+            argv.push("--hidden".into());
         }
         if p.no_ignore {
-            cmd.arg("--no-ignore");
+            argv.push("--no-ignore".into());
         }
         if let Some(t) = &p.file_type {
-            cmd.arg("--type").arg(t);
+            argv.push("--type".into());
+            argv.push(t.clone());
         }
         if let Some(ext) = &p.extension {
-            cmd.arg("--extension").arg(ext);
+            argv.push("--extension".into());
+            argv.push(ext.clone());
         }
         if let Some(n) = p.max_results {
-            cmd.arg("--max-results").arg(n.to_string());
+            argv.push("--max-results".into());
+            argv.push(n.to_string());
         }
         // fd's positional args are: PATTERN [PATH...]. Pass empty string
         // when listing-only so PATH still applies.
-        cmd.arg(p.pattern.as_deref().unwrap_or(""));
+        argv.push(p.pattern.clone().unwrap_or_default());
         if let Some(path) = &p.path {
-            cmd.arg(path);
+            argv.push(path.clone());
         }
 
-        run_capture(cmd, "find").await
+        run_with_rtk(argv, ctx, call_id, "find").await
     }
 }
 
@@ -314,34 +420,37 @@ impl Tool for LsTool {
 
     async fn execute(
         &self,
-        _call_id: &str,
+        call_id: &str,
         input: serde_json::Value,
-        _ctx: &ToolCtx,
+        ctx: &ToolCtx,
     ) -> Result<String> {
         let p: LsParams =
             serde_json::from_value(input).context("invalid params for ls")?;
 
-        let mut cmd = Command::new(&self.bin);
-        cmd.arg("--color=never");
+        let mut argv: Vec<String> = vec![
+            self.bin.display().to_string(),
+            "--color=never".into(),
+        ];
         if p.all {
-            cmd.arg("-a");
+            argv.push("-a".into());
         }
         if p.long {
-            cmd.arg("-l");
+            argv.push("-l".into());
         }
         if p.tree {
-            cmd.arg("--tree");
+            argv.push("--tree".into());
         }
         if let Some(lv) = p.level {
-            cmd.arg("--level").arg(lv.to_string());
+            argv.push("--level".into());
+            argv.push(lv.to_string());
         }
         if p.sort_modified {
-            cmd.arg("--sort=modified");
+            argv.push("--sort=modified".into());
         }
         if let Some(path) = &p.path {
-            cmd.arg(path);
+            argv.push(path.clone());
         }
 
-        run_capture(cmd, "ls").await
+        run_with_rtk(argv, ctx, call_id, "ls").await
     }
 }

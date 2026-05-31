@@ -118,6 +118,21 @@ impl Tool for BashTool {
         let params: BashParams =
             serde_json::from_value(input).context("invalid params for bash")?;
 
+        // Token-killer: when RTK is configured (and has a recipe for this
+        // command), rewrite before we ever ship to the host terminal or
+        // /bin/sh. Both paths see the optimised form.
+        let original = params.command;
+        let command = match ctx.rtk.rewrite(&original).await {
+            Some(rewritten) if rewritten != original => {
+                let _ = ctx.events.send(Event::ToolCallUpdate {
+                    id: call_id.to_string(),
+                    chunk: format!("[rtk] {original} → {rewritten}"),
+                });
+                rewritten
+            }
+            _ => original,
+        };
+
         // ACP path: ask permission, then run via host terminal. If the host
         // doesn't implement permission OR terminal, fall through to local.
         if let (Some(client), Some(sid)) = (&ctx.client, &ctx.session_id) {
@@ -126,7 +141,7 @@ impl Tool for BashTool {
                 .request_permission(
                     sid,
                     call_id,
-                    &format!("Run shell: {}", truncate(&params.command, 60)),
+                    &format!("Run shell: {}", truncate(&command, 60)),
                     "Agent wants to run a shell command via the host terminal.",
                 )
                 .await;
@@ -140,7 +155,7 @@ impl Tool for BashTool {
                 }
                 Ok(crate::tool_ctx::PermissionOutcome::Allowed) => {
                     // 2. host terminal
-                    match client.run_terminal(sid, &params.command).await {
+                    match client.run_terminal(sid, &command).await {
                         Ok(res) => {
                             let _ = ctx.events.send(Event::ToolCallUpdate {
                                 id: call_id.to_string(),
@@ -168,10 +183,10 @@ impl Tool for BashTool {
         // Local fallback path.
         let output = tokio::process::Command::new("/bin/sh")
             .arg("-c")
-            .arg(&params.command)
+            .arg(&command)
             .output()
             .await
-            .with_context(|| format!("spawn `{}`", params.command))?;
+            .with_context(|| format!("spawn `{}`", command))?;
 
         let mut combined = String::from_utf8_lossy(&output.stdout).into_owned();
         if !output.stderr.is_empty() {

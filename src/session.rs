@@ -43,6 +43,10 @@ pub struct Session {
     /// Optional hook engine that fires PreToolUse / PostToolUse around
     /// every tool execution. None = no hooks configured.
     hooks: Option<Arc<crate::hooks::HookEngine>>,
+    /// Optional RTK rewriter handed to every ToolCtx so shell-flavoured
+    /// tools can pre-route commands through `rtk rewrite`. Default
+    /// (`RtkRewriter::default()`) is a no-op pass-through.
+    rtk: crate::tools::RtkRewriter,
 }
 
 /// Result of one `prompt()` call.
@@ -73,6 +77,7 @@ impl Session {
             config: RwLock::new(HashMap::new()),
             system_prompt: RwLock::new(None),
             hooks: None,
+            rtk: crate::tools::RtkRewriter::default(),
         }
     }
 
@@ -81,6 +86,15 @@ impl Session {
     #[must_use]
     pub fn with_hooks(mut self, hooks: Arc<crate::hooks::HookEngine>) -> Self {
         self.hooks = Some(hooks);
+        self
+    }
+
+    /// Builder-style: attach an [`RtkRewriter`](crate::tools::RtkRewriter)
+    /// so shell-flavoured tools (`bash`, `grep`, `find`, `ls`) can route
+    /// their commands through RTK for token-compressed output.
+    #[must_use]
+    pub fn with_rtk(mut self, rtk: crate::tools::RtkRewriter) -> Self {
+        self.rtk = rtk;
         self
     }
 
@@ -339,6 +353,7 @@ impl Session {
                 events: self.tx.clone(),
                 client: self.client.clone(),
                 session_id: self.session_id.clone(),
+                rtk: self.rtk.clone(),
             };
             let exec = tool.execute(&call.id, call.input.clone(), &ctx).await;
             let mut result = match exec {

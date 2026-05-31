@@ -329,7 +329,8 @@ async fn run_acp(config: &ra::config::RaConfig) -> anyhow::Result<()> {
     extra_tools.extend(ra::mcp::load_mcp_tools(&config.mcp.servers).await);
     let (system_prompt, prompt_templates) = load_skills_and_prompts(config);
     let hooks = build_hooks(config);
-    ra::acp_server::run(model, factory, extra_tools, system_prompt, prompt_templates, hooks)
+    let rtk = ra::RtkRewriter::from_config(&config.rtk);
+    ra::acp_server::run(model, factory, extra_tools, system_prompt, prompt_templates, hooks, rtk)
         .await
         .map_err(|e| anyhow::anyhow!("{e:?}"))?;
     Ok(())
@@ -371,6 +372,7 @@ async fn run_serve(
         prompt_templates,
         hooks,
         bearer,
+        ra::RtkRewriter::from_config(&config.rtk),
     )
     .await
 }
@@ -437,7 +439,8 @@ async fn run_print(prompt: Option<String>, config: &ra::config::RaConfig) -> any
     let (model, _factory) = build_model(config);
 
     let hooks = build_hooks(config);
-    let mut sess = Session::new(model, default_builtins(&config.tools.builtin));
+    let rtk = ra::RtkRewriter::from_config(&config.rtk);
+    let mut sess = Session::new(model, default_builtins(&config.tools.builtin)).with_rtk(rtk);
     if let Some(h) = hooks {
         sess = sess.with_hooks(h);
     }
@@ -548,7 +551,8 @@ async fn run_resume(
 
     let (model, _factory) = build_model(config);
     let hooks = build_hooks(config);
-    let mut sess = Session::new(model, default_builtins(&config.tools.builtin));
+    let rtk = ra::RtkRewriter::from_config(&config.rtk);
+    let mut sess = Session::new(model, default_builtins(&config.tools.builtin)).with_rtk(rtk);
     if let Some(h) = hooks {
         sess = sess.with_hooks(h);
     }

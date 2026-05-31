@@ -48,6 +48,12 @@ The eye watching from the banner is 𓂀 (U+13080).
 - **MCP client.** [rmcp 1.7](https://github.com/modelcontextprotocol/rust-sdk)
   with stdio + Streamable HTTP transports; remote tools surface as
   Ra tools the LLM can call.
+- **Native RTK ([Rust Token Killer](https://github.com/rtk-ai/rtk)) support.**
+  When `rtk` is on PATH, every shell-flavoured tool call (`bash`,
+  `grep`, `find`, `ls`) is routed through `rtk rewrite` before
+  execution, swapping verbose `git status` / `cargo test` / `kubectl`
+  output for RTK's token-compressed equivalents (60–90% savings).
+  Configurable via `[rtk] mode = "auto" | "on" | "off"`.
 - **A2A everywhere.** Serve as an A2A agent (with optional Bearer auth
   on JSON-RPC/REST/gRPC) and consume remote A2A agents as local tools.
 - **Trajectories on disk.** Every session is persisted as ATIF v1.7

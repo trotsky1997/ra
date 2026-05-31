@@ -11,6 +11,22 @@ dependencies resolve at startup. Missing external binaries
 silently dropped from the catalog with a single `[ra::tools] skipping
 'X': … not on PATH` log line; the LLM never sees a tool it can't run.
 
+## RTK (Rust Token Killer) integration
+
+Every shell-flavoured tool — `bash`, `grep`, `find`, `ls` — consults
+[RTK](https://github.com/rtk-ai/rtk) before executing. With
+`[rtk] mode = "auto"` (default) and `rtk` on PATH, the tool builds
+the canonical shell form of the command it would run (binary basename
++ args; `fdfind` is normalised to `fd`), passes it to `rtk rewrite`,
+and if RTK has a recipe, exec's the rewritten command via
+`/bin/sh -c` instead. The model sees RTK's compressed output, often
+60–90% smaller than the original. The transformation is logged on
+the broadcast bus as a `ToolCallUpdate` chunk so it's visible to
+the operator.
+
+`mode = "off"` disables the integration even when rtk is installed;
+`mode = "on"` requires rtk and warns at startup if it's missing.
+
 ## File-system tools
 
 These prefer the host editor's filesystem view via ACP reverse-calls

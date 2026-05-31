@@ -15,10 +15,12 @@
 
 mod core;
 mod fs;
+mod rtk;
 mod search;
 
 pub use core::{BashTool, ReadTool};
 pub use fs::{EditTool, WriteTool};
+pub use rtk::RtkRewriter;
 pub use search::{FindTool, GrepTool, LsTool};
 
 use std::sync::Arc;

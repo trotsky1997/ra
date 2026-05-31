@@ -35,6 +35,9 @@
     "resources": {
       "$ref": "#/definitions/ResourcesSection"
     },
+    "rtk": {
+      "$ref": "#/definitions/RtkSection"
+    },
     "run": {
       "$ref": "#/definitions/RunSection"
     },
@@ -412,6 +415,59 @@
             "string",
             "null"
           ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "RtkMode": {
+      "oneOf": [
+        {
+          "description": "Use rtk when it's on PATH; transparent fallthrough otherwise.",
+          "type": "string",
+          "enum": [
+            "auto"
+          ]
+        },
+        {
+          "description": "Require rtk to be available; warn at startup if missing.",
+          "type": "string",
+          "enum": [
+            "on"
+          ]
+        },
+        {
+          "description": "Never invoke rtk even if it's installed.",
+          "type": "string",
+          "enum": [
+            "off"
+          ]
+        }
+      ]
+    },
+    "RtkSection": {
+      "description": "`[rtk]` — native [RTK (Rust Token Killer)](https://github.com/rtk-ai/rtk) integration. When enabled, the BashTool runs every command through `rtk rewrite` before executing it. RTK rewrites well-known dev commands (git, cargo, pytest, docker, kubectl, …) into their token-compressed equivalents, often shaving 60–90% off the bytes fed back into the model context.",
+      "type": "object",
+      "properties": {
+        "binary": {
+          "description": "Override the rtk binary path. By default we look up `rtk` on PATH.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mode": {
+          "description": "`auto` (default): use rtk if it's on PATH, otherwise transparent. `true` / `\"on\"`: require rtk; warn if missing. `false` / `\"off\"`: disable even if rtk is installed.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/RtkMode"
+            }
+          ]
+        },
+        "ultra_compact": {
+          "description": "Pass `--ultra-compact` to `rtk rewrite` for even tighter output.",
+          "default": false,
+          "type": "boolean"
         }
       },
       "additionalProperties": false

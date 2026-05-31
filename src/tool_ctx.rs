@@ -8,12 +8,15 @@ use tokio::sync::broadcast;
 /// - the broadcast event sender (for `ToolCallUpdate` chunks),
 /// - an optional ACP client handle so tools can call back into the host
 ///   editor (`fs/read_text_file`, `terminal/*`, `session/request_permission`),
-/// - the session id, required by every reverse RPC.
+/// - the session id, required by every reverse RPC,
+/// - an optional [`RtkRewriter`](crate::tools::RtkRewriter) so shell-flavoured
+///   tools can pre-route commands through `rtk rewrite` for token compression.
 #[derive(Clone)]
 pub struct ToolCtx {
     pub events: broadcast::Sender<Event>,
     pub client: Option<Arc<dyn ClientHandle>>,
     pub session_id: Option<String>,
+    pub rtk: crate::tools::RtkRewriter,
 }
 
 impl ToolCtx {
@@ -23,6 +26,7 @@ impl ToolCtx {
             events,
             client: None,
             session_id: None,
+            rtk: crate::tools::RtkRewriter::default(),
         }
     }
 }

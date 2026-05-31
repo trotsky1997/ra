@@ -130,3 +130,17 @@ mode = "default"                   # default | plan | ask
 # [resources]
 # system_prompt_path = "./prompts/system.md"
 # append_system_prompt_paths = ["./prompts/style.md"]
+
+# ─── RTK (Rust Token Killer) ───────────────────────────────────────
+# Native integration with https://github.com/rtk-ai/rtk: when enabled,
+# every shell-flavoured tool call (bash, grep, find, ls) is offered to
+# `rtk rewrite` first; if RTK has a recipe for that command, the
+# rewritten form is what actually runs and the model sees RTK's
+# token-compressed output instead of the raw verbose stream.
+# Default mode is "auto" (use rtk if it's on PATH, transparent
+# fallthrough otherwise); set to "on" to require it (warn on missing),
+# or "off" to disable it even when installed.
+# [rtk]
+# mode = "auto"                    # auto | on | off (or true / false)
+# binary = "/usr/local/bin/rtk"    # override PATH lookup
+# ultra_compact = false            # pass --ultra-compact to rtk rewrite

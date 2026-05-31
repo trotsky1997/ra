@@ -65,6 +65,8 @@ pub struct A2aState {
     prompt_templates: Arc<std::collections::HashMap<String, String>>,
     /// Optional lifecycle hooks attached to every Session.
     hooks: Option<Arc<crate::hooks::HookEngine>>,
+    /// RTK rewriter applied to every Session built from this state.
+    rtk: crate::tools::RtkRewriter,
 }
 
 impl A2aState {
@@ -75,6 +77,7 @@ impl A2aState {
         system_prompt: Option<String>,
         prompt_templates: Arc<std::collections::HashMap<String, String>>,
         hooks: Option<Arc<crate::hooks::HookEngine>>,
+        rtk: crate::tools::RtkRewriter,
     ) -> Self {
         // Full tool catalog supplied by the caller (main.rs); see
         // `tools::default_builtins` for the allow-list filter and missing
@@ -89,6 +92,7 @@ impl A2aState {
             system_prompt,
             prompt_templates,
             hooks,
+            rtk,
         }
     }
 
@@ -96,7 +100,8 @@ impl A2aState {
         if let Some(s) = self.sessions.get(task_id) {
             return s.clone();
         }
-        let mut s = Session::new(self.model.clone(), self.tools.clone());
+        let mut s = Session::new(self.model.clone(), self.tools.clone())
+            .with_rtk(self.rtk.clone());
         if let Some(h) = &self.hooks {
             s = s.with_hooks(h.clone());
         }
@@ -463,6 +468,7 @@ pub async fn run(
     prompt_templates: Arc<std::collections::HashMap<String, String>>,
     hooks: Option<Arc<crate::hooks::HookEngine>>,
     bearer_token: Option<String>,
+    rtk: crate::tools::RtkRewriter,
 ) -> Result<()> {
     nemo_obs::init();
 
@@ -473,6 +479,7 @@ pub async fn run(
         system_prompt,
         prompt_templates,
         hooks,
+        rtk,
     ));
     let executor = RaExecutor { state: state.clone() };
     let handler = Arc::new(DefaultRequestHandler::new(executor, InMemoryTaskStore::new()));

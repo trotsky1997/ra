@@ -54,6 +54,8 @@ pub struct RaConfig {
     pub agents_md: AgentsMdSection,
     #[serde(default)]
     pub resources: ResourcesSection,
+    #[serde(default)]
+    pub rtk: RtkSection,
 }
 
 fn default_version() -> u32 {
@@ -313,6 +315,81 @@ pub struct ResourcesSection {
     /// Additional files appended after the primary one.
     #[serde(default)]
     pub append_system_prompt_paths: Vec<String>,
+}
+
+/// `[rtk]` — native [RTK (Rust Token Killer)](https://github.com/rtk-ai/rtk)
+/// integration. When enabled, the BashTool runs every command through
+/// `rtk rewrite` before executing it. RTK rewrites well-known dev
+/// commands (git, cargo, pytest, docker, kubectl, …) into their
+/// token-compressed equivalents, often shaving 60–90% off the bytes
+/// fed back into the model context.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RtkSection {
+    /// `auto` (default): use rtk if it's on PATH, otherwise transparent.
+    /// `true` / `"on"`: require rtk; warn if missing.
+    /// `false` / `"off"`: disable even if rtk is installed.
+    #[serde(default = "default_rtk_mode")]
+    pub mode: RtkMode,
+    /// Override the rtk binary path. By default we look up `rtk` on PATH.
+    #[serde(default)]
+    pub binary: Option<String>,
+    /// Pass `--ultra-compact` to `rtk rewrite` for even tighter output.
+    #[serde(default)]
+    pub ultra_compact: bool,
+}
+
+impl Default for RtkSection {
+    fn default() -> Self {
+        Self {
+            mode: default_rtk_mode(),
+            binary: None,
+            ultra_compact: false,
+        }
+    }
+}
+
+fn default_rtk_mode() -> RtkMode {
+    RtkMode::Auto
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum RtkMode {
+    /// Use rtk when it's on PATH; transparent fallthrough otherwise.
+    Auto,
+    /// Require rtk to be available; warn at startup if missing.
+    On,
+    /// Never invoke rtk even if it's installed.
+    Off,
+}
+
+impl<'de> Deserialize<'de> for RtkMode {
+    fn deserialize<D>(d: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        // Accept both string ("auto"/"on"/"off") and bool (true=on,
+        // false=off) — TOML lets users write `mode = true`.
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Repr {
+            Bool(bool),
+            Str(String),
+        }
+        match Repr::deserialize(d)? {
+            Repr::Bool(true) => Ok(RtkMode::On),
+            Repr::Bool(false) => Ok(RtkMode::Off),
+            Repr::Str(s) => match s.to_ascii_lowercase().as_str() {
+                "auto" => Ok(RtkMode::Auto),
+                "on" | "true" => Ok(RtkMode::On),
+                "off" | "false" => Ok(RtkMode::Off),
+                other => Err(serde::de::Error::custom(format!(
+                    "invalid rtk mode {other:?}; expected auto / on / off"
+                ))),
+            },
+        }
+    }
 }
 
 // ---------- loading -----------------------------------------------------

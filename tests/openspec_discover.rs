@@ -123,6 +123,32 @@ fn openspec_folds_into_resource_bundle_system_prompt() {
     // Progressive disclosure: instruct the model to read the files.
     assert!(prompt.contains("read"));
     assert!(prompt.contains("spec.md"));
+    // agent_own defaults on through discover() → the autonomous playbook
+    // is folded in after the catalog.
+    assert!(prompt.contains("agent-own SDD"));
+    assert!(prompt.contains("openspec init --tools"));
+    assert!(prompt.contains("archive <name> -y"));
+}
+
+#[test]
+fn agent_own_disabled_keeps_catalog_drops_playbook() {
+    let tmp = TempDir::new().unwrap();
+    scaffold(tmp.path());
+
+    let mut project = openspec::discover(tmp.path()).unwrap();
+    project.agent_own = false;
+    let bundle = ResourceBundle {
+        openspec: Some(project),
+        ..Default::default()
+    };
+
+    let prompt = bundle.build_system_prompt().unwrap();
+    // Catalog still present…
+    assert!(prompt.contains("# OpenSpec"));
+    assert!(prompt.contains("user-auth"));
+    // …playbook gone.
+    assert!(!prompt.contains("agent-own SDD"));
+    assert!(!prompt.contains("No human in the loop"));
 }
 
 #[test]

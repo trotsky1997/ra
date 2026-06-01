@@ -548,7 +548,10 @@ fn load_skills_and_prompts(
             // Default: walk cwd → git root for an `openspec/` dir.
             None => ra::openspec::discover(&cwd),
         };
-        bundle.openspec = project.filter(|p| !p.is_empty());
+        bundle.openspec = project.filter(|p| !p.is_empty()).map(|mut p| {
+            p.agent_own = config.openspec.agent_own;
+            p
+        });
         if let Some(p) = &bundle.openspec {
             eprintln!(
                 "[ra] discovered OpenSpec project at {} ({} spec(s), {} active change(s))",

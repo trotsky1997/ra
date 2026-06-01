@@ -92,6 +92,11 @@ pub struct OpenSpecProject {
     pub specs: Vec<CapabilitySpec>,
     /// Active (non-archived) changes, sorted by id.
     pub changes: Vec<Change>,
+    /// When true, the prompt section appends the *agent-own* spec-driven
+    /// playbook (non-interactive `openspec` CLI loop) after the catalog.
+    /// Defaults to true from [`load`]; `main` overrides it from
+    /// `[openspec] agent_own`.
+    pub agent_own: bool,
 }
 
 /// A free-form markdown doc we point the LLM at (project.md).
@@ -181,8 +186,65 @@ impl OpenSpecProject {
             buf.push('\n');
         }
 
+        if self.agent_own {
+            buf.push_str(&agent_own_playbook());
+        }
+
         Some(buf)
     }
+}
+
+/// The *agent-own* spec-driven-development playbook: a compact, verified
+/// recipe for driving the `openspec` CLI **non-interactively, with no
+/// human in the loop**. Folded into the prompt after the catalog when
+/// `[openspec] agent_own` is on (the default).
+///
+/// Ra stays a *consumer* of the convention — this is guidance pointing at
+/// the upstream `openspec` CLI, not a reimplementation of it. The key
+/// facts encoded here (each confirmed against `openspec` 1.3.x):
+/// `init` is interactive unless `--tools` is passed; `status --json` is a
+/// dependency state machine; `instructions --json` carries the per-step
+/// template; `validate --strict` emits machine-actionable errors; and
+/// `archive -y` promotes delta specs into `specs/` non-interactively.
+fn agent_own_playbook() -> String {
+    // Kept deliberately terse — progressive disclosure still applies; the
+    // model `read`s the actual artifacts. This is the *control flow*, plus
+    // the substitutions an unattended agent must make for the upstream
+    // templates' "ask the user" stops.
+    "## Driving OpenSpec autonomously (agent-own SDD)\n\n\
+     You can run the whole spec-driven loop yourself via the `openspec` CLI \
+     (through `bash`), with no slash commands and no interactive prompts. \
+     The CLI is `--json`-first: treat it as a state machine.\n\n\
+     - **State**: `openspec status --change <name> --json` → each artifact's \
+     `status` (`ready`/`blocked`/`done`), its `missingDeps`, and \
+     `applyRequires` (what must be `done` before implementing).\n\
+     - **Per-step instructions**: `openspec instructions <artifact|apply> \
+     --change <name> --json` → what to read (`dependencies`/`contextFiles`), \
+     what to write (`template`, `instruction`), and where \
+     (`resolvedOutputPath`). `context`/`rules` are constraints for *you* — \
+     never copy them into the artifact file.\n\
+     - **Self-correction**: `openspec validate <name> --strict` emits precise, \
+     machine-actionable errors (e.g. a requirement missing a `#### Scenario:`); \
+     fix the artifact and re-run instead of stopping.\n\n\
+     **Loop** (all non-interactive):\n\
+     1. Bootstrap once per project: `openspec init --tools <agent>` — bare \
+     `openspec init` *prompts* for tools and will hang; always pass `--tools`. \
+     (Existing project: `openspec update`, not re-init.)\n\
+     2. `openspec new change <kebab-name>` (derive the name from the task).\n\
+     3. While any artifact is `ready`: pull its `instructions --json`, read its \
+     `dependencies`, write `resolvedOutputPath` from `template`; re-check \
+     `status` until every `applyRequires` artifact is `done`.\n\
+     4. Implement against `instructions apply --json` `contextFiles`; flip \
+     `- [ ]` → `- [x]` in `tasks.md` as each task lands.\n\
+     5. `openspec archive <name> -y` — promotes delta specs into `specs/` and \
+     moves the change under `changes/archive/`. `-y` skips confirmation.\n\n\
+     **No human in the loop**: the upstream command templates pause to ask the \
+     user (requirement clarification, change selection). Replace those — derive \
+     intent from the task/issue, auto-select when only one change is active, and \
+     for non-critical ambiguity make a reasonable default and keep momentum \
+     (record it in the proposal/design). Stop and escalate only on a genuine \
+     blocker (design conflict, missing critical input, hard error) — never guess.\n\n"
+        .to_string()
 }
 
 // ---------- discovery ---------------------------------------------------
@@ -238,6 +300,7 @@ pub fn load(root: &Path) -> OpenSpecProject {
         project_md,
         specs,
         changes,
+        agent_own: true,
     }
 }
 
@@ -647,6 +710,44 @@ More detail after a blank line.
         assert!(section.contains("tasks: 1/2"));
         // progressive disclosure: tells the LLM to read the files
         assert!(section.contains("read"));
+    }
+
+    #[test]
+    fn agent_own_playbook_present_by_default() {
+        let tmp = tempfile::tempdir().unwrap();
+        let os = tmp.path().join("openspec");
+        write(
+            &os.join("specs/user-auth/spec.md"),
+            "## Purpose\nAuth.\n\n### Requirement: Login\nSHALL.\n\n#### Scenario: ok\n- **WHEN** x\n- **THEN** y\n",
+        );
+        let project = load(&os);
+        assert!(project.agent_own, "load() defaults agent_own to true");
+        let section = project.build_system_prompt_section().unwrap();
+        // The non-interactive control-flow playbook is folded in.
+        assert!(section.contains("agent-own SDD"));
+        assert!(section.contains("--tools"));
+        assert!(section.contains("status --change"));
+        assert!(section.contains("archive <name> -y"));
+        assert!(section.contains("No human in the loop"));
+    }
+
+    #[test]
+    fn agent_own_playbook_suppressed_when_disabled() {
+        let tmp = tempfile::tempdir().unwrap();
+        let os = tmp.path().join("openspec");
+        write(
+            &os.join("specs/user-auth/spec.md"),
+            "## Purpose\nAuth.\n\n### Requirement: Login\nSHALL.\n\n#### Scenario: ok\n- **WHEN** x\n- **THEN** y\n",
+        );
+        let mut project = load(&os);
+        project.agent_own = false;
+        let section = project.build_system_prompt_section().unwrap();
+        // Catalog still rendered…
+        assert!(section.contains("# OpenSpec"));
+        assert!(section.contains("user-auth"));
+        // …but no autonomous-loop playbook.
+        assert!(!section.contains("agent-own SDD"));
+        assert!(!section.contains("No human in the loop"));
     }
 
     #[test]

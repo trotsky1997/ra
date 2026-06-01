@@ -47,6 +47,11 @@ The eye watching from the banner is 𓂀 (U+13080).
   directory (walking cwd → git root, like AGENTS.md) and folds a catalog
   of its capability specs and active changes — with requirement counts
   and task progress — into the system prompt via progressive disclosure.
+  By default it also folds in an **agent-own spec-driven playbook**: how
+  to drive the `openspec` CLI non-interactively (`init --tools`,
+  `new change`, the `status`/`instructions --json` state machine,
+  `validate --strict`, `archive -y`) with no human in the loop
+  (`[openspec] agent_own = false` for catalog only).
   Ra consumes the convention; it doesn't reimplement the `openspec` CLI.
 - **HCP-flavored TOML config.** Single `ra.toml` (or `~/.ra.toml`)
   configures models, tools, skills, prompts, hooks, MCP servers, A2A

@@ -51,8 +51,8 @@ use crate::tools::Tool;
 
 /// Top-level A2A server state. Mirrors `acp_server::SharedState` but
 /// trimmed to only what the A2A path needs (no AcpClientHandle wiring,
-/// no per-session cwd map — A2A clients don't have a host filesystem
-/// to delegate back to).
+/// no per-session cwd map). A2A sessions share the server launch cwd for
+/// local tools and trajectory storage.
 pub struct A2aState {
     model: Arc<dyn Model>,
     model_factory: Arc<dyn ModelFactory>,
@@ -101,6 +101,7 @@ impl A2aState {
             return s.clone();
         }
         let mut s = Session::new(self.model.clone(), self.tools.clone())
+            .with_cwd(self.cwd.clone())
             .with_rtk(self.rtk.clone());
         if let Some(h) = &self.hooks {
             s = s.with_hooks(h.clone());

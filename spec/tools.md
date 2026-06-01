@@ -112,8 +112,9 @@ them.
 Search code with [ast-grep](https://ast-grep.github.io/) and return
 JSON. This tool shells out directly to `ast-grep run --json=stream`
 (or `sg` when `ast-grep` is not on PATH), parses the JSON stream, and
-returns a stable object. Exit status `1` means “no matches” and is
-returned as an empty result rather than an error.
+returns a stable object. Relative paths are resolved against the
+session cwd. Exit status `1` means “no matches” and is returned as an
+empty result rather than an error.
 
 ```json
 {
@@ -136,8 +137,8 @@ returned as an empty result rather than an error.
 | context          | integer  | no       |         | Context lines around matches; conflicts with `before`/`after` |
 | before           | integer  | no       |         | Lines before matches |
 | after            | integer  | no       |         | Lines after matches |
-| max_matches      | integer  | no       | `50`    | Set `0` for no match-count cap |
-| max_output_bytes | integer  | no       | `100000` | Drops trailing matches to preserve valid JSON |
+| max_matches      | integer  | no       | `50`    | Set `0` for no match-count cap; search stops after the budget is reached |
+| max_output_bytes | integer  | no       | `100000` | Search stops before adding a match that would exceed the JSON budget |
 
 Returned shape:
 

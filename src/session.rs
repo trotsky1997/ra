@@ -2,10 +2,11 @@ use crate::events::{Event, ToolResult};
 use crate::model::{Message, Model, ModelChunk, StopReason, ToolSpec};
 use crate::tool_ctx::{ClientHandle, FileChangeApprover, ToolCtx};
 use crate::tools::Tool;
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::{Mutex, RwLock, broadcast};
+use tokio::sync::{broadcast, Mutex, RwLock};
 use tokio_stream::StreamExt;
 use tokio_util::sync::CancellationToken;
 
@@ -29,6 +30,8 @@ pub struct Session {
     client: Option<Arc<dyn ClientHandle>>,
     /// ACP session id, required by every reverse call. Set whenever `client` is.
     session_id: Option<String>,
+    /// Session working directory used by local tools for relative paths.
+    cwd: PathBuf,
     /// Current operating mode (e.g. "default", "plan", "ask"). Surfaced via
     /// `session/set_mode` and `SessionUpdate::CurrentModeUpdate`.
     mode: RwLock<String>,
@@ -77,6 +80,7 @@ impl Session {
             cancel: Mutex::new(CancellationToken::new()),
             client: None,
             session_id: None,
+            cwd: std::env::current_dir().unwrap_or_else(|_| ".".into()),
             mode: RwLock::new("default".into()),
             config: RwLock::new(HashMap::new()),
             system_prompt: RwLock::new(None),
@@ -99,6 +103,15 @@ impl Session {
     #[must_use]
     pub fn with_rtk(mut self, rtk: crate::tools::RtkRewriter) -> Self {
         self.rtk = rtk;
+        self
+    }
+
+    /// Builder-style: set the session cwd used by local tools to resolve
+    /// relative paths. ACP/A2A pass their per-session cwd here; CLI/TUI
+    /// sessions default to the process cwd.
+    #[must_use]
+    pub fn with_cwd(mut self, cwd: impl Into<PathBuf>) -> Self {
+        self.cwd = cwd.into();
         self
     }
 
@@ -372,6 +385,7 @@ impl Session {
                 events: self.tx.clone(),
                 client: self.client.clone(),
                 session_id: self.session_id.clone(),
+                cwd: self.cwd.clone(),
                 file_approver: self.file_approver.clone(),
                 rtk: self.rtk.clone(),
             };

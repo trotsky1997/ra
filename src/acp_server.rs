@@ -234,6 +234,7 @@ impl SharedState {
     ) -> Arc<Session> {
         let mut s = Session::new(self.model.clone(), self.tools.clone())
             .with_client(client, id.to_string())
+            .with_cwd(cwd.clone())
             .with_rtk(self.rtk.clone());
         if let Some(h) = &self.hooks {
             s = s.with_hooks(h.clone());

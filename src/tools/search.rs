@@ -14,6 +14,7 @@ use serde::Deserialize;
 use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncReadExt, BufReader};
 
 const DEFAULT_MAX_MATCHES: usize = 50;
 const DEFAULT_MAX_OUTPUT_BYTES: usize = 100_000;
@@ -55,8 +56,8 @@ pub struct AstGrepParams {
     /// match-count cap.
     #[serde(default = "default_max_matches")]
     pub max_matches: usize,
-    /// Maximum bytes in the returned JSON. Matches are dropped from the end if
-    /// needed to preserve valid JSON.
+    /// Maximum bytes in the returned JSON. Search stops before adding a match
+    /// that would exceed this budget.
     #[serde(default = "default_max_output_bytes")]
     pub max_output_bytes: usize,
 }
@@ -119,8 +120,8 @@ impl Tool for AstGrepTool {
             chunk: format!("[ast-grep] {}", invocation.summary()),
         });
 
-        let output = run_ast_grep(&binary, &invocation).await?;
-        let code = output.status.code().unwrap_or(-1);
+        let output = run_ast_grep(&binary, &invocation, &ctx.cwd).await?;
+        let code = output.exit_code;
         let _ = ctx.events.send(Event::ToolCallUpdate {
             id: call_id.to_string(),
             chunk: format!("[exit={code}]"),
@@ -220,33 +221,73 @@ fn find_ast_grep_binary() -> Result<PathBuf> {
 async fn run_ast_grep(
     binary: &Path,
     invocation: &AstGrepInvocation,
-) -> Result<std::process::Output> {
+    cwd: &Path,
+) -> Result<AstGrepOutput> {
     let mut cmd = tokio::process::Command::new(binary);
     cmd.args(&invocation.args);
+    cmd.current_dir(cwd);
     cmd.stdin(Stdio::null());
-    cmd.output()
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+    cmd.kill_on_drop(true);
+
+    let mut child = cmd
+        .spawn()
+        .with_context(|| format!("spawn `{}` in {}", invocation.summary(), cwd.display()))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow!("ast-grep stdout was not piped"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| anyhow!("ast-grep stderr was not piped"))?;
+
+    let stderr_limit = if invocation.max_output_bytes == 0 {
+        DEFAULT_MAX_OUTPUT_BYTES
+    } else {
+        invocation.max_output_bytes.min(DEFAULT_MAX_OUTPUT_BYTES)
+    };
+    let stderr_task = tokio::spawn(async move { read_limited(stderr, stderr_limit).await });
+
+    let mut collector = MatchCollector::new(invocation.max_matches, invocation.max_output_bytes);
+    collector
+        .collect(BufReader::new(stdout))
         .await
-        .with_context(|| format!("spawn `{}`", invocation.summary()))
+        .context("read ast-grep stdout")?;
+
+    if collector.hit_budget {
+        let _ = child.start_kill();
+    }
+
+    let status = child
+        .wait()
+        .await
+        .with_context(|| format!("wait `{}`", invocation.summary()))?;
+    let stderr = stderr_task
+        .await
+        .context("join ast-grep stderr reader")?
+        .context("read ast-grep stderr")?;
+
+    Ok(AstGrepOutput {
+        exit_code: status.code().unwrap_or(-1),
+        matches: collector.matches,
+        observed_matches: collector.observed_matches,
+        truncated: collector.hit_budget,
+        stderr: String::from_utf8_lossy(&stderr).into_owned(),
+    })
 }
 
 fn format_ast_grep_output(
-    output: &std::process::Output,
+    output: &AstGrepOutput,
     invocation: &AstGrepInvocation,
 ) -> Result<String> {
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let code = output.status.code().unwrap_or(-1);
+    let code = output.exit_code;
 
-    if !(output.status.success() || code == 1) {
+    if !(code == 0 || code == 1 || output.truncated) {
         let mut combined = String::new();
-        if !stdout.trim().is_empty() {
-            combined.push_str(stdout.trim_end());
-        }
-        if !stderr.trim().is_empty() {
-            if !combined.is_empty() {
-                combined.push('\n');
-            }
-            combined.push_str(stderr.trim_end());
+        if !output.stderr.trim().is_empty() {
+            combined.push_str(output.stderr.trim_end());
         }
         return Err(anyhow!(
             "ast-grep exited with status {code}: {}",
@@ -258,55 +299,154 @@ fn format_ast_grep_output(
         ));
     }
 
-    let mut matches = Vec::new();
-    for (idx, line) in stdout
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .enumerate()
-    {
-        let value: serde_json::Value = serde_json::from_str(line)
-            .with_context(|| format!("parse ast-grep JSON stream line {}", idx + 1))?;
-        matches.push(value);
-    }
-
-    let total_matches = matches.len();
-    if invocation.max_matches > 0 && matches.len() > invocation.max_matches {
-        matches.truncate(invocation.max_matches);
-    }
-
     build_result_json(
-        matches,
-        total_matches,
+        output.matches.clone(),
+        output.observed_matches,
         code,
-        stderr.trim(),
+        output.stderr.trim(),
         invocation.max_output_bytes,
+        output.truncated,
     )
 }
 
+#[derive(Debug)]
+struct AstGrepOutput {
+    exit_code: i32,
+    matches: Vec<serde_json::Value>,
+    observed_matches: usize,
+    truncated: bool,
+    stderr: String,
+}
+
+struct MatchCollector {
+    max_matches: usize,
+    max_output_bytes: usize,
+    matches: Vec<serde_json::Value>,
+    observed_matches: usize,
+    hit_budget: bool,
+}
+
+impl MatchCollector {
+    fn new(max_matches: usize, max_output_bytes: usize) -> Self {
+        Self {
+            max_matches,
+            max_output_bytes,
+            matches: Vec::new(),
+            observed_matches: 0,
+            hit_budget: false,
+        }
+    }
+
+    async fn collect<R>(&mut self, reader: R) -> Result<()>
+    where
+        R: AsyncBufRead + Unpin,
+    {
+        let mut lines = reader.lines();
+        while let Some(line) = lines.next_line().await? {
+            if line.trim().is_empty() {
+                continue;
+            }
+            self.observed_matches += 1;
+            let value: serde_json::Value = serde_json::from_str(&line).with_context(|| {
+                format!("parse ast-grep JSON stream line {}", self.observed_matches)
+            })?;
+            if self.can_accept(&value)? {
+                self.matches.push(value);
+                continue;
+            }
+            self.hit_budget = true;
+            break;
+        }
+        Ok(())
+    }
+
+    fn can_accept(&self, value: &serde_json::Value) -> Result<bool> {
+        if self.max_matches > 0 && self.matches.len() >= self.max_matches {
+            return Ok(false);
+        }
+        if self.max_output_bytes == 0 {
+            return Ok(true);
+        }
+
+        let mut probe = self.matches.clone();
+        probe.push(value.clone());
+        let rendered = render_result_json(&probe, self.observed_matches, -1, "", true)?;
+        Ok(rendered.len() <= self.max_output_bytes)
+    }
+}
+
 fn build_result_json(
-    mut matches: Vec<serde_json::Value>,
+    matches: Vec<serde_json::Value>,
     total_matches: usize,
     exit_code: i32,
     stderr: &str,
     max_output_bytes: usize,
+    already_truncated: bool,
 ) -> Result<String> {
-    let mut truncated = matches.len() < total_matches;
+    let truncated = already_truncated || matches.len() < total_matches;
+    let rendered = render_result_json(&matches, total_matches, exit_code, stderr, truncated)?;
+    if max_output_bytes == 0 || rendered.len() <= max_output_bytes || matches.is_empty() {
+        return Ok(rendered);
+    }
+
+    let value = json!({
+        "matches": [],
+        "total_matches": total_matches,
+        "truncated": true,
+        "exit_code": exit_code,
+        "stderr": if stderr.is_empty() { serde_json::Value::Null } else { json!(stderr) },
+    });
+    serde_json::to_string_pretty(&value).map_err(Into::into)
+}
+
+fn render_result_json(
+    matches: &[serde_json::Value],
+    total_matches: usize,
+    exit_code: i32,
+    stderr: &str,
+    truncated: bool,
+) -> Result<String> {
+    let value = json!({
+        "matches": matches,
+        "total_matches": total_matches,
+        "truncated": truncated,
+        "exit_code": exit_code,
+        "stderr": if stderr.is_empty() { serde_json::Value::Null } else { json!(stderr) },
+    });
+    serde_json::to_string_pretty(&value).map_err(Into::into)
+}
+
+async fn read_limited<R>(mut reader: R, limit: usize) -> std::io::Result<Vec<u8>>
+where
+    R: AsyncRead + Unpin,
+{
+    let mut buf = Vec::new();
+    let mut chunk = [0_u8; 8192];
+    let mut truncated = false;
 
     loop {
-        let value = json!({
-            "matches": matches,
-            "total_matches": total_matches,
-            "truncated": truncated,
-            "exit_code": exit_code,
-            "stderr": if stderr.is_empty() { serde_json::Value::Null } else { json!(stderr) },
-        });
-        let rendered = serde_json::to_string_pretty(&value)?;
-        if max_output_bytes == 0 || rendered.len() <= max_output_bytes || matches.is_empty() {
-            return Ok(rendered);
+        let n = reader.read(&mut chunk).await?;
+        if n == 0 {
+            break;
         }
-        matches.pop();
-        truncated = true;
+
+        let remaining = limit.saturating_sub(buf.len());
+        if remaining > 0 {
+            let keep = n.min(remaining);
+            buf.extend_from_slice(&chunk[..keep]);
+            truncated |= keep < n;
+        } else {
+            truncated = true;
+        }
     }
+
+    if truncated {
+        if !buf.ends_with(b"\n") {
+            buf.push(b'\n');
+        }
+        buf.extend_from_slice(b"[stderr truncated]\n");
+    }
+    Ok(buf)
 }
 
 fn shell_words(binary: &str, args: &[String]) -> String {
@@ -337,7 +477,7 @@ fn default_max_output_bytes() -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::process::ExitStatusExt;
+    use std::io::Cursor;
 
     fn params(pattern: &str) -> AstGrepParams {
         AstGrepParams {
@@ -411,10 +551,12 @@ mod tests {
     #[test]
     fn no_matches_exit_code_is_successful_empty_json() {
         let invocation = AstGrepInvocation::from_params(params("foo($A)")).unwrap();
-        let output = std::process::Output {
-            status: std::process::ExitStatus::from_raw(1 << 8),
-            stdout: Vec::new(),
-            stderr: Vec::new(),
+        let output = AstGrepOutput {
+            exit_code: 1,
+            matches: Vec::new(),
+            observed_matches: 0,
+            truncated: false,
+            stderr: String::new(),
         };
 
         let rendered = format_ast_grep_output(&output, &invocation).unwrap();
@@ -428,13 +570,12 @@ mod tests {
     fn limits_matches_and_preserves_valid_json() {
         let mut invocation = AstGrepInvocation::from_params(params("foo($A)")).unwrap();
         invocation.max_matches = 1;
-        let output = std::process::Output {
-            status: std::process::ExitStatus::from_raw(0),
-            stdout: br#"{"file":"a.rs","text":"foo(1)"}
-{"file":"b.rs","text":"foo(2)"}
-"#
-            .to_vec(),
-            stderr: Vec::new(),
+        let output = AstGrepOutput {
+            exit_code: 0,
+            matches: vec![json!({"file":"a.rs","text":"foo(1)"})],
+            observed_matches: 2,
+            truncated: true,
+            stderr: String::new(),
         };
 
         let rendered = format_ast_grep_output(&output, &invocation).unwrap();
@@ -442,5 +583,78 @@ mod tests {
         assert_eq!(value["matches"].as_array().unwrap().len(), 1);
         assert_eq!(value["total_matches"], json!(2));
         assert_eq!(value["truncated"], json!(true));
+    }
+
+    #[tokio::test]
+    async fn collector_stops_when_match_budget_is_reached() {
+        let input = br#"{"file":"a.rs","text":"foo(1)"}
+{"file":"b.rs","text":"foo(2)"}
+{"file":"c.rs","text":"foo(3)"}
+"#;
+        let mut collector = MatchCollector::new(1, 0);
+
+        collector
+            .collect(BufReader::new(Cursor::new(input)))
+            .await
+            .unwrap();
+
+        assert!(collector.hit_budget);
+        assert_eq!(collector.observed_matches, 2);
+        assert_eq!(
+            collector.matches,
+            vec![json!({"file":"a.rs","text":"foo(1)"})]
+        );
+    }
+
+    #[tokio::test]
+    async fn collector_stops_when_output_budget_is_reached() {
+        let first = json!({"file":"a.rs","text":"foo(1)"});
+        let second = json!({"file":"b.rs","text":"foo(2)"});
+        let third = json!({"file":"c.rs","text":"foo(3)"});
+        let input = format!(
+            "{}\n{}\n{}\n",
+            serde_json::to_string(&first).unwrap(),
+            serde_json::to_string(&second).unwrap(),
+            serde_json::to_string(&third).unwrap()
+        );
+        let budget = render_result_json(&[first.clone()], 1, -1, "", true)
+            .unwrap()
+            .len();
+        let mut collector = MatchCollector::new(0, budget);
+
+        collector
+            .collect(BufReader::new(Cursor::new(input)))
+            .await
+            .unwrap();
+
+        assert!(collector.hit_budget);
+        assert_eq!(collector.observed_matches, 2);
+        assert_eq!(collector.matches, vec![first]);
+    }
+
+    #[tokio::test]
+    async fn run_ast_grep_uses_session_cwd_for_relative_paths() {
+        let Ok(binary) = find_ast_grep_binary() else {
+            return;
+        };
+        let tmp = tempfile::TempDir::new().unwrap();
+        tokio::fs::write(tmp.path().join("sample.rs"), "fn target() {}\n")
+            .await
+            .unwrap();
+
+        let mut params = params("fn target() {}");
+        params.lang = Some("rust".into());
+        params.paths = vec!["sample.rs".into()];
+        let invocation = AstGrepInvocation::from_params(params).unwrap();
+        let output = run_ast_grep(&binary, &invocation, tmp.path())
+            .await
+            .unwrap();
+
+        assert_eq!(output.exit_code, 0);
+        assert_eq!(output.observed_matches, 1);
+        assert!(output.matches[0]["file"]
+            .as_str()
+            .unwrap()
+            .ends_with("sample.rs"));
     }
 }

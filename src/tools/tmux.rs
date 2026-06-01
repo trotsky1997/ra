@@ -869,7 +869,7 @@ async fn execute_tmux_wait_program(
             );
         }
 
-        let (stdout, command_exit_code) = strip_exit_marker(&capture.stdout);
+        let (stdout, command_exit_code) = strip_exit_marker(&capture.stdout, &token);
         let eval = event.evaluate_program_output(&stdout, command_exit_code);
         let terminal =
             eval.triggered || command_exit_code.is_some() || started.elapsed() >= timeout;
@@ -998,7 +998,7 @@ async fn run_blocking(
 
     let capture_args = capture_args(target, Some(RUN_WAIT_CAPTURE_START), None);
     let capture = run_tmux(tmux, &capture_args).await?;
-    let (stdout, command_exit_code) = strip_exit_marker(&capture.stdout);
+    let (stdout, command_exit_code) = strip_exit_marker(&capture.stdout, &token);
     let ok = !wait.timed_out
         && wait.output.exit_code == 0
         && capture.exit_code == 0
@@ -1244,10 +1244,11 @@ fn wait_script(command: &str, token: &str) -> String {
         "#!/bin/sh\n\
          /bin/sh -c {} 2>&1\n\
          status=$?\n\
-         printf '\\n{EXIT_MARKER_PREFIX}%s{EXIT_MARKER_SUFFIX}\\n' \"$status\"\n\
+         printf '\\n{EXIT_MARKER_PREFIX}{}:{EXIT_MARKER_SUFFIX}%s{EXIT_MARKER_SUFFIX}\\n' \"$status\"\n\
          tmux wait-for -S {}\n\
          exec /bin/sh\n",
         shell_word(command),
+        token,
         shell_word(token)
     )
 }
@@ -1761,12 +1762,15 @@ fn validate_name(field: &str, value: &str, allow_dot: bool, allow_percent: bool)
     Ok(value.to_string())
 }
 
-fn strip_exit_marker(text: &str) -> (String, Option<i32>) {
+fn strip_exit_marker(text: &str, token: &str) -> (String, Option<i32>) {
+    // Marker format: __RA_TMUX_EXIT:<token>:__<exit_code>__
+    // The token makes the marker unique per call so command output cannot forge it.
+    let prefix = format!("{EXIT_MARKER_PREFIX}{token}:{EXIT_MARKER_SUFFIX}");
     let mut exit_code = None;
     let mut kept = Vec::new();
     for line in text.lines() {
         let trimmed = line.trim_end_matches('\r').trim();
-        if let Some(rest) = trimmed.strip_prefix(EXIT_MARKER_PREFIX) {
+        if let Some(rest) = trimmed.strip_prefix(&prefix) {
             if let Some(code) = rest.strip_suffix(EXIT_MARKER_SUFFIX) {
                 exit_code = code.parse::<i32>().ok();
                 continue;
@@ -1935,10 +1939,19 @@ mod tests {
 
     #[test]
     fn exit_marker_is_removed_and_parsed() {
-        let (text, code) = strip_exit_marker("one\n__RA_TMUX_EXIT:7__\ntwo\n");
+        let (text, code) = strip_exit_marker("one\n__RA_TMUX_EXIT:mytoken:__7__\ntwo\n", "mytoken");
 
         assert_eq!(text, "one\ntwo\n");
         assert_eq!(code, Some(7));
+    }
+
+    #[test]
+    fn exit_marker_wrong_token_is_not_stripped() {
+        let input = "one\n__RA_TMUX_EXIT:othertoken:__7__\ntwo\n";
+        let (text, code) = strip_exit_marker(input, "mytoken");
+
+        assert_eq!(text, input);
+        assert_eq!(code, None);
     }
 
     #[test]
@@ -1946,6 +1959,7 @@ mod tests {
         let script = wait_script("printf 'hi'; exit 7", "token");
 
         assert!(script.contains("/bin/sh -c 'printf '\\''hi'\\''; exit 7' 2>&1"));
+        assert!(script.contains("__RA_TMUX_EXIT:token:__"));
         assert!(script.contains("tmux wait-for -S token"));
     }
 }

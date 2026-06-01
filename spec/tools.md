@@ -105,6 +105,58 @@ Shell-native commands such as `grep`, `find`, and `ls` intentionally
 go through `bash`; Ra does not expose separate built-in wrappers for
 them.
 
+## Structural search tools
+
+### `ast_grep`
+
+Search code with [ast-grep](https://ast-grep.github.io/) and return
+JSON. This tool shells out directly to `ast-grep run --json=stream`
+(or `sg` when `ast-grep` is not on PATH), parses the JSON stream, and
+returns a stable object. Exit status `1` means “no matches” and is
+returned as an empty result rather than an error.
+
+```json
+{
+  "pattern": "if ($COND) { $BODY }",
+  "lang": "rust",
+  "paths": ["src"],
+  "globs": ["src/**/*.rs", "!target/**"]
+}
+```
+
+| Field            | Type     | Required | Default | Notes |
+|------------------|----------|----------|---------|-------|
+| pattern          | string   | yes      |         | AST pattern to match |
+| paths            | string[] | no       | `["."]` | Files or directories to search |
+| lang             | string   | no       | inferred | `rust`, `python`, `typescript`, `tsx`, … |
+| selector         | string   | no       |         | AST kind inside `pattern` used as matcher |
+| strictness       | string   | no       | ast-grep default | `cst`, `smart`, `ast`, `relaxed`, `signature`, `template` |
+| globs            | string[] | no       | `[]`    | Include/exclude globs; prefix with `!` to exclude |
+| follow           | boolean  | no       | `false` | Follow symlinks during traversal |
+| context          | integer  | no       |         | Context lines around matches; conflicts with `before`/`after` |
+| before           | integer  | no       |         | Lines before matches |
+| after            | integer  | no       |         | Lines after matches |
+| max_matches      | integer  | no       | `50`    | Set `0` for no match-count cap |
+| max_output_bytes | integer  | no       | `100000` | Drops trailing matches to preserve valid JSON |
+
+Returned shape:
+
+```json
+{
+  "matches": [],
+  "total_matches": 0,
+  "truncated": false,
+  "exit_code": 1,
+  "stderr": null
+}
+```
+
+Errors:
+- `ast_grep requires a non-empty pattern`
+- `context conflicts with before/after`
+- `ast-grep not found on PATH; install ast-grep or sg to use ast_grep`
+- `ast-grep exited with status N: <output>`
+
 ## Adding new tools
 
 Implement the `Tool` trait (`src/tools/core.rs`). The minimal shape:

@@ -36,11 +36,12 @@ api_key_env = "ANTHROPIC_API_KEY"
 #   write  — write a file
 #   edit   — replace a literal substring inside a file (Claude Code shape)
 #   bash   — run a shell command (ACP terminal reverse-call when available)
+#   ast_grep — structural code search via ast-grep / sg
 # Shell-native commands such as grep/find/ls go through bash rather
 # than separate built-in tool wrappers.
 # An empty list (or omitted section) ships every built-in tool.
 [tools]
-# builtin = ["read", "write", "edit", "bash"]
+# builtin = ["read", "write", "edit", "bash", "ast_grep"]
 builtin = []
 
 # ─── Skills (agentskills.io v1) ─────────────────────────────────────

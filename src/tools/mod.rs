@@ -8,14 +8,17 @@
 //! - `write` — write a file
 //! - `edit`  — replace a literal string inside a file (Claude Code shape)
 //! - `bash`  — run a shell command (ACP terminal reverse-call when available)
+//! - `ast_grep` — structural code search via ast-grep
 
 mod core;
 mod fs;
 mod rtk;
+mod search;
 
 pub use core::{BashTool, ReadTool};
 pub use fs::{EditTool, WriteTool};
 pub use rtk::RtkRewriter;
+pub use search::AstGrepTool;
 
 use std::sync::Arc;
 
@@ -39,6 +42,9 @@ pub fn default_builtins(allowlist: &[String]) -> Vec<Arc<dyn Tool>> {
     }
     if want("bash") {
         out.push(Arc::new(BashTool));
+    }
+    if want("ast_grep") {
+        out.push(Arc::new(AstGrepTool));
     }
     out
 }

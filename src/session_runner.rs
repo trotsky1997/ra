@@ -27,6 +27,7 @@ use std::sync::Arc;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolKindHint {
     Read,
+    Search,
     Execute,
     Other,
 }
@@ -261,11 +262,7 @@ impl SessionRunner {
                         Ok(RaEvent::TextDelta(s)) => on_event(RunnerEvent::TextDelta(s)),
                         Ok(RaEvent::ThinkingDelta(s)) => on_event(RunnerEvent::ThinkingDelta(s)),
                         Ok(RaEvent::ToolCallStart(c)) => {
-                            let kind = match c.name.as_str() {
-                                "read" => ToolKindHint::Read,
-                                "bash" => ToolKindHint::Execute,
-                                _ => ToolKindHint::Other,
-                            };
+                            let kind = tool_kind(&c.name);
                             let title = tool_title(&c.name, &c.input);
                             on_event(RunnerEvent::ToolCallStart {
                                 id: c.id.clone(),
@@ -302,11 +299,7 @@ impl SessionRunner {
                             RaEvent::TextDelta(s) => on_event(RunnerEvent::TextDelta(s)),
                             RaEvent::ThinkingDelta(s) => on_event(RunnerEvent::ThinkingDelta(s)),
                             RaEvent::ToolCallStart(c) => {
-                                let kind = match c.name.as_str() {
-                                    "read" => ToolKindHint::Read,
-                                    "bash" => ToolKindHint::Execute,
-                                    _ => ToolKindHint::Other,
-                                };
+                                let kind = tool_kind(&c.name);
                                 let title = tool_title(&c.name, &c.input);
                                 on_event(RunnerEvent::ToolCallStart {
                                     id: c.id.clone(),
@@ -388,6 +381,15 @@ impl SessionRunner {
     }
 }
 
+fn tool_kind(name: &str) -> ToolKindHint {
+    match name {
+        "read" => ToolKindHint::Read,
+        "ast_grep" => ToolKindHint::Search,
+        "bash" => ToolKindHint::Execute,
+        _ => ToolKindHint::Other,
+    }
+}
+
 /// Human-readable title for a tool call, surfaced in client UI.
 fn tool_title(name: &str, input: &serde_json::Value) -> String {
     match name {
@@ -408,6 +410,18 @@ fn tool_title(name: &str, input: &serde_json::Value) -> String {
                 format!("$ {s}")
             })
             .unwrap_or_else(|| "Run shell".into()),
+        "ast_grep" => input
+            .get("pattern")
+            .and_then(|v| v.as_str())
+            .map(|q| {
+                let mut s = q.to_string();
+                if s.len() > 60 {
+                    s.truncate(60);
+                    s.push('…');
+                }
+                format!("ast-grep {s}")
+            })
+            .unwrap_or_else(|| "ast-grep search".into()),
         other => other.to_string(),
     }
 }

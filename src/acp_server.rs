@@ -999,6 +999,7 @@ fn translate_runner_event(
 fn tool_kind_hint_to_acp(hint: ToolKindHint) -> ToolKind {
     match hint {
         ToolKindHint::Read => ToolKind::Read,
+        ToolKindHint::Search => ToolKind::Search,
         ToolKindHint::Execute => ToolKind::Execute,
         ToolKindHint::Other => ToolKind::Other,
     }

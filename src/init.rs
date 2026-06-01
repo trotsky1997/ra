@@ -32,8 +32,8 @@ banner = true
 # api_key_env = "OPENAI_API_KEY"
 
 [tools]
-# Empty means: enable every built-in tool whose external dependency is present.
-# builtin = ["read", "write", "edit", "bash", "grep", "find", "ls"]
+# Empty means: enable every built-in tool.
+# builtin = ["read", "write", "edit", "bash", "ast_grep"]
 builtin = []
 
 [skills]

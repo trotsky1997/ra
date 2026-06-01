@@ -175,11 +175,13 @@ Resolution order: `--config <path>` → `$RA_CONFIG` → `./ra.toml` →
 | `write` | Writes a file in full; ACP `fs/write_text_file` when available. Auto-creates parent dirs locally. |
 | `edit`  | Claude-Code-shaped: `{path, old_string, new_string, replace_all}`. Refuses ambiguous matches by default. |
 | `bash`  | Runs a shell command; ACP `terminal/*` (with permission gating) when available, else `/bin/sh -c`. |
+| `ast_grep` | Read-only structural code search via ast-grep / `sg`; returns JSON matches. |
 
 Toggle the catalog via `[tools] builtin = […]`; an empty allow-list
 ships every built-in tool. `grep`, `find`, `ls`, and similar shell
 commands intentionally go through `bash` rather than separate built-in
-tool definitions.
+tool definitions. `ast_grep` is native because it is structured code
+search rather than a plain shell command.
 
 ## Protocols & specs
 

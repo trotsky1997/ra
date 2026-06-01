@@ -46,6 +46,14 @@ on disk and tested; speculative ideas live as GitHub issues.
 - [agentskills.io v1](https://agentskills.io/) `SKILL.md` parser with
   YAML frontmatter and progressive disclosure.
 - [agents.md](https://agents.md/) auto-walk from cwd to git root.
+- Native [OpenSpec](https://github.com/Fission-AI/OpenSpec) discovery
+  (`src/openspec.rs`): finds the nearest `openspec/` directory (cwd →
+  git root) and folds a catalog of capability specs (requirement /
+  scenario counts) and active changes (task progress, touched
+  capabilities) into the system prompt with progressive disclosure.
+  Archived changes are skipped; `[openspec]` toggles it and `path`
+  overrides the location. Ra consumes the convention, it doesn't
+  reimplement the `openspec` CLI.
 - User-defined slash-command prompt templates.
 - Lifecycle hooks wire-compatible with the
   [Claude Code hooks spec](https://code.claude.com/docs/en/hooks.md):

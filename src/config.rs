@@ -53,6 +53,8 @@ pub struct RaConfig {
     #[serde(default)]
     pub agents_md: AgentsMdSection,
     #[serde(default)]
+    pub openspec: OpenSpecSection,
+    #[serde(default)]
     pub resources: ResourcesSection,
     #[serde(default)]
     pub rtk: RtkSection,
@@ -324,6 +326,37 @@ impl Default for AgentsMdSection {
     }
 }
 
+/// `[openspec]` — native [OpenSpec](https://github.com/Fission-AI/OpenSpec)
+/// discovery. When enabled (the default), Ra locates the nearest
+/// `openspec/` directory (walking cwd → git root, same as AGENTS.md) and
+/// folds a high-signal catalog of its capability specs and active changes
+/// into the system prompt with progressive disclosure. Ra is the
+/// *consumer* of the convention; it does not reimplement the `openspec`
+/// CLI.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct OpenSpecSection {
+    /// Default true. Set false to disable OpenSpec auto-discovery even
+    /// when an `openspec/` directory is present.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Override the directory Ra discovers. By default Ra walks cwd up
+    /// to the git root looking for a folder literally named `openspec`;
+    /// set this to point at a non-standard location. `~` is expanded and
+    /// relative paths resolve against the cwd.
+    #[serde(default)]
+    pub path: Option<String>,
+}
+
+impl Default for OpenSpecSection {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            path: None,
+        }
+    }
+}
+
 /// `[resources]` — extra plain-text files concatenated into the system
 /// prompt verbatim. Less structured than `[skills]`; useful for ad-hoc
 /// system prompts or repo conventions kept in a non-AGENTS.md file.
@@ -592,5 +625,25 @@ command = "./hooks/cleanup.sh"
         assert_eq!(cfg.hooks.pre_tool_use.len(), 1);
         assert!((cfg.hooks.pre_tool_use[0].timeout - 1.5).abs() < f64::EPSILON);
         assert_eq!(cfg.hooks.stop.len(), 1);
+    }
+
+    #[test]
+    fn openspec_defaults_on_and_parses_overrides() {
+        // Omitted section => enabled by default, no path override.
+        let cfg: RaConfig = toml::from_str("version = 1\n").unwrap();
+        assert!(cfg.openspec.enabled);
+        assert!(cfg.openspec.path.is_none());
+
+        // Explicit section.
+        let toml_doc = r#"
+version = 1
+
+[openspec]
+enabled = false
+path = "./docs/openspec"
+"#;
+        let cfg: RaConfig = toml::from_str(toml_doc).unwrap();
+        assert!(!cfg.openspec.enabled);
+        assert_eq!(cfg.openspec.path.as_deref(), Some("./docs/openspec"));
     }
 }

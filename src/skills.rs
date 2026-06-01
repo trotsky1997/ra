@@ -73,6 +73,8 @@ pub struct ResourceBundle {
     pub prompts: Vec<PromptTemplate>,
     pub agents_md: Vec<AgentsMd>,
     pub plain: Vec<PlainResource>,
+    /// Discovered OpenSpec project (`openspec/` dir), if any.
+    pub openspec: Option<crate::openspec::OpenSpecProject>,
 }
 
 impl ResourceBundle {
@@ -83,7 +85,8 @@ impl ResourceBundle {
     /// Composition order:
     /// 1. AGENTS.md walked from project root → cwd (so deepest wins)
     /// 2. Plain `[resources]` files in the order they were configured
-    /// 3. Skill descriptions only (progressive disclosure), each with
+    /// 3. OpenSpec catalog (capability specs + active changes), if any
+    /// 4. Skill descriptions only (progressive disclosure), each with
     ///    a path hint so the LLM can `read` the SKILL.md when needed
     pub fn build_system_prompt(&self) -> Option<String> {
         let mut buf = String::new();
@@ -104,7 +107,13 @@ impl ResourceBundle {
             ensure_trailing_blank(&mut buf);
         }
 
-        // 3. skills as a structured catalog (description only).
+        // 3. OpenSpec catalog (progressive disclosure, like skills).
+        if let Some(section) = self.openspec.as_ref().and_then(|p| p.build_system_prompt_section()) {
+            buf.push_str(&section);
+            ensure_trailing_blank(&mut buf);
+        }
+
+        // 4. skills as a structured catalog (description only).
         if !self.skills.is_empty() {
             buf.push_str("# Skills\n\n");
             buf.push_str(

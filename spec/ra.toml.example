@@ -71,6 +71,19 @@ paths = [
 [agents_md]
 enabled = true
 
+# ─── OpenSpec (spec-driven development) ─────────────────────────────
+# Native https://github.com/Fission-AI/OpenSpec support. When enabled
+# (default), Ra finds the nearest `openspec/` directory (walking cwd up
+# to the git root, like AGENTS.md) and folds a catalog of its capability
+# specs and active changes into the system prompt with progressive
+# disclosure — the model sees names, requirement counts, and task
+# progress, then `read`s the underlying spec.md / proposal.md / tasks.md
+# on demand. Ra consumes the convention; it does not reimplement the
+# `openspec` CLI.
+[openspec]
+enabled = true
+# path = "./docs/openspec"   # override the auto-discovered location
+
 # ─── A2A (server + remote agents) ───────────────────────────────────
 [a2a.serve]
 http_port = 3000

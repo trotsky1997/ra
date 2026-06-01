@@ -29,6 +29,9 @@
     "obs": {
       "$ref": "#/definitions/ObsSection"
     },
+    "openspec": {
+      "$ref": "#/definitions/OpenSpecSection"
+    },
     "prompts": {
       "$ref": "#/definitions/PromptsSection"
     },
@@ -369,6 +372,26 @@
         },
         "otel_endpoint": {
           "description": "OTLP endpoint when backend=otel. Equivalent of `OTEL_EXPORTER_OTLP_ENDPOINT`.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "OpenSpecSection": {
+      "description": "`[openspec]` — native [OpenSpec](https://github.com/Fission-AI/OpenSpec) discovery. When enabled (the default), Ra locates the nearest `openspec/` directory (walking cwd → git root, same as AGENTS.md) and folds a high-signal catalog of its capability specs and active changes into the system prompt with progressive disclosure. Ra is the *consumer* of the convention; it does not reimplement the `openspec` CLI.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Default true. Set false to disable OpenSpec auto-discovery even when an `openspec/` directory is present.",
+          "default": true,
+          "type": "boolean"
+        },
+        "path": {
+          "description": "Override the directory Ra discovers. By default Ra walks cwd up to the git root looking for a folder literally named `openspec`; set this to point at a non-standard location. `~` is expanded and relative paths resolve against the cwd.",
           "default": null,
           "type": [
             "string",

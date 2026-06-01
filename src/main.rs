@@ -514,6 +514,35 @@ fn load_skills_and_prompts(
             eprintln!("[ra] discovered {} AGENTS.md file(s)", bundle.agents_md.len());
         }
     }
+    if config.openspec.enabled {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
+        let project = match &config.openspec.path {
+            // Explicit override: load exactly that dir if it exists.
+            Some(p) => {
+                let dir = ra::config::RaConfig::expand_path(p, &cwd);
+                if dir.is_dir() {
+                    Some(ra::openspec::load(&dir))
+                } else {
+                    eprintln!(
+                        "[ra] openspec.path {} is not a directory; skipping",
+                        dir.display()
+                    );
+                    None
+                }
+            }
+            // Default: walk cwd → git root for an `openspec/` dir.
+            None => ra::openspec::discover(&cwd),
+        };
+        bundle.openspec = project.filter(|p| !p.is_empty());
+        if let Some(p) = &bundle.openspec {
+            eprintln!(
+                "[ra] discovered OpenSpec project at {} ({} spec(s), {} active change(s))",
+                p.root.display(),
+                p.specs.len(),
+                p.changes.len()
+            );
+        }
+    }
     let mut plain_paths = Vec::new();
     if let Some(p) = &config.resources.system_prompt_path {
         plain_paths.push(p.clone());

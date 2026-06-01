@@ -9,7 +9,7 @@ use crate::tool_ctx::{FileChange, FileChangeDecision, ToolCtx};
 use crate::tools::core::Tool;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use schemars::{schema_for, JsonSchema};
+use schemars::{JsonSchema, schema_for};
 use serde::Deserialize;
 
 // ---------- WriteTool ------------------------------------------------------
@@ -80,7 +80,7 @@ impl Tool for WriteTool {
                         "wrote {} ({} bytes)",
                         params.path,
                         params.content.len()
-                    ))
+                    ));
                 }
                 Err(e) => {
                     eprintln!(

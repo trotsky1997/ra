@@ -2,10 +2,10 @@ use crate::events::{Event, ToolResult};
 use crate::model::{Message, Model, ModelChunk, StopReason, ToolSpec};
 use crate::tool_ctx::{ClientHandle, FileChangeApprover, ToolCtx};
 use crate::tools::Tool;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{broadcast, Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, broadcast};
 use tokio_stream::StreamExt;
 use tokio_util::sync::CancellationToken;
 

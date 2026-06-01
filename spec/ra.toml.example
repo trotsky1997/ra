@@ -186,3 +186,23 @@ mode = "default"                   # default | plan | ask
 # mode = "auto"                    # auto | on | off (or true / false)
 # binary = "/usr/local/bin/rtk"    # override PATH lookup
 # ultra_compact = false            # pass --ultra-compact to rtk rewrite
+
+# ─── openlsp (LSP code intelligence) ───────────────────────────────
+# Native integration with https://github.com/trotsky1997/openlsp: when
+# enabled (default), Ra registers a built-in `lsp` tool that invokes
+# openlsp-cli with argv flags (diagnostics, goToDefinition, hover,
+# references, format, analyze). The tool is silently omitted if no
+# openlsp-cli binary can be resolved.
+# Resolution order: [openlsp] binary → `openlsp-cli` on PATH →
+#                   `openlsp` (alias) → `bunx openlsp-cli`
+# [openlsp]
+# enabled = true
+# binary = "/usr/local/bin/openlsp-cli"  # override PATH lookup
+# workspace_root = "."                   # passed as --workspace-root
+# timeout = 30.0                         # per-call timeout in seconds
+
+# Example: auto-run diagnostics after every write/edit via PostToolUse hook
+# [[hooks.PostToolUse]]
+# matcher = "write|edit"
+# command = "openlsp-cli lsp --operation diagnostics --file \"$RA_TOOL_INPUT_PATH\" --json"
+# timeout = 10

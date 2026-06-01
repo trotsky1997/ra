@@ -16,11 +16,13 @@
 //! - `ls`    — structured directory listing
 //! - `fuzzy` — non-interactive fuzzy ranking/filtering
 //! - `apply_patch` — controlled `git apply` wrapper
+//! - `lsp`   — openlsp code intelligence (diagnostics, hover, references, …)
 
 mod cli;
 mod core;
 mod extended;
 mod fs;
+mod lsp;
 mod rtk;
 mod search;
 
@@ -28,9 +30,11 @@ pub use cli::{GhTool, GitTool};
 pub use core::{BashTool, ReadTool};
 pub use extended::{ApplyPatchTool, FuzzyTool, GlobTool, GrepTool, LsTool};
 pub use fs::{EditTool, WriteTool};
+pub use lsp::{resolve_openlsp_binary, LspTool};
 pub use rtk::RtkRewriter;
 pub use search::AstGrepTool;
 
+use crate::config::OpenlspSection;
 use std::sync::Arc;
 
 /// The unified tool trait. Re-exported so callers can `use ra::Tool`.
@@ -38,7 +42,18 @@ pub use self::core::Tool;
 
 /// Build the default tool set, honouring the `[tools] builtin = [...]`
 /// allow-list. An empty allow-list = ship every built-in tool.
+/// `openlsp_cfg` is used to resolve the lsp tool binary; pass
+/// `&OpenlspSection::default()` when no config is available.
 pub fn default_builtins(allowlist: &[String]) -> Vec<Arc<dyn Tool>> {
+    default_builtins_with_cfg(allowlist, &OpenlspSection::default())
+}
+
+/// Like `default_builtins` but accepts an explicit `OpenlspSection` so
+/// callers that have loaded a config can pass it through.
+pub fn default_builtins_with_cfg(
+    allowlist: &[String],
+    openlsp_cfg: &OpenlspSection,
+) -> Vec<Arc<dyn Tool>> {
     let want = |name: &str| allowlist.is_empty() || allowlist.iter().any(|n| n == name);
 
     let mut out: Vec<Arc<dyn Tool>> = Vec::new();
@@ -77,6 +92,15 @@ pub fn default_builtins(allowlist: &[String]) -> Vec<Arc<dyn Tool>> {
     }
     if want("apply_patch") {
         out.push(Arc::new(ApplyPatchTool));
+    }
+    if want("lsp") {
+        if let Some(binary) = resolve_openlsp_binary(openlsp_cfg) {
+            out.push(Arc::new(LspTool {
+                binary,
+                workspace_root: openlsp_cfg.workspace_root.clone(),
+                timeout_secs: openlsp_cfg.timeout,
+            }));
+        }
     }
     out
 }
@@ -120,5 +144,53 @@ mod tests {
     #[test]
     fn allowlist_can_select_extended_tools_exactly() {
         assert_eq!(builtin_names(&["grep"]), vec!["grep"]);
+    }
+
+    #[test]
+    fn lsp_absent_when_disabled_in_config() {
+        let cfg = OpenlspSection {
+            enabled: false,
+            binary: Some("true".to_string()),
+            workspace_root: None,
+            timeout: 30.0,
+        };
+        let allowlist: Vec<String> = vec![];
+        let names: Vec<String> = default_builtins_with_cfg(&allowlist, &cfg)
+            .into_iter()
+            .map(|t| t.name().to_string())
+            .collect();
+        assert!(!names.contains(&"lsp".to_string()));
+    }
+
+    #[test]
+    fn lsp_present_when_binary_resolves() {
+        let cfg = OpenlspSection {
+            enabled: true,
+            binary: Some("true".to_string()),
+            workspace_root: None,
+            timeout: 30.0,
+        };
+        let allowlist: Vec<String> = vec![];
+        let names: Vec<String> = default_builtins_with_cfg(&allowlist, &cfg)
+            .into_iter()
+            .map(|t| t.name().to_string())
+            .collect();
+        assert!(names.contains(&"lsp".to_string()));
+    }
+
+    #[test]
+    fn allowlist_excludes_lsp_when_not_listed() {
+        let cfg = OpenlspSection {
+            enabled: true,
+            binary: Some("true".to_string()),
+            workspace_root: None,
+            timeout: 30.0,
+        };
+        let allowlist = vec!["read".to_string(), "bash".to_string()];
+        let names: Vec<String> = default_builtins_with_cfg(&allowlist, &cfg)
+            .into_iter()
+            .map(|t| t.name().to_string())
+            .collect();
+        assert!(!names.contains(&"lsp".to_string()));
     }
 }

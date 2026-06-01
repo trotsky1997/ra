@@ -3,8 +3,8 @@ use std::sync::Arc;
 use clap::{Parser, Subcommand};
 use llm::builder::LLMBackend;
 use ra::{
-    acp_server::ModelFactory, default_builtins, Event, LlmModel, LlmModelConfig, MockModel, Model,
-    Session,
+    acp_server::ModelFactory, default_builtins_with_cfg, Event, LlmModel, LlmModelConfig,
+    MockModel, Model, Session,
 };
 use tokio::io::{self, AsyncWriteExt};
 
@@ -437,7 +437,7 @@ async fn run_acp(config: &ra::config::RaConfig) -> anyhow::Result<()> {
     }
     eprintln!("[ra] starting ACP server on stdio (protocol v1)");
     let (model, factory) = build_model(config);
-    let mut extra_tools = default_builtins(&config.tools.builtin);
+    let mut extra_tools = default_builtins_with_cfg(&config.tools.builtin, &config.openlsp);
     extra_tools.extend(ra::a2a_tool::load_remote_tools_from_env().await);
     extra_tools.extend(load_a2a_tools_from_config(config).await);
     extra_tools.extend(ra::mcp::load_mcp_tools(&config.mcp.servers).await);
@@ -475,7 +475,7 @@ async fn run_serve(
     }
     eprintln!("[ra] starting A2A server (HTTP :{http_port}, gRPC :{grpc_port})");
     let (model, factory) = build_model(config);
-    let mut extra_tools = default_builtins(&config.tools.builtin);
+    let mut extra_tools = default_builtins_with_cfg(&config.tools.builtin, &config.openlsp);
     extra_tools.extend(ra::a2a_tool::load_remote_tools_from_env().await);
     extra_tools.extend(load_a2a_tools_from_config(config).await);
     extra_tools.extend(ra::mcp::load_mcp_tools(&config.mcp.servers).await);
@@ -549,7 +549,7 @@ async fn run_print(prompt: Option<String>, config: &ra::config::RaConfig) -> any
     let rtk = ra::RtkRewriter::from_config(&config.rtk);
     let graphify_workflow = load_graphify_workflow(config);
     let (system_prompt, _templates) = load_skills_and_prompts(config, graphify_workflow.clone());
-    let mut tools = default_builtins(&config.tools.builtin);
+    let mut tools = default_builtins_with_cfg(&config.tools.builtin, &config.openlsp);
     if let Some(workflow) = &graphify_workflow {
         tools.extend(ra::graphify::tools_for_workflow(workflow));
     }
@@ -667,7 +667,7 @@ async fn run_resume(id: &str, prompt: String, config: &ra::config::RaConfig) -> 
     let rtk = ra::RtkRewriter::from_config(&config.rtk);
     let graphify_workflow = load_graphify_workflow(config);
     let (system_prompt, _templates) = load_skills_and_prompts(config, graphify_workflow.clone());
-    let mut tools = default_builtins(&config.tools.builtin);
+    let mut tools = default_builtins_with_cfg(&config.tools.builtin, &config.openlsp);
     if let Some(workflow) = &graphify_workflow {
         tools.extend(ra::graphify::tools_for_workflow(workflow));
     }

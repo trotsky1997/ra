@@ -32,6 +32,9 @@
     "obs": {
       "$ref": "#/definitions/ObsSection"
     },
+    "openlsp": {
+      "$ref": "#/definitions/OpenlspSection"
+    },
     "openspec": {
       "$ref": "#/definitions/OpenSpecSection"
     },
@@ -425,6 +428,40 @@
         },
         "path": {
           "description": "Override the directory Ra discovers. By default Ra walks cwd up to the git root looking for a folder literally named `openspec`; set this to point at a non-standard location. `~` is expanded and relative paths resolve against the cwd.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "OpenlspSection": {
+      "description": "`[openlsp]` — native [openlsp-cli](https://github.com/trotsky1997/openlsp) integration. When enabled (the default), Ra registers a built-in `lsp` tool that invokes openlsp-cli as a child process with argv flags. The tool is silently omitted if no openlsp-cli binary can be resolved.",
+      "type": "object",
+      "properties": {
+        "binary": {
+          "description": "Override the openlsp-cli binary path. By default Ra tries `openlsp-cli` on PATH, then `openlsp` (alias), then `bunx openlsp-cli` if `bun` is available.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "enabled": {
+          "description": "Default true. Set false to disable the lsp built-in tool even when openlsp-cli is installed.",
+          "default": true,
+          "type": "boolean"
+        },
+        "timeout": {
+          "description": "Per-call timeout in seconds. Default 30.0.",
+          "default": 30.0,
+          "type": "number",
+          "format": "double"
+        },
+        "workspace_root": {
+          "description": "Workspace root passed to openlsp-cli via `--workspace-root`. Defaults to the session cwd when unset.",
           "default": null,
           "type": [
             "string",

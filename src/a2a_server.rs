@@ -51,8 +51,8 @@ use crate::tools::Tool;
 
 /// Top-level A2A server state. Mirrors `acp_server::SharedState` but
 /// trimmed to only what the A2A path needs (no AcpClientHandle wiring,
-/// no per-session cwd map — A2A clients don't have a host filesystem
-/// to delegate back to).
+/// no per-session cwd map). A2A sessions share the server launch cwd for
+/// local tools and trajectory storage.
 pub struct A2aState {
     model: Arc<dyn Model>,
     model_factory: Arc<dyn ModelFactory>,
@@ -101,6 +101,7 @@ impl A2aState {
             return s.clone();
         }
         let mut s = Session::new(self.model.clone(), self.tools.clone())
+            .with_cwd(self.cwd.clone())
             .with_rtk(self.rtk.clone());
         if let Some(h) = &self.hooks {
             s = s.with_hooks(h.clone());
@@ -366,7 +367,7 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 fn build_card(http_port: u16, grpc_port: u16, require_bearer: bool) -> AgentCard {
     AgentCard {
         name: "Ra".to_string(),
-        description: "Rust-native agent. ACP-native, A2A-compatible. Speaks bash and read tools.".to_string(),
+        description: "Rust-native agent. ACP-native, A2A-compatible. Speaks read, bash, and ast-grep tools.".to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
         provider: Some(AgentProvider {
             organization: "Ra".to_string(),
@@ -405,6 +406,16 @@ fn build_card(http_port: u16, grpc_port: u16, require_bearer: bool) -> AgentCard
                 description: "Tool: ask Ra to read a file from the filesystem.".to_string(),
                 tags: vec!["fs".into(), "read".into()],
                 examples: Some(vec!["Read Cargo.toml".into()]),
+                input_modes: None,
+                output_modes: None,
+                security_requirements: None,
+            },
+            AgentSkill {
+                id: "ast_grep".to_string(),
+                name: "Structural code search".to_string(),
+                description: "Tool: ask Ra to search code structurally with ast-grep.".to_string(),
+                tags: vec!["search".into(), "code".into()],
+                examples: Some(vec!["Use ast_grep to find Rust if blocks".into()]),
                 input_modes: None,
                 output_modes: None,
                 security_requirements: None,

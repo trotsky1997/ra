@@ -1,6 +1,7 @@
 use crate::events::Event;
 use anyhow::Result;
 use async_trait::async_trait;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::broadcast;
 
@@ -9,6 +10,7 @@ use tokio::sync::broadcast;
 /// - an optional ACP client handle so tools can call back into the host
 ///   editor (`fs/read_text_file`, `terminal/*`, `session/request_permission`),
 /// - the session id, required by every reverse RPC,
+/// - the session cwd for local tools that evaluate relative paths,
 /// - an optional file-change approval hook used by interactive frontends,
 /// - an optional [`RtkRewriter`](crate::tools::RtkRewriter) so shell commands
 ///   can pre-route through `rtk rewrite` for token compression.
@@ -17,6 +19,7 @@ pub struct ToolCtx {
     pub events: broadcast::Sender<Event>,
     pub client: Option<Arc<dyn ClientHandle>>,
     pub session_id: Option<String>,
+    pub cwd: PathBuf,
     pub file_approver: Option<Arc<dyn FileChangeApprover>>,
     pub rtk: crate::tools::RtkRewriter,
 }
@@ -28,6 +31,7 @@ impl ToolCtx {
             events,
             client: None,
             session_id: None,
+            cwd: std::env::current_dir().unwrap_or_else(|_| ".".into()),
             file_approver: None,
             rtk: crate::tools::RtkRewriter::default(),
         }

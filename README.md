@@ -16,6 +16,9 @@ The name has two readings:
 
 The eye watching from the banner is 𓂀 (U+13080).
 
+For the principles behind Ra's autonomous, spec-first workflow, see
+[`docs/philosophy.md`](docs/philosophy.md).
+
 ## What you get
 
 - **One binary, four personalities.** `ra run` for one-shot prompts,

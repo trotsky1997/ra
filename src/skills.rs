@@ -75,6 +75,12 @@ pub struct ResourceBundle {
     pub plain: Vec<PlainResource>,
     /// Discovered OpenSpec project (`openspec/` dir), if any.
     pub openspec: Option<crate::openspec::OpenSpecProject>,
+    /// When true and no `openspec/` project was discovered, fold a short
+    /// *bootstrap* hint into the prompt so the agent knows it can adopt
+    /// OpenSpec itself (`openspec init --tools …`). Set by `main` from
+    /// `[openspec] enabled && agent_own` when discovery comes up empty;
+    /// ignored when `openspec` is `Some`.
+    pub openspec_bootstrap: bool,
 }
 
 impl ResourceBundle {
@@ -114,6 +120,13 @@ impl ResourceBundle {
             .and_then(|p| p.build_system_prompt_section())
         {
             buf.push_str(&section);
+            ensure_trailing_blank(&mut buf);
+        } else if self.openspec_bootstrap {
+            // No `openspec/` discovered, but agent-own SDD is enabled:
+            // tell the agent it may adopt the convention itself. Without
+            // this, the catalog (which carries the `init` instructions)
+            // never renders on a greenfield repo — a chicken-and-egg gap.
+            buf.push_str(&crate::openspec::bootstrap_prompt_section());
             ensure_trailing_blank(&mut buf);
         }
 

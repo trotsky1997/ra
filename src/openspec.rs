@@ -247,7 +247,33 @@ fn agent_own_playbook() -> String {
         .to_string()
 }
 
-// ---------- discovery ---------------------------------------------------
+/// Bootstrap hint for a project that has **no** `openspec/` directory yet,
+/// emitted when discovery is enabled and `agent_own` is on. Closes the
+/// chicken-and-egg gap: the full playbook only renders once a project is
+/// discovered, so on a greenfield repo the agent would otherwise never be
+/// told it can adopt OpenSpec. This is a short, *opt-in* nudge — it does
+/// not push the agent to init unprompted, only tells it how when a task
+/// actually calls for spec-driven development.
+pub fn bootstrap_prompt_section() -> String {
+    "# OpenSpec (not yet initialized)\n\n\
+     This project has no `openspec/` directory. If a task calls for \
+     spec-driven development — durable, reviewable specs that outlive a \
+     single session — you can adopt the \
+     [OpenSpec](https://github.com/Fission-AI/OpenSpec) convention yourself, \
+     non-interactively, via the `openspec` CLI (through `bash`):\n\n\
+     - `openspec init --tools <agent>` — bootstrap once. Bare `openspec init` \
+     *prompts* for tools and will hang; always pass `--tools` (e.g. `claude`, \
+     or `all`). Creates `openspec/specs/` + `openspec/changes/`.\n\
+     - Then drive it autonomously: `openspec new change <kebab-name>` → write \
+     artifacts off `openspec status`/`instructions --change <name> --json` \
+     until `applyRequires` is `done` → implement, flipping `- [ ]`→`- [x]` in \
+     `tasks.md` → `openspec validate <name> --strict` → `openspec archive \
+     <name> -y` (promotes deltas into `specs/`).\n\n\
+     Adopt it only when the work warrants it — don't initialize OpenSpec for a \
+     trivial one-off change. If the `openspec` CLI is not installed, treat this \
+     as unavailable rather than a blocker.\n\n"
+        .to_string()
+}
 
 /// Locate the nearest `openspec/` directory walking from `cwd` up to
 /// (and including) the git root, then parse it. Returns `None` when no

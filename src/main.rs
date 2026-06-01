@@ -559,6 +559,12 @@ fn load_skills_and_prompts(
                 p.specs.len(),
                 p.changes.len()
             );
+        } else if config.openspec.agent_own {
+            // No project discovered, but agent-own SDD is on: let the agent
+            // know it may bootstrap OpenSpec itself (closes the chicken-and-
+            // egg gap where the init guidance lives inside the catalog that
+            // only renders once a project exists).
+            bundle.openspec_bootstrap = true;
         }
     }
     let mut plain_paths = Vec::new();

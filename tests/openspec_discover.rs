@@ -162,3 +162,37 @@ fn no_openspec_directory_means_no_section() {
     let bundle = ResourceBundle::default();
     assert!(bundle.build_system_prompt().is_none());
 }
+
+#[test]
+fn bootstrap_hint_when_enabled_and_no_project() {
+    // Greenfield repo: no openspec/, but agent-own SDD is on. The bundle
+    // should fold in the bootstrap nudge so the agent knows it can init.
+    let bundle = ResourceBundle {
+        openspec_bootstrap: true,
+        ..Default::default()
+    };
+    let prompt = bundle
+        .build_system_prompt()
+        .expect("bootstrap hint alone should produce a prompt");
+    assert!(prompt.contains("OpenSpec (not yet initialized)"));
+    assert!(prompt.contains("openspec init --tools"));
+    // It must NOT pretend a project exists.
+    assert!(!prompt.contains("Capability specs"));
+}
+
+#[test]
+fn bootstrap_hint_suppressed_when_project_present() {
+    // When a real project is discovered, the catalog/playbook render and
+    // the bootstrap nudge must not (even if the flag is set).
+    let tmp = TempDir::new().unwrap();
+    scaffold(tmp.path());
+    let project = openspec::discover(tmp.path()).unwrap();
+    let bundle = ResourceBundle {
+        openspec: Some(project),
+        openspec_bootstrap: true, // ignored because openspec is Some
+        ..Default::default()
+    };
+    let prompt = bundle.build_system_prompt().unwrap();
+    assert!(prompt.contains("# OpenSpec\n"));
+    assert!(!prompt.contains("not yet initialized"));
+}

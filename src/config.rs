@@ -351,7 +351,9 @@ pub struct OpenSpecSection {
     /// prompt: how to drive the `openspec` CLI non-interactively
     /// (`init --tools`, `new change`, the `status`/`instructions --json`
     /// state machine, `validate --strict` self-correction, `archive -y`)
-    /// with no human in the loop. Set false to surface only the catalog.
+    /// with no human in the loop. When no `openspec/` exists yet, a short
+    /// bootstrap hint is folded in instead, so the agent can adopt the
+    /// convention itself. Set false to surface only the catalog.
     #[serde(default = "default_true")]
     pub agent_own: bool,
 }

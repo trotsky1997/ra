@@ -121,19 +121,23 @@ missing-`jq` installation guidance in a structured response.
 
 These wrappers execute common developer CLIs without asking the model to
 compose a shell string. In local CLI / A2A / TUI mode Ra spawns the
-binary directly with `Command::args`, preserving argv boundaries. With
-an ACP host attached, Ra reuses the same permission-gated
-`terminal/*` reverse-call path as `bash`, rendering the argv array as a
-shell-quoted command line for the host terminal.
+binary directly with `Command::args`, preserving argv boundaries. With an ACP
+host attached, `git` and `gh` reuse the same permission-gated `terminal/*`
+reverse-call path as `bash`, rendering the argv array as a shell-quoted command
+line for the host terminal. `jq`, `mise`, `just`, and `wrkflw` spawn local
+binaries directly so they can preserve stdin/output-envelope behavior; ACP
+terminal permission prompts do not wrap those local spawns. The central
+`[tools].builtin` allow-list and PreToolUse/PostToolUse hooks still apply.
 
 These native wrappers do not route through RTK. That tradeoff preserves
 argv semantics in the local process path instead of converting the call
 back into a shell command for compression. Use the `bash` tool for
-verbose `git` / `gh` commands when RTK compression is more important
-than argv-safe process execution.
+verbose commands when RTK compression is more important than argv-safe
+process execution.
 
-Output is the command's combined stdout+stderr; both local and ACP
-paths emit a `[exit=N]` event chunk on the broadcast bus.
+`git` and `gh` return combined stdout+stderr. `jq`, `mise`, `just`, and
+`wrkflw` return bounded JSON envelopes. Tool calls emit progress and
+`[exit=N]` event chunks on the broadcast bus.
 
 ### `git`
 
@@ -218,6 +222,79 @@ and happen before jq is spawned. Non-zero jq exits use
 `error.kind:"jq_error"` with jq stderr and exit code. Missing jq uses
 `error.kind:"missing_jq"` with installation guidance. Output exceeding
 `max_output_bytes` is clipped with `truncated:true`.
+
+### `mise`
+
+Run native `mise` for project task/test loops. Pass only arguments after the
+binary name. Common TDD usage is `mise run test`:
+
+```json
+{
+  "args": ["run", "test"],
+  "cwd": ".",
+  "timeout_ms": 120000,
+  "max_output_bytes": 120000
+}
+```
+
+### `just`
+
+Run native `just` recipes. Common TDD usage is `just test`:
+
+```json
+{
+  "args": ["test"],
+  "cwd": ".",
+  "timeout_ms": 120000
+}
+```
+
+### `wrkflw`
+
+Run native `wrkflw` to validate or execute GitHub Actions workflows locally
+before review:
+
+```json
+{
+  "args": ["validate", ".github/workflows/ci.yml"],
+  "cwd": ".",
+  "timeout_ms": 120000
+}
+```
+
+The task/workflow tools share the same schema:
+
+| Field | Type | Required | Default | Notes |
+|-------|------|----------|---------|-------|
+| args | array of strings | no | `[]` | arguments only; omit the binary name |
+| cwd | string | no | session cwd | Working directory; relative paths resolve against the session cwd |
+| timeout_ms | number | no | none | Optional process timeout |
+| max_output_bytes | number | no | `120000` | Bounds Ra's returned JSON envelope; `0` means unbounded |
+
+Returned envelope:
+
+```json
+{
+  "ok": true,
+  "tool": "just",
+  "command": { "program": "just", "args": ["test"], "cwd": "/repo" },
+  "exit_code": 0,
+  "stdout": "tests passed\n",
+  "stderr": null,
+  "truncated": false
+}
+```
+
+Error cases are returned as valid JSON with `ok:false`. Invalid `cwd`
+requests use `error.kind:"invalid_request"`. Non-zero exits use
+`error.kind:"command_failed"` with stdout, stderr, and exit code.
+Timeouts use `error.kind:"timeout"`. Missing binaries use
+`error.kind:"missing_mise"`, `error.kind:"missing_just"`, or
+`error.kind:"missing_wrkflw"` with installation guidance. Output exceeding
+`max_output_bytes` is clipped with `truncated:true`. `max_output_bytes` is a
+best-effort envelope budget; Ra always preserves valid JSON, so very small
+budgets may still return a minimal envelope larger than the requested byte
+count.
 
 ## Structural search tools
 

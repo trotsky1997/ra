@@ -471,6 +471,7 @@ fn build_card(http_port: u16, grpc_port: u16, require_bearer: bool) -> AgentCard
 }
 
 /// Run both HTTP and gRPC servers concurrently. Returns when either exits.
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
     model: Arc<dyn Model>,
     model_factory: Arc<dyn ModelFactory>,

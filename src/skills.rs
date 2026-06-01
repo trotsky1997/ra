@@ -200,9 +200,9 @@ pub fn load_skills(patterns: &[String]) -> Vec<Skill> {
 /// `[skills] discover = true`. Deliberately small: just Ra's own
 /// project + global folder, plus the cross-agent `./.agents/skills/`
 /// + `~/.agents/skills/` layout. Anything else (per-agent
-/// `.claude/skills/`, catalog-style `skills/.curated/`, …) goes
-/// in `[skills] paths` explicitly so the discovery surface stays
-/// predictable.
+///   `.claude/skills/`, catalog-style `skills/.curated/`, …) goes
+///   in `[skills] paths` explicitly so the discovery surface stays
+///   predictable.
 pub fn default_discover_globs() -> Vec<String> {
     vec![
         "./.ra/skills/**/SKILL.md".to_string(),
@@ -316,7 +316,7 @@ fn parse_skill(p: &Path) -> Result<Skill> {
 fn split_frontmatter(s: &str) -> Option<(&str, &str)> {
     // Skip BOM and leading whitespace.
     let s = s.strip_prefix('\u{FEFF}').unwrap_or(s);
-    let s = s.trim_start_matches(|c: char| c == ' ' || c == '\t' || c == '\r');
+    let s = s.trim_start_matches([' ', '\t', '\r']);
     let after_first = s
         .strip_prefix("---\n")
         .or_else(|| s.strip_prefix("---\r\n"))?;

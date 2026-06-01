@@ -520,7 +520,7 @@ fn scan_newest_input(root: &Path, graph_path: &Path) -> FreshnessScan {
                 continue;
             };
             scanned_files += 1;
-            if newest_mtime.map_or(true, |current| mtime > current) {
+            if newest_mtime.is_none_or(|current| mtime > current) {
                 newest_mtime = Some(mtime);
                 newest_input = Some(path);
             }
@@ -541,7 +541,7 @@ fn scan_newest_input(root: &Path, graph_path: &Path) -> FreshnessScan {
 fn should_skip_freshness_dir(path: &Path) -> bool {
     path.file_name()
         .and_then(|s| s.to_str())
-        .is_some_and(|name| SKIP_FRESHNESS_DIRS.iter().any(|skip| name == *skip))
+        .is_some_and(|name| SKIP_FRESHNESS_DIRS.contains(&name))
 }
 
 fn graph_unavailable_message(root: &Path, graph_path: &Path, err: &anyhow::Error) -> String {

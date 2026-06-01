@@ -10,7 +10,7 @@
 //! Tools are wired to call back into the client through `AcpClientHandle`:
 //! - `read`  → `fs/read_text_file`
 //! - `bash`  → `terminal/create` + `wait_for_exit` + `terminal/output`
-//!             + `terminal/release`, gated by `session/request_permission`.
+//!   + `terminal/release`, gated by `session/request_permission`.
 
 use std::sync::Arc;
 
@@ -93,8 +93,6 @@ fn ctx_window_for(model_id: &str) -> u64 {
         1_000_000
     } else if id.contains("gpt-4.1") || id.contains("gpt-4o") {
         128_000
-    } else if id.contains("claude") && id.contains("opus") {
-        200_000
     } else if id.contains("claude") {
         200_000
     } else if id.contains("gemini") {
@@ -158,10 +156,9 @@ fn ra_config_options() -> Vec<SessionConfigOption> {
         .description("Whether tool outputs are inlined verbatim or trimmed."),
     ]
 }
-///
 /// Holds the active default model, the model registry (for `session/set_model`
 /// + `NewSessionResponse.models`), the on-disk trajectory store, and the
-/// live ACP session map.
+///   live ACP session map.
 struct SharedState {
     model: Arc<dyn Model>,
     model_factory: Arc<dyn ModelFactory>,

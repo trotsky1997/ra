@@ -695,7 +695,7 @@ mod tests {
             serde_json::to_string(&second).unwrap(),
             serde_json::to_string(&third).unwrap()
         );
-        let budget = render_result_json(&[first.clone()], 1, -1, "", true)
+        let budget = render_result_json(std::slice::from_ref(&first), 1, -1, "", true)
             .unwrap()
             .len();
         let mut collector = MatchCollector::new(0, budget);

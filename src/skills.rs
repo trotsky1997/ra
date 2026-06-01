@@ -75,6 +75,12 @@ pub struct ResourceBundle {
     pub plain: Vec<PlainResource>,
     /// Discovered OpenSpec project (`openspec/` dir), if any.
     pub openspec: Option<crate::openspec::OpenSpecProject>,
+    /// When true and no `openspec/` project was discovered, fold a short
+    /// *bootstrap* hint into the prompt so the agent knows it can adopt
+    /// OpenSpec itself (`openspec init --tools …`). Set by `main` from
+    /// `[openspec] enabled && agent_own` when discovery comes up empty;
+    /// ignored when `openspec` is `Some`.
+    pub openspec_bootstrap: bool,
 }
 
 impl ResourceBundle {
@@ -114,6 +120,13 @@ impl ResourceBundle {
             .and_then(|p| p.build_system_prompt_section())
         {
             buf.push_str(&section);
+            ensure_trailing_blank(&mut buf);
+        } else if self.openspec_bootstrap {
+            // No `openspec/` discovered, but agent-own SDD is enabled:
+            // tell the agent it may adopt the convention itself. Without
+            // this, the catalog (which carries the `init` instructions)
+            // never renders on a greenfield repo — a chicken-and-egg gap.
+            buf.push_str(&crate::openspec::bootstrap_prompt_section());
             ensure_trailing_blank(&mut buf);
         }
 
@@ -404,6 +417,123 @@ fn ensure_trailing_blank(buf: &mut String) {
             buf.push('\n');
         }
         buf.push('\n');
+    }
+}
+
+/// Build the full [`ResourceBundle`] from config: skills, prompts,
+/// AGENTS.md, OpenSpec, and plain `[resources]`. Shared by every entry
+/// point (`run` / `acp` / `serve` via `main`, and `tui`) so they all
+/// surface the same context — previously the TUI hand-rolled a subset
+/// and silently dropped OpenSpec.
+///
+/// `emit_logs` controls the `[ra] …` stderr breadcrumbs (on for the CLI
+/// paths, off for the TUI where stderr is the alternate screen).
+pub fn build_resource_bundle(config: &crate::config::RaConfig, emit_logs: bool) -> ResourceBundle {
+    let log = |msg: &str| {
+        if emit_logs {
+            eprintln!("{msg}");
+        }
+    };
+    let mut bundle = ResourceBundle::default();
+
+    if config.skills.enabled {
+        let mut all_patterns: Vec<String> = Vec::new();
+        if config.skills.discover {
+            all_patterns.extend(default_discover_globs());
+        }
+        all_patterns.extend(config.skills.paths.iter().cloned());
+        if !all_patterns.is_empty() {
+            bundle.skills = load_skills(&all_patterns);
+            if !bundle.skills.is_empty() {
+                log(&format!("[ra] loaded {} skill(s)", bundle.skills.len()));
+            }
+        }
+    }
+    if config.prompts.enabled {
+        bundle.prompts = load_prompts(&config.prompts.paths);
+        if !bundle.prompts.is_empty() {
+            log(&format!(
+                "[ra] loaded {} prompt template(s)",
+                bundle.prompts.len()
+            ));
+        }
+    }
+    if config.agents_md.enabled {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
+        bundle.agents_md = discover_agents_md(&cwd);
+        if !bundle.agents_md.is_empty() {
+            log(&format!(
+                "[ra] discovered {} AGENTS.md file(s)",
+                bundle.agents_md.len()
+            ));
+        }
+    }
+    if config.openspec.enabled {
+        load_openspec_into(&mut bundle, config, &log);
+    }
+
+    let mut plain_paths = Vec::new();
+    if let Some(p) = &config.resources.system_prompt_path {
+        plain_paths.push(p.clone());
+    }
+    plain_paths.extend(config.resources.append_system_prompt_paths.clone());
+    if !plain_paths.is_empty() {
+        bundle.plain = load_plain_resources(&plain_paths);
+        if !bundle.plain.is_empty() {
+            log(&format!("[ra] loaded {} plain resource(s)", bundle.plain.len()));
+        }
+    }
+
+    bundle
+}
+
+/// OpenSpec discovery + agent-own / bootstrap wiring. A discovered
+/// `openspec/` directory is always treated as an *initialized* project —
+/// even one with empty `specs/`/`changes/` (exactly what `openspec init`
+/// produces) — so the agent-own playbook renders and the agent can create
+/// its first change. The bootstrap hint fires only when no directory
+/// exists at all.
+fn load_openspec_into(
+    bundle: &mut ResourceBundle,
+    config: &crate::config::RaConfig,
+    log: &dyn Fn(&str),
+) {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
+    let project = match &config.openspec.path {
+        // Explicit override: load exactly that dir if it exists.
+        Some(p) => {
+            let dir = crate::config::RaConfig::expand_path(p, &cwd);
+            if dir.is_dir() {
+                Some(crate::openspec::load(&dir))
+            } else {
+                log(&format!(
+                    "[ra] openspec.path {} is not a directory; skipping",
+                    dir.display()
+                ));
+                None
+            }
+        }
+        // Default: walk cwd → git root for an `openspec/` dir.
+        None => crate::openspec::discover(&cwd),
+    };
+    match project {
+        // A directory was found → initialized project (even if empty).
+        Some(mut p) => {
+            p.agent_own = config.openspec.agent_own;
+            log(&format!(
+                "[ra] discovered OpenSpec project at {} ({} spec(s), {} active change(s))",
+                p.root.display(),
+                p.specs.len(),
+                p.changes.len()
+            ));
+            bundle.openspec = Some(p);
+        }
+        // No directory at all → offer the bootstrap hint when agent-own.
+        None => {
+            if config.openspec.agent_own {
+                bundle.openspec_bootstrap = true;
+            }
+        }
     }
 }
 

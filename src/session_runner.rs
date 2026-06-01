@@ -385,7 +385,7 @@ fn tool_kind(name: &str) -> ToolKindHint {
     match name {
         "read" => ToolKindHint::Read,
         "ast_grep" => ToolKindHint::Search,
-        "bash" => ToolKindHint::Execute,
+        "bash" | "git" | "gh" => ToolKindHint::Execute,
         _ => ToolKindHint::Other,
     }
 }
@@ -414,6 +414,22 @@ fn tool_title(name: &str, input: &serde_json::Value) -> String {
                 format!("ast-grep {s}")
             })
             .unwrap_or_else(|| "ast-grep search".into()),
+        "git" | "gh" => input
+            .get("args")
+            .and_then(|v| v.as_array())
+            .map(|args| {
+                let raw = std::iter::once(name.to_string())
+                    .chain(
+                        args.iter()
+                            .filter_map(|v| v.as_str())
+                            .map(ToString::to_string),
+                    )
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let s = truncate_chars(&raw, 60);
+                format!("$ {s}")
+            })
+            .unwrap_or_else(|| format!("Run {name}")),
         other => other.to_string(),
     }
 }
@@ -449,6 +465,16 @@ mod tests {
         let title = tool_title("bash", &json!({ "command": command }));
 
         assert!(title.starts_with("$ "));
+        assert!(title.ends_with('…'));
+        assert!(title.contains('界'));
+    }
+
+    #[test]
+    fn tool_title_truncates_multibyte_native_cli_args_safely() {
+        let arg = format!("{}界tail", "a".repeat(55));
+        let title = tool_title("git", &json!({ "args": [arg] }));
+
+        assert!(title.starts_with("$ git "));
         assert!(title.ends_with('…'));
         assert!(title.contains('界'));
     }

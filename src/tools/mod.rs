@@ -9,12 +9,16 @@
 //! - `edit`  — replace a literal string inside a file (Claude Code shape)
 //! - `bash`  — run a shell command (ACP terminal reverse-call when available)
 //! - `ast_grep` — structural code search via ast-grep
+//! - `git`   — run native git with argv-safe arguments
+//! - `gh`    — run native GitHub CLI with argv-safe arguments
 
+mod cli;
 mod core;
 mod fs;
 mod rtk;
 mod search;
 
+pub use cli::{GhTool, GitTool};
 pub use core::{BashTool, ReadTool};
 pub use fs::{EditTool, WriteTool};
 pub use rtk::RtkRewriter;
@@ -46,5 +50,37 @@ pub fn default_builtins(allowlist: &[String]) -> Vec<Arc<dyn Tool>> {
     if want("ast_grep") {
         out.push(Arc::new(AstGrepTool));
     }
+    if want("git") {
+        out.push(Arc::new(GitTool));
+    }
+    if want("gh") {
+        out.push(Arc::new(GhTool));
+    }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn builtin_names(allowlist: &[&str]) -> Vec<String> {
+        let allowlist = allowlist.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        default_builtins(&allowlist)
+            .into_iter()
+            .map(|tool| tool.name().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn default_catalog_includes_native_cli_tools() {
+        let names = builtin_names(&[]);
+        assert!(names.contains(&"ast_grep".to_string()));
+        assert!(names.contains(&"git".to_string()));
+        assert!(names.contains(&"gh".to_string()));
+    }
+
+    #[test]
+    fn allowlist_can_select_native_cli_tools() {
+        assert_eq!(builtin_names(&["git", "gh"]), vec!["git", "gh"]);
+    }
 }

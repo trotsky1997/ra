@@ -36,12 +36,14 @@ api_key_env = "ANTHROPIC_API_KEY"
 #   write  — write a file
 #   edit   — replace a literal substring inside a file (Claude Code shape)
 #   bash   — run a shell command (ACP terminal reverse-call when available)
-#   ast_grep — structural code search via ast-grep / sg
+#   ast_grep — structural code search via ast-grep / verified sg alias
+#   git    — run native git with argv-safe arguments
+#   gh     — run native GitHub CLI with argv-safe arguments
 # Shell-native commands such as grep/find/ls go through bash rather
-# than separate built-in tool wrappers.
+# than separate built-in tool wrappers. Prefer git/gh for those CLIs.
 # An empty list (or omitted section) ships every built-in tool.
 [tools]
-# builtin = ["read", "write", "edit", "bash", "ast_grep"]
+# builtin = ["read", "write", "edit", "bash", "ast_grep", "git", "gh"]
 builtin = []
 
 # ─── Skills (agentskills.io v1) ─────────────────────────────────────
@@ -84,6 +86,11 @@ enabled = true
 [openspec]
 enabled = true
 # path = "./docs/openspec"   # override the auto-discovered location
+# agent_own = true           # fold the non-interactive, no-human-in-the-loop
+                             # spec-driven playbook (drive the `openspec` CLI:
+                             # init --tools / new change / status+instructions
+                             # --json / validate --strict / archive -y) into
+                             # the prompt. Set false for catalog only.
 
 # ─── A2A (server + remote agents) ───────────────────────────────────
 [a2a.serve]

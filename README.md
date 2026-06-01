@@ -47,6 +47,12 @@ The eye watching from the banner is 𓂀 (U+13080).
   directory (walking cwd → git root, like AGENTS.md) and folds a catalog
   of its capability specs and active changes — with requirement counts
   and task progress — into the system prompt via progressive disclosure.
+  By default it also folds in an **agent-own spec-driven playbook**: how
+  to drive the `openspec` CLI non-interactively (`init --tools`,
+  `new change`, the `status`/`instructions --json` state machine,
+  `validate --strict`, `archive -y`) with no human in the loop — and on a
+  repo with no `openspec/` yet, a bootstrap hint so the agent can adopt
+  the convention itself (`[openspec] agent_own = false` for catalog only).
   Ra consumes the convention; it doesn't reimplement the `openspec` CLI.
 - **HCP-flavored TOML config.** Single `ra.toml` (or `~/.ra.toml`)
   configures models, tools, skills, prompts, hooks, MCP servers, A2A
@@ -176,12 +182,19 @@ Resolution order: `--config <path>` → `$RA_CONFIG` → `./ra.toml` →
 | `edit`  | Claude-Code-shaped: `{path, old_string, new_string, replace_all}`. Refuses ambiguous matches by default. |
 | `bash`  | Runs a shell command; ACP `terminal/*` (with permission gating) when available, else `/bin/sh -c`. |
 | `ast_grep` | Read-only structural code search via ast-grep / `sg`; returns JSON matches. |
+| `git`   | Runs native `git` with argv-safe arguments; ACP hosts use the terminal reverse-call with shell quoting. This path does not use RTK. |
+| `gh`    | Runs native GitHub CLI (`gh`) with argv-safe arguments; ACP hosts use the terminal reverse-call with shell quoting. This path does not use RTK. |
 
 Toggle the catalog via `[tools] builtin = […]`; an empty allow-list
-ships every built-in tool. `grep`, `find`, `ls`, and similar shell
-commands intentionally go through `bash` rather than separate built-in
-tool definitions. `ast_grep` is native because it is structured code
-search rather than a plain shell command.
+ships every built-in tool. Prefer `git` / `gh` for those CLIs; `grep`,
+`find`, `ls`, and similar shell commands intentionally go through
+`bash` rather than separate built-in tool definitions. `ast_grep` is
+native because it is structured code search rather than a plain shell
+command.
+
+Native `git` / `gh` prioritize argv safety over RTK rewriting. If a
+high-volume `git` or `gh` command needs RTK output compression, run it
+through `bash` instead so the existing RTK rewrite path can apply.
 
 ## Protocols & specs
 

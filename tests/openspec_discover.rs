@@ -123,6 +123,32 @@ fn openspec_folds_into_resource_bundle_system_prompt() {
     // Progressive disclosure: instruct the model to read the files.
     assert!(prompt.contains("read"));
     assert!(prompt.contains("spec.md"));
+    // agent_own defaults on through discover() → the autonomous playbook
+    // is folded in after the catalog.
+    assert!(prompt.contains("agent-own SDD"));
+    assert!(prompt.contains("openspec init --tools"));
+    assert!(prompt.contains("archive <name> -y"));
+}
+
+#[test]
+fn agent_own_disabled_keeps_catalog_drops_playbook() {
+    let tmp = TempDir::new().unwrap();
+    scaffold(tmp.path());
+
+    let mut project = openspec::discover(tmp.path()).unwrap();
+    project.agent_own = false;
+    let bundle = ResourceBundle {
+        openspec: Some(project),
+        ..Default::default()
+    };
+
+    let prompt = bundle.build_system_prompt().unwrap();
+    // Catalog still present…
+    assert!(prompt.contains("# OpenSpec"));
+    assert!(prompt.contains("user-auth"));
+    // …playbook gone.
+    assert!(!prompt.contains("agent-own SDD"));
+    assert!(!prompt.contains("No human in the loop"));
 }
 
 #[test]
@@ -135,4 +161,72 @@ fn no_openspec_directory_means_no_section() {
     // An empty bundle still yields no prompt.
     let bundle = ResourceBundle::default();
     assert!(bundle.build_system_prompt().is_none());
+}
+
+#[test]
+fn bootstrap_hint_when_enabled_and_no_project() {
+    // Greenfield repo: no openspec/, but agent-own SDD is on. The bundle
+    // should fold in the bootstrap nudge so the agent knows it can init.
+    let bundle = ResourceBundle {
+        openspec_bootstrap: true,
+        ..Default::default()
+    };
+    let prompt = bundle
+        .build_system_prompt()
+        .expect("bootstrap hint alone should produce a prompt");
+    assert!(prompt.contains("OpenSpec (not yet initialized)"));
+    assert!(prompt.contains("openspec init --tools"));
+    // It must NOT pretend a project exists.
+    assert!(!prompt.contains("Capability specs"));
+}
+
+#[test]
+fn bootstrap_hint_suppressed_when_project_present() {
+    // When a real project is discovered, the catalog/playbook render and
+    // the bootstrap nudge must not (even if the flag is set).
+    let tmp = TempDir::new().unwrap();
+    scaffold(tmp.path());
+    let project = openspec::discover(tmp.path()).unwrap();
+    let bundle = ResourceBundle {
+        openspec: Some(project),
+        openspec_bootstrap: true, // ignored because openspec is Some
+        ..Default::default()
+    };
+    let prompt = bundle.build_system_prompt().unwrap();
+    assert!(prompt.contains("# OpenSpec\n"));
+    assert!(!prompt.contains("not yet initialized"));
+}
+
+#[test]
+fn initialized_but_empty_project_not_reported_uninitialized() {
+    // Regression for the cross-review finding: `openspec init` creates an
+    // empty `openspec/specs` + `openspec/changes/archive` with no files.
+    // That is an *initialized* project and must render the playbook, not
+    // the greenfield "not yet initialized" bootstrap hint.
+    let tmp = TempDir::new().unwrap();
+    fs::create_dir_all(tmp.path().join("openspec/specs")).unwrap();
+    fs::create_dir_all(tmp.path().join("openspec/changes/archive")).unwrap();
+
+    let project = openspec::discover(tmp.path()).expect("discovery finds the dir even when empty");
+    assert!(project.is_empty(), "no specs/changes content yet");
+    let bundle = ResourceBundle {
+        openspec: Some(project),
+        ..Default::default()
+    };
+    let prompt = bundle.build_system_prompt().unwrap();
+    assert!(prompt.contains("initialized but has no"));
+    assert!(prompt.contains("agent-own SDD"));
+    assert!(!prompt.contains("not yet initialized"));
+}
+
+#[test]
+fn bootstrap_hint_recommends_tools_none() {
+    // Cross-review: `--tools none` is the safe default for Ra (the tool
+    // list has no `ra`); only name a tool when a surface is wanted.
+    let bundle = ResourceBundle {
+        openspec_bootstrap: true,
+        ..Default::default()
+    };
+    let prompt = bundle.build_system_prompt().unwrap();
+    assert!(prompt.contains("openspec init --tools none"));
 }

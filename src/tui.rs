@@ -145,7 +145,6 @@ async fn build_session(
     config: &RaConfig,
     file_approver: Option<TuiFileApprover>,
 ) -> Result<(Arc<Session>, Arc<HashMap<String, String>>)> {
-    use crate::skills::ResourceBundle;
     let factory = build_model_factory(config);
     let model = factory
         .first_model()
@@ -159,23 +158,7 @@ async fn build_session(
     };
     let rtk = crate::tools::RtkRewriter::from_config(&config.rtk);
 
-    let mut bundle = ResourceBundle::default();
-    if config.skills.enabled {
-        let mut globs = if config.skills.discover {
-            crate::skills::default_discover_globs()
-        } else {
-            Vec::new()
-        };
-        globs.extend(config.skills.paths.iter().cloned());
-        bundle.skills = crate::skills::load_skills(&globs);
-    }
-    if config.prompts.enabled {
-        bundle.prompts = crate::skills::load_prompts(&config.prompts.paths);
-    }
-    if config.agents_md.enabled {
-        let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
-        bundle.agents_md = crate::skills::discover_agents_md(&cwd);
-    }
+    let bundle = crate::skills::build_resource_bundle(config, false);
     let system_prompt = bundle.build_system_prompt();
     let prompt_templates = Arc::new(bundle.prompt_map());
 

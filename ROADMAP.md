@@ -52,8 +52,11 @@ on disk and tested; speculative ideas live as GitHub issues.
   scenario counts) and active changes (task progress, touched
   capabilities) into the system prompt with progressive disclosure.
   Archived changes are skipped; `[openspec]` toggles it and `path`
-  overrides the location. Ra consumes the convention; it doesn't
-  reimplement the `openspec` CLI.
+  overrides the location. `agent_own` (default on) also folds in a
+  non-interactive, no-human-in-the-loop playbook for driving the
+  `openspec` CLI (`init --tools` / `new change` / `status` +
+  `instructions --json` / `validate --strict` / `archive -y`). Ra
+  consumes the convention; it doesn't reimplement the `openspec` CLI.
 - User-defined slash-command prompt templates.
 - Lifecycle hooks wire-compatible with the
   [Claude Code hooks spec](https://code.claude.com/docs/en/hooks.md):

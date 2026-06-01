@@ -64,6 +64,8 @@ pub struct ToolSpec {
 ///
 /// 规则：
 /// - 用户最后一条消息以 `bash:`  开头  → 发起 bash 调用
+/// - 用户最后一条消息以 `git:`   开头  → 发起 git 调用
+/// - 用户最后一条消息以 `gh:`    开头  → 发起 gh 调用
 /// - 用户最后一条消息以 `read:`  开头  → 发起 read 调用
 /// - `write:<path>|<content>`           → 发起 write 调用
 /// - `edit:<path>|<old>|<new>`          → 发起 edit 调用
@@ -102,6 +104,34 @@ impl Model for MockModel {
                         id: format!("call_{}", rand_id()),
                         name: "bash".into(),
                         input: serde_json::json!({ "command": cmd }),
+                    }),
+                    ModelChunk::End {
+                        stop_reason: StopReason::ToolUse,
+                    },
+                ]
+            }
+            Some(Message::User { content }) if content.starts_with("git:") => {
+                let args = split_cli_args(content.trim_start_matches("git:").trim());
+                vec![
+                    ModelChunk::TextDelta("Running git...\n".into()),
+                    ModelChunk::ToolCall(ToolCall {
+                        id: format!("call_{}", rand_id()),
+                        name: "git".into(),
+                        input: serde_json::json!({ "args": args }),
+                    }),
+                    ModelChunk::End {
+                        stop_reason: StopReason::ToolUse,
+                    },
+                ]
+            }
+            Some(Message::User { content }) if content.starts_with("gh:") => {
+                let args = split_cli_args(content.trim_start_matches("gh:").trim());
+                vec![
+                    ModelChunk::TextDelta("Running gh...\n".into()),
+                    ModelChunk::ToolCall(ToolCall {
+                        id: format!("call_{}", rand_id()),
+                        name: "gh".into(),
+                        input: serde_json::json!({ "args": args }),
                     }),
                     ModelChunk::End {
                         stop_reason: StopReason::ToolUse,
@@ -196,6 +226,10 @@ fn split_text_chunks(s: &str) -> Vec<ModelChunk> {
         .collect()
 }
 
+fn split_cli_args(s: &str) -> Vec<String> {
+    s.split_whitespace().map(ToString::to_string).collect()
+}
+
 fn rand_id() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     format!(
@@ -205,4 +239,44 @@ fn rand_id() -> String {
             .unwrap()
             .as_nanos()
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn first_tool_call(input: &str) -> ToolCall {
+        let messages = [Message::User {
+            content: input.to_string(),
+        }];
+        let mut stream = MockModel.stream(&messages, &[]).await.unwrap();
+        while let Some(chunk) = stream.next().await {
+            if let ModelChunk::ToolCall(call) = chunk {
+                return call;
+            }
+        }
+        panic!("expected tool call for {input}");
+    }
+
+    #[tokio::test]
+    async fn mock_model_maps_git_prefix_to_native_tool() {
+        let call = first_tool_call("git:status --short").await;
+
+        assert_eq!(call.name, "git");
+        assert_eq!(
+            call.input,
+            serde_json::json!({ "args": ["status", "--short"] })
+        );
+    }
+
+    #[tokio::test]
+    async fn mock_model_maps_gh_prefix_to_native_tool() {
+        let call = first_tool_call("gh:pr view --json title").await;
+
+        assert_eq!(call.name, "gh");
+        assert_eq!(
+            call.input,
+            serde_json::json!({ "args": ["pr", "view", "--json", "title"] })
+        );
+    }
 }

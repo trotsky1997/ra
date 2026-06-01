@@ -346,6 +346,16 @@ pub struct OpenSpecSection {
     /// relative paths resolve against the cwd.
     #[serde(default)]
     pub path: Option<String>,
+    /// Default true. When a project is discovered, fold a short
+    /// *agent-own* spec-driven-development playbook into the system
+    /// prompt: how to drive the `openspec` CLI non-interactively
+    /// (`init --tools`, `new change`, the `status`/`instructions --json`
+    /// state machine, `validate --strict` self-correction, `archive -y`)
+    /// with no human in the loop. When no `openspec/` exists yet, a short
+    /// bootstrap hint is folded in instead, so the agent can adopt the
+    /// convention itself. Set false to surface only the catalog.
+    #[serde(default = "default_true")]
+    pub agent_own: bool,
 }
 
 impl Default for OpenSpecSection {
@@ -353,6 +363,7 @@ impl Default for OpenSpecSection {
         Self {
             enabled: true,
             path: None,
+            agent_own: true,
         }
     }
 }

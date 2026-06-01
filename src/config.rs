@@ -55,6 +55,8 @@ pub struct RaConfig {
     #[serde(default)]
     pub openspec: OpenSpecSection,
     #[serde(default)]
+    pub graphify: GraphifySection,
+    #[serde(default)]
     pub resources: ResourcesSection,
     #[serde(default)]
     pub rtk: RtkSection,
@@ -368,6 +370,36 @@ impl Default for OpenSpecSection {
     }
 }
 
+/// `[graphify]` — native [Graphify](https://github.com/safishamsi/graphify)
+/// support. When enabled, Ra targets a project's `graphify-out/graph.json`
+/// (walking cwd → git root), treats Graphify as an agent-owned R2A graph
+/// workflow, and registers ensure/impact/update plus native graph query tools.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GraphifySection {
+    /// Default true. Set false to disable Graphify discovery and tools.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Auto-discover `graphify-out/graph.json` using cwd → git-root walking.
+    /// Default true. Set false when you only want an explicit `path`.
+    #[serde(default = "default_true")]
+    pub discover: bool,
+    /// Override the graph path or Graphify output directory. `~` is expanded,
+    /// relative paths resolve against cwd, and directories imply `graph.json`.
+    #[serde(default)]
+    pub path: Option<String>,
+}
+
+impl Default for GraphifySection {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            discover: true,
+            path: None,
+        }
+    }
+}
+
 /// `[resources]` — extra plain-text files concatenated into the system
 /// prompt verbatim. Less structured than `[skills]`; useful for ad-hoc
 /// system prompts or repo conventions kept in a non-AGENTS.md file.
@@ -652,5 +684,29 @@ path = "./docs/openspec"
         let cfg: RaConfig = toml::from_str(toml_doc).unwrap();
         assert!(!cfg.openspec.enabled);
         assert_eq!(cfg.openspec.path.as_deref(), Some("./docs/openspec"));
+    }
+
+    #[test]
+    fn graphify_defaults_on_and_parses_overrides() {
+        let cfg: RaConfig = toml::from_str("version = 1\n").unwrap();
+        assert!(cfg.graphify.enabled);
+        assert!(cfg.graphify.discover);
+        assert!(cfg.graphify.path.is_none());
+
+        let toml_doc = r#"
+version = 1
+
+[graphify]
+enabled = false
+discover = false
+path = "./custom-graph/graph.json"
+"#;
+        let cfg: RaConfig = toml::from_str(toml_doc).unwrap();
+        assert!(!cfg.graphify.enabled);
+        assert!(!cfg.graphify.discover);
+        assert_eq!(
+            cfg.graphify.path.as_deref(),
+            Some("./custom-graph/graph.json")
+        );
     }
 }

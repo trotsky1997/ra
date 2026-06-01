@@ -91,6 +91,19 @@ enabled = true
                              # --json / validate --strict / archive -y) into
                              # the prompt. Set false for catalog only.
 
+# ─── Graphify knowledge graph ──────────────────────────────────────
+# Agent-owned https://github.com/safishamsi/graphify support. When enabled
+# (default), Ra targets the nearest `graphify-out/graph.json` (walking cwd
+# up to the git root), detects missing/stale/invalid graphs, folds an R2A
+# graph workflow into the system prompt, and registers graphify_ensure /
+# graphify_impact / graphify_update plus native query/path/explain tools.
+# The default update path is AST-only and local; semantic extraction must be
+# requested explicitly because it may use an LLM backend.
+[graphify]
+enabled = true
+discover = true
+# path = "./graphify-out/graph.json"   # override; dirs imply graph.json
+
 # ─── A2A (server + remote agents) ───────────────────────────────────
 [a2a.serve]
 http_port = 3000

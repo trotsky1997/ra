@@ -10,6 +10,9 @@
     "agents_md": {
       "$ref": "#/definitions/AgentsMdSection"
     },
+    "graphify": {
+      "$ref": "#/definitions/GraphifySection"
+    },
     "hooks": {
       "$ref": "#/definitions/HooksSection"
     },
@@ -156,6 +159,31 @@
       "properties": {
         "bearer_env": {
           "description": "Env var holding a Bearer token to send as `Authorization`.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "GraphifySection": {
+      "description": "`[graphify]` — native [Graphify](https://github.com/safishamsi/graphify) support. When enabled, Ra targets a project's `graphify-out/graph.json` (walking cwd → git root), treats Graphify as an agent-owned R2A graph workflow, and registers ensure/impact/update plus native graph query tools.",
+      "type": "object",
+      "properties": {
+        "discover": {
+          "description": "Auto-discover `graphify-out/graph.json` using cwd → git-root walking. Default true. Set false when you only want an explicit `path`.",
+          "default": true,
+          "type": "boolean"
+        },
+        "enabled": {
+          "description": "Default true. Set false to disable Graphify discovery and tools.",
+          "default": true,
+          "type": "boolean"
+        },
+        "path": {
+          "description": "Override the graph path or Graphify output directory. `~` is expanded, relative paths resolve against cwd, and directories imply `graph.json`.",
           "default": null,
           "type": [
             "string",

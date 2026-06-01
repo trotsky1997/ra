@@ -180,6 +180,14 @@ built-in tool.
 - **RTK (`src/tools/rtk.rs`)** — `bash` commands consult `rtk rewrite`
   first for token-compressed output. Trust signal is "stdout non-empty",
   not exit status (RTK exits 3 on a hit).
+- **Graphify (`src/graphify.rs`)** — when `[graphify]` is enabled, Ra
+  creates an agent-owned R2A graph workflow for the project. It detects
+  whether `graphify-out/graph.json` is missing, stale, invalid, or ready;
+  adds the workflow to the system prompt; registers
+  `graphify_ensure`, `graphify_impact`, and `graphify_update`; and reads
+  Graphify's NetworkX node-link JSON directly for native query/path/explain
+  tools. The default update path is AST-only and local; semantic extraction
+  is explicit because it may use an LLM backend.
 - **Persistence (`src/store.rs`, `src/atif_codec.rs`, `src/atif.rs`)** —
   the message log encodes to ATIF v1.7 JSONL under
   `RA_HOME/sessions/<cwd-hash>/`. `atif_codec` must round-trip;

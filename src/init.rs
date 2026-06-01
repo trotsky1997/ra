@@ -42,7 +42,8 @@ builtin = []
 
 [skills]
 # `discover = true` loads project skills from `./.ra/skills/**/SKILL.md`
-# and shared cross-agent skills from `./.agents/skills/**/SKILL.md`.
+# shared cross-agent skills from `./.agents/skills/**/SKILL.md`, and
+# Claude Code skills from `./.claude/skills/**/SKILL.md`.
 enabled = true
 discover = true
 paths = []

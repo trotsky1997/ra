@@ -33,6 +33,7 @@ use crate::config::RaConfig;
 use crate::events::Event;
 use crate::session::Session;
 use crate::session_runner::{RunnerHost, SessionRunner};
+use crate::skills::SlashTemplate;
 use crate::store::{SessionMeta, SessionStore};
 use crate::tool_ctx::{FileChange, FileChangeApprover, FileChangeDecision};
 use crate::tools::default_builtins_with_cfg;
@@ -144,7 +145,7 @@ fn is_a_tty() -> bool {
 async fn build_session(
     config: &RaConfig,
     file_approver: Option<TuiFileApprover>,
-) -> Result<(Arc<Session>, Arc<HashMap<String, String>>)> {
+) -> Result<(Arc<Session>, Arc<HashMap<String, SlashTemplate>>)> {
     let factory = build_model_factory(config);
     let model = factory
         .first_model()
@@ -408,7 +409,7 @@ impl TuiApp {
     async fn new(
         session: Arc<Session>,
         session_id: String,
-        prompt_templates: Arc<HashMap<String, String>>,
+        prompt_templates: Arc<HashMap<String, SlashTemplate>>,
         config: &RaConfig,
         file_decision_rx: mpsc::UnboundedReceiver<FileDecisionRequest>,
     ) -> Result<Self> {

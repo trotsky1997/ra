@@ -528,7 +528,7 @@ fn load_skills_and_prompts(
     graphify: Option<ra::graphify::GraphifyWorkflow>,
 ) -> (
     Option<String>,
-    Arc<std::collections::HashMap<String, String>>,
+    Arc<std::collections::HashMap<String, ra::skills::SlashTemplate>>,
 ) {
     let mut bundle = ra::skills::build_resource_bundle(config, true);
     bundle.graphify = graphify;

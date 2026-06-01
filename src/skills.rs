@@ -74,7 +74,7 @@ pub struct SkillRuntimeOptions {
     pub model: Option<String>,
     pub effort: Option<String>,
     pub context: Option<String>,
-    pub agent: Option<SkillAgentMode>,
+    pub agent: Option<String>,
     pub shell: Option<String>,
     pub allowed_tools: Vec<String>,
     pub disallowed_tools: Vec<String>,
@@ -97,14 +97,26 @@ impl SkillRuntimeOptions {
     }
 
     pub fn is_fork(&self) -> bool {
-        matches!(self.agent, Some(SkillAgentMode::Fork))
+        self.context
+            .as_deref()
+            .map(|s| s.eq_ignore_ascii_case("fork"))
+            .unwrap_or(false)
+            || self
+                .agent
+                .as_deref()
+                .map(|s| {
+                    let s = s.trim();
+                    s.eq_ignore_ascii_case("fork") || s.eq_ignore_ascii_case("subagent")
+                })
+                .unwrap_or(false)
     }
-}
 
-/// Direct-invocation execution mode declared by skill `agent:` frontmatter.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SkillAgentMode {
-    Fork,
+    pub fn prompt_context(&self) -> Option<&str> {
+        self.context
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case("fork"))
+    }
 }
 
 /// Slash-command template handed to [`crate::session_runner::SessionRunner`].
@@ -440,7 +452,7 @@ fn parse_skill(p: &Path) -> Result<Skill> {
         model: normalize_opt_string(fm.model),
         effort: normalize_opt_string(fm.effort),
         context: normalize_opt_string(fm.context),
-        agent: parse_agent_mode(fm.agent.as_deref()),
+        agent: normalize_opt_string(fm.agent),
         shell: normalize_opt_string(fm.shell),
         allowed_tools: parse_tool_list(fm.allowed_tools.as_ref()),
         disallowed_tools: parse_tool_list(fm.disallowed_tools.as_ref()),
@@ -464,13 +476,6 @@ fn parse_skill(p: &Path) -> Result<Skill> {
 
 fn normalize_opt_string(raw: Option<String>) -> Option<String> {
     raw.map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
-}
-
-fn parse_agent_mode(raw: Option<&str>) -> Option<SkillAgentMode> {
-    match raw.map(str::trim).filter(|s| !s.is_empty()) {
-        Some("fork") | Some("subagent") => Some(SkillAgentMode::Fork),
-        _ => None,
-    }
 }
 
 fn parse_tool_list(raw: Option<&serde_yaml::Value>) -> Vec<String> {

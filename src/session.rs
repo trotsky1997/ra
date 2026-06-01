@@ -316,9 +316,10 @@ impl Session {
         let result = self.prompt_unlocked(user_text.into()).await;
         *self.runtime_scope.lock().await = None;
         let child_messages = self.snapshot_messages().await;
+        let parent_len = parent_snapshot.len();
         self.restore_messages(parent_snapshot).await;
         let outcome = result?;
-        if let Some(final_text) = final_assistant_text(&child_messages) {
+        if let Some(final_text) = final_assistant_text(&child_messages[parent_len..]) {
             let mut restored = self.snapshot_messages().await;
             restored.push(Message::Assistant {
                 content: final_text,
@@ -566,15 +567,13 @@ fn tool_allowed(name: &str, scope: Option<&SessionRuntimeScope>) -> bool {
 
 fn tool_decl_matches(decl: &str, name: &str) -> bool {
     let decl = decl.trim();
-    if decl == "*" || decl == name {
+    if decl == "*" || decl.eq_ignore_ascii_case(name) {
         return true;
     }
-    let head = decl
-        .split_once('(')
-        .map(|(tool, _)| tool)
-        .unwrap_or(decl)
-        .trim();
-    head == name
+    if decl.contains('(') || decl.contains(')') {
+        return false;
+    }
+    decl.eq_ignore_ascii_case(name)
 }
 
 fn final_assistant_text(messages: &[Message]) -> Option<String> {

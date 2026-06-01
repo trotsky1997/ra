@@ -22,11 +22,11 @@ Ra's current `Skill` model already tolerates advanced Claude Code fields during 
 
 ### Store Runtime Options On Skill Templates
 
-`Skill` and `SlashTemplate` will carry a `SkillRuntimeOptions` struct containing optional model, effort, shell, agent mode, allowed/disallowed tool declarations, and hooks. Prompt templates keep `None`, so legacy prompt commands remain unaffected.
+`Skill` and `SlashTemplate` will carry a `SkillRuntimeOptions` struct containing optional model, effort, shell, context, agent, allowed/disallowed tool declarations, and hooks. Prompt templates keep `None`, so legacy prompt commands remain unaffected. `context: fork` is the fork trigger; `agent` is retained as the optional subagent type/compatibility alias.
 
 ### Render Shell Context In The Runner
 
-Dynamic context syntax is prompt rendering, not model behavior. The runner already owns direct slash invocation and has access to session cwd, so it will replace inline `` !`command` `` and fenced ` ```! ` blocks after argument substitution and before calling the session.
+Dynamic context syntax is prompt rendering, not model behavior. The runner already owns direct slash invocation and has access to session cwd, so it will replace inline `` !`command` `` and fenced ` ```! ` blocks on the original skill body before argument substitution. This is intentionally one-pass: user-provided arguments inserted through `$ARGUMENTS`, `$N`, named placeholders, or no-placeholder fallback are never scanned as dynamic shell context.
 
 Unsuccessful shell commands should become readable error markers in the rendered prompt. This preserves debuggability and avoids unexpectedly aborting the entire skill invocation.
 
@@ -39,7 +39,9 @@ Unsuccessful shell commands should become readable error markers in the rendered
 - merge skill hooks with session hooks,
 - restore the previous runtime state after completion.
 
-The scope is held in the async prompt path and is not persisted into the message log.
+Tool names are matched case-insensitively. Constrained declarations such as `bash(git status:*)` are not expanded to the whole `bash` tool; they fail closed until Ra has command-level policy enforcement.
+
+The scope is held in the async prompt path and is not persisted into the message log. Skill-scoped Stop hooks run on normal successful completion as well as early block/stop paths.
 
 ### Extend RunnerHost For Model Resolution
 
@@ -49,12 +51,12 @@ Unknown model IDs should fail the skill invocation visibly. Silent fallback to t
 
 ### Forked Skill Execution Uses Transcript Snapshot Isolation
 
-For `agent: fork`, the runner will run the rendered skill prompt against a child session state initialized from the parent transcript snapshot. After the child finishes, the parent transcript is restored to its pre-skill state and receives only the final assistant text produced by the child. Tool calls and intermediate skill messages remain isolated from the parent transcript.
+For `context: fork`, the runner will run the rendered skill prompt against a child session state initialized from the parent transcript snapshot. After the child finishes, the parent transcript is restored to its pre-skill state and receives only the final assistant text produced after the fork snapshot. Tool calls and intermediate skill messages remain isolated from the parent transcript. If the fork produces no new assistant text, nothing is appended to the parent transcript.
 
 This matches the operational need for fork/subagent behavior with Ra's current single-session architecture and avoids protocol-specific session creation in the shared runner.
 
 ## Risks / Trade-offs
 
-- Tool declarations in Claude Code can include richer permission patterns than Ra tool names. The first implementation will enforce by normalized tool name and `Tool(pattern)` prefix, which covers the current Ra tool-spec surface.
+- Tool declarations in Claude Code can include richer permission patterns than Ra tool names. This implementation enforces whole-tool names only and fails closed on constrained declarations so it does not silently broaden permissions.
 - Forked execution cannot perfectly emulate Claude Code internals without a public transcript contract. Tests will lock Ra's defined behavior: parent snapshot in, final assistant result out.
 - Shell context injection executes local commands before the model call. That is expected for Claude Code-compatible skills and is contained to direct skill invocation.

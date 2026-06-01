@@ -18,8 +18,9 @@ The first Claude Code skills alignment PR covered discovery, frontmatter toleran
 - Render dynamic shell context before direct skill invocation reaches the model:
   - inline `` !`command` ``
   - fenced ` ```! ` command blocks
+- Preserve one-pass semantics: dynamic shell context is rendered from the original skill template before argument substitution, and inserted arguments are not rescanned.
 - Run shell context commands from the session cwd using a deterministic shell choice.
-- Support `agent: fork` by running the skill in an isolated child transcript and appending only the final assistant result to the parent transcript.
+- Support `context: fork` by running the skill in an isolated child transcript and appending only a new final assistant result to the parent transcript.
 - Enforce `allowed-tools` and `disallowed-tools` for the invoked skill only.
 - Run skill-scoped hooks for the invoked skill only, in addition to normal session hooks.
 - Override the model for the invoked skill only when the named model is available from the host model factory.
@@ -36,7 +37,7 @@ The first Claude Code skills alignment PR covered discovery, frontmatter toleran
 - A directly invoked skill containing `` !`printf context` `` sends `context` to the model in place of the inline expression.
 - A directly invoked skill containing a fenced ` ```! ` block sends the command output to the model in place of the command block.
 - Shell context command failures are visible in the rendered prompt as an error marker.
-- `agent: fork` leaves the parent transcript free of the skill's internal user prompt while preserving the final assistant result.
+- `context: fork` leaves the parent transcript free of the skill's internal user prompt while preserving only a new final assistant result.
 - `allowed-tools` limits the tool specs advertised to the model and blocks out-of-scope tool execution.
 - `disallowed-tools` removes denied tools even when the allow list would include them.
 - Skill-scoped hooks can block a tool call during that skill invocation and do not remain active afterward.

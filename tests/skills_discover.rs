@@ -4,9 +4,7 @@
 
 use ra::{
     config::RaConfig,
-    skills::{
-        build_resource_bundle, default_discover_globs, load_skills, ResourceBundle, SkillAgentMode,
-    },
+    skills::{build_resource_bundle, default_discover_globs, load_skills, ResourceBundle},
 };
 use std::fs;
 use std::sync::{Mutex, OnceLock};
@@ -225,8 +223,8 @@ fn skill_parser_preserves_advanced_runtime_frontmatter() {
 description: Advanced skill
 model: review-model
 effort: high
-context: Keep output concise.
-agent: fork
+context: fork
+agent: Explore
 shell: bash
 allowed-tools: [read, "Bash(git status:*)"]
 disallowed-tools: "write, edit"
@@ -252,11 +250,9 @@ Advanced body.
 
     assert_eq!(skill.runtime.model.as_deref(), Some("review-model"));
     assert_eq!(skill.runtime.effort.as_deref(), Some("high"));
-    assert_eq!(
-        skill.runtime.context.as_deref(),
-        Some("Keep output concise.")
-    );
-    assert_eq!(skill.runtime.agent, Some(SkillAgentMode::Fork));
+    assert_eq!(skill.runtime.context.as_deref(), Some("fork"));
+    assert_eq!(skill.runtime.agent.as_deref(), Some("Explore"));
+    assert!(skill.runtime.is_fork());
     assert_eq!(skill.runtime.shell.as_deref(), Some("bash"));
     assert_eq!(
         skill.runtime.allowed_tools,

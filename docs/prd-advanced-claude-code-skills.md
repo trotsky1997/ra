@@ -6,7 +6,7 @@ Ra now supports the basic Claude Code skill shape, but advanced Claude Code skil
 
 ## Goals & Success Metrics
 
-- Direct `/skill-name` invocation renders dynamic shell context before the model sees the skill prompt.
+- Direct `/skill-name` invocation renders dynamic shell context from the original skill template before arguments are inserted.
 - Skills that request forked execution run against an isolated copy of the conversation and do not mutate the parent session transcript with internal subagent turns.
 - Skills that declare `model`, `allowed-tools`, `disallowed-tools`, or `hooks` apply those constraints for that skill invocation only.
 - Existing prompt-template behavior and previously aligned skill discovery/frontmatter behavior remain backward-compatible.
@@ -23,11 +23,11 @@ Ra now supports the basic Claude Code skill shape, but advanced Claude Code skil
 | Priority | Requirement |
 | --- | --- |
 | Must | Parse and persist skill frontmatter for `model`, `allowed-tools`, `disallowed-tools`, `hooks`, `context`, `agent`, and `shell`. |
-| Must | Replace inline `` !`command` `` expressions with captured stdout before the skill prompt is submitted. |
-| Must | Replace fenced ` ```! ` command blocks with captured stdout before the skill prompt is submitted. |
+| Must | Replace inline `` !`command` `` expressions with captured stdout before the skill prompt is submitted, using one pass over the original skill template. |
+| Must | Replace fenced ` ```! ` command blocks with captured stdout before the skill prompt is submitted, using one pass over the original skill template. |
 | Must | Run shell context commands from the current session cwd, using `/bin/sh -c` by default and `bash -lc` when `shell: bash` is declared. |
 | Must | Insert a readable error marker when a shell context command exits unsuccessfully instead of aborting the entire skill invocation. |
-| Must | Support `agent: fork` as an isolated skill execution mode that runs on a child transcript snapshot and appends only the final assistant result to the parent transcript. |
+| Must | Support `context: fork` as an isolated skill execution mode that runs on a child transcript snapshot and appends only a new final assistant result to the parent transcript. |
 | Must | Apply `allowed-tools` as an invocation-scoped allow list for tool specs and execution. |
 | Must | Apply `disallowed-tools` as an invocation-scoped deny list on top of the allow list. |
 | Must | Apply skill-scoped `hooks` in addition to session hooks for that invocation. |
@@ -41,6 +41,7 @@ Ra now supports the basic Claude Code skill shape, but advanced Claude Code skil
 - Scope changes to skill rendering and the shared session runner/session path.
 - Preserve deterministic behavior in tests without network calls.
 - Avoid weakening existing session-level hooks and tool filters.
+- Do not silently broaden constrained tool declarations such as `bash(...)` to the whole tool.
 - Keep failed shell context commands visible to the model for debugging.
 
 ## Design Considerations

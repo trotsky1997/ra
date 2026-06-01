@@ -7,7 +7,7 @@ The merged Claude Code skills alignment made existing skills discoverable and di
 - Parse and retain advanced Claude Code skill frontmatter fields used at runtime.
 - Render inline and fenced dynamic shell context blocks before a skill prompt reaches the model.
 - Add invocation-scoped runtime options for direct skill slash commands.
-- Support `agent: fork` by running a skill against an isolated child transcript and returning only the final result to the parent session.
+- Support `context: fork` by running a skill against an isolated child transcript and returning only the final result to the parent session.
 - Enforce skill-scoped model overrides, tool allow/deny lists, and hooks for the duration of a skill invocation.
 - Add PRD, GitHub issue draft, OpenSpec requirements, focused tests, and documentation comments for the new runtime behavior.
 

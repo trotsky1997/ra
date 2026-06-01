@@ -8,7 +8,7 @@ use ra::{
     events::ToolCall,
     model::{Message, Model, ModelChunk, StopReason, ToolSpec},
     session_runner::{RunOutcome, RunnerHost, SessionRunner},
-    skills::{SkillAgentMode, SkillRuntimeOptions, SlashTemplate},
+    skills::{SkillRuntimeOptions, SlashTemplate},
     tool_ctx::ToolCtx,
     Session, Tool,
 };
@@ -295,6 +295,34 @@ async fn skill_slash_template_marks_failed_dynamic_shell_context() {
 }
 
 #[tokio::test]
+async fn skill_arguments_are_not_rescanned_for_dynamic_shell_context() {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let model = ScriptedModel::end_turn(seen.clone());
+    let session = Arc::new(Session::new(Arc::new(model), vec![]));
+
+    let mut templates = HashMap::new();
+    templates.insert(
+        "review".to_string(),
+        skill_template("Review $ARGUMENTS", SkillRuntimeOptions::default()),
+    );
+
+    let runner = SessionRunner::new(session, "test-session".into(), Arc::new(NullHost))
+        .with_prompt_templates(Arc::new(templates));
+
+    let outcome = runner
+        .run_input("/review !`printf should-not-run`".to_string(), |_| {})
+        .await;
+    assert_eq!(outcome, RunOutcome::Completed);
+
+    let calls = seen.lock().unwrap().clone();
+    let user_msg = calls[0].iter().find(|m| matches!(m, Message::User { .. }));
+    assert!(
+        matches!(user_msg, Some(Message::User { content }) if content.contains("Review !`printf should-not-run`")),
+        "argument-inserted shell syntax must remain literal, got: {user_msg:?}"
+    );
+}
+
+#[tokio::test]
 async fn skill_scoped_allowed_tools_limit_model_specs() {
     let seen = Arc::new(Mutex::new(Vec::new()));
     let seen_tools = Arc::new(Mutex::new(Vec::new()));
@@ -338,6 +366,94 @@ async fn skill_scoped_allowed_tools_limit_model_specs() {
     assert_eq!(outcome, RunOutcome::Completed);
 
     assert_eq!(seen_tools.lock().unwrap()[0], vec!["read".to_string()]);
+}
+
+#[tokio::test]
+async fn skill_tool_policy_matches_case_insensitively() {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let seen_tools = Arc::new(Mutex::new(Vec::new()));
+    let model = ScriptedModel {
+        seen,
+        seen_tools: seen_tools.clone(),
+        chunks: vec![ModelChunk::End {
+            stop_reason: StopReason::EndTurn,
+        }],
+    };
+    let session = Arc::new(Session::new(
+        Arc::new(model),
+        vec![
+            Arc::new(EchoTool {
+                name: "read",
+                log: Arc::new(Mutex::new(Vec::new())),
+            }),
+            Arc::new(EchoTool {
+                name: "bash",
+                log: Arc::new(Mutex::new(Vec::new())),
+            }),
+        ],
+    ));
+
+    let mut templates = HashMap::new();
+    templates.insert(
+        "review".to_string(),
+        skill_template(
+            "Review.",
+            SkillRuntimeOptions {
+                allowed_tools: vec!["Read".to_string()],
+                disallowed_tools: vec!["BASH".to_string()],
+                ..SkillRuntimeOptions::default()
+            },
+        ),
+    );
+
+    let runner = SessionRunner::new(session, "test-session".into(), Arc::new(NullHost))
+        .with_prompt_templates(Arc::new(templates));
+
+    let outcome = runner.run_input("/review".to_string(), |_| {}).await;
+    assert_eq!(outcome, RunOutcome::Completed);
+    assert_eq!(seen_tools.lock().unwrap()[0], vec!["read".to_string()]);
+}
+
+#[tokio::test]
+async fn constrained_tool_policy_declarations_do_not_expand_to_whole_tool() {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let seen_tools = Arc::new(Mutex::new(Vec::new()));
+    let model = ScriptedModel {
+        seen,
+        seen_tools: seen_tools.clone(),
+        chunks: vec![ModelChunk::End {
+            stop_reason: StopReason::EndTurn,
+        }],
+    };
+    let session = Arc::new(Session::new(
+        Arc::new(model),
+        vec![Arc::new(EchoTool {
+            name: "bash",
+            log: Arc::new(Mutex::new(Vec::new())),
+        })],
+    ));
+
+    let mut templates = HashMap::new();
+    templates.insert(
+        "review".to_string(),
+        skill_template(
+            "Review.",
+            SkillRuntimeOptions {
+                allowed_tools: vec!["bash(git status:*)".to_string()],
+                ..SkillRuntimeOptions::default()
+            },
+        ),
+    );
+
+    let runner = SessionRunner::new(session, "test-session".into(), Arc::new(NullHost))
+        .with_prompt_templates(Arc::new(templates));
+
+    let outcome = runner.run_input("/review".to_string(), |_| {}).await;
+    assert_eq!(outcome, RunOutcome::Completed);
+    assert!(
+        seen_tools.lock().unwrap()[0].is_empty(),
+        "constrained declaration should not silently expose entire bash tool"
+    );
 }
 
 #[tokio::test]
@@ -471,6 +587,41 @@ async fn skill_scoped_hooks_are_temporary() {
 }
 
 #[tokio::test]
+async fn skill_stop_hook_runs_on_successful_completion() {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let model = ScriptedModel::end_turn(seen.clone());
+    let session = Arc::new(Session::new(Arc::new(model), vec![]));
+
+    let marker = tempfile::NamedTempFile::new().unwrap();
+    let marker_path = marker.path().to_string_lossy().into_owned();
+    let mut hooks = HooksSection::default();
+    hooks.stop.push(Hook {
+        matcher: ".*".to_string(),
+        command: format!("printf stop > {}", shell_quote(&marker_path)),
+        timeout: 5.0,
+        run_async: false,
+    });
+    let mut templates = HashMap::new();
+    templates.insert(
+        "guarded".to_string(),
+        skill_template(
+            "Guarded.",
+            SkillRuntimeOptions {
+                hooks,
+                ..SkillRuntimeOptions::default()
+            },
+        ),
+    );
+
+    let runner = SessionRunner::new(session, "test-session".into(), Arc::new(NullHost))
+        .with_prompt_templates(Arc::new(templates));
+
+    let outcome = runner.run_input("/guarded".to_string(), |_| {}).await;
+    assert_eq!(outcome, RunOutcome::Completed);
+    assert_eq!(std::fs::read_to_string(marker.path()).unwrap(), "stop");
+}
+
+#[tokio::test]
 async fn skill_scoped_model_override_is_temporary() {
     let seen_models = Arc::new(Mutex::new(Vec::new()));
     let default_model = Arc::new(NamedModel {
@@ -530,7 +681,7 @@ async fn forked_skill_does_not_keep_internal_user_prompt() {
         skill_template(
             "Internal fork prompt.",
             SkillRuntimeOptions {
-                agent: Some(SkillAgentMode::Fork),
+                context: Some("fork".to_string()),
                 ..SkillRuntimeOptions::default()
             },
         ),
@@ -556,4 +707,59 @@ async fn forked_skill_does_not_keep_internal_user_prompt() {
         )),
         "fork result should be appended to parent transcript: {messages:?}"
     );
+}
+
+#[tokio::test]
+async fn forked_skill_without_new_assistant_result_does_not_duplicate_parent_result() {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let model = ScriptedModel {
+        seen,
+        seen_tools: Arc::new(Mutex::new(Vec::new())),
+        chunks: vec![ModelChunk::End {
+            stop_reason: StopReason::EndTurn,
+        }],
+    };
+    let session = Arc::new(Session::new(Arc::new(model), vec![]));
+    session
+        .restore_messages(vec![Message::Assistant {
+            content: "parent answer".to_string(),
+            tool_calls: Vec::new(),
+        }])
+        .await;
+
+    let mut templates = HashMap::new();
+    templates.insert(
+        "fork-review".to_string(),
+        skill_template(
+            "Internal fork prompt.",
+            SkillRuntimeOptions {
+                context: Some("fork".to_string()),
+                ..SkillRuntimeOptions::default()
+            },
+        ),
+    );
+    let runner = SessionRunner::new(session.clone(), "test-session".into(), Arc::new(NullHost))
+        .with_prompt_templates(Arc::new(templates));
+
+    let outcome = runner.run_input("/fork-review".to_string(), |_| {}).await;
+    assert_eq!(outcome, RunOutcome::Completed);
+
+    let messages = session.snapshot_messages().await;
+    let parent_answer_count = messages
+        .iter()
+        .filter(|msg| {
+            matches!(
+                msg,
+                Message::Assistant { content, .. } if content == "parent answer"
+            )
+        })
+        .count();
+    assert_eq!(
+        parent_answer_count, 1,
+        "fork should not duplicate old result"
+    );
+}
+
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
 }

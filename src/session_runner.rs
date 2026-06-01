@@ -82,6 +82,13 @@ pub enum RunnerEvent {
     Finished(RunOutcome),
 }
 
+#[derive(Clone)]
+struct PreparedSkillRuntime {
+    scope: SessionRuntimeScope,
+    stop_hooks: Option<Arc<crate::hooks::HookEngine>>,
+    forked: bool,
+}
+
 /// Narrow capability surface a `SessionRunner` needs from whatever holds
 /// long-lived agent state. Lets the protocol-specific server (ACP,
 /// A2A, …) own the actual `SharedState` without leaking ACP types
@@ -225,29 +232,44 @@ impl SessionRunner {
                 return RunOutcome::Completed;
             }
             if let Some(template) = self.prompt_templates.get(&cmd.name).cloned() {
-                effective_text = render_slash_template(&template, &cmd.args);
                 skill_runtime = template.runtime.clone();
                 if let Some(runtime) = &skill_runtime {
-                    match render_dynamic_shell_context(effective_text, runtime, self.session.cwd())
-                        .await
+                    match render_dynamic_shell_context(
+                        template.body.clone(),
+                        runtime,
+                        self.session.cwd(),
+                    )
+                    .await
                     {
-                        Ok(rendered) => effective_text = rendered,
+                        Ok(rendered) => {
+                            let shell_rendered_template = SlashTemplate {
+                                body: rendered,
+                                ..template
+                            };
+                            effective_text =
+                                render_slash_template(&shell_rendered_template, &cmd.args);
+                        }
                         Err(e) => return RunOutcome::Failed(format!("{e:#}")),
                     }
-                    if let Some(context) = runtime.context.as_ref().filter(|s| !s.is_empty()) {
+                    if let Some(context) = runtime.prompt_context() {
                         effective_text = format!("[skill context]\n{context}\n\n{effective_text}");
                     }
+                } else {
+                    effective_text = render_slash_template(&template, &cmd.args);
                 }
             }
         }
 
-        let scope = match skill_runtime.as_ref() {
+        let prepared_runtime = match skill_runtime.as_ref() {
             Some(runtime) => match self.runtime_scope_for(runtime).await {
-                Ok(scope) => Some(scope),
+                Ok(prepared) => Some(prepared),
                 Err(e) => return RunOutcome::Failed(format!("{e:#}")),
             },
             None => None,
         };
+        let scope = prepared_runtime
+            .as_ref()
+            .map(|prepared| prepared.scope.clone());
 
         // UserPromptSubmit hooks run after slash expansion so skill-scoped
         // hooks observe the same prompt that will reach the model.
@@ -277,9 +299,9 @@ impl SessionRunner {
         // Subscribe BEFORE prompt() so we don't miss the first events.
         let mut rx = self.session.subscribe();
         let session = self.session.clone();
-        let forked = skill_runtime
+        let forked = prepared_runtime
             .as_ref()
-            .map(|runtime| runtime.is_fork())
+            .map(|prepared| prepared.forked)
             .unwrap_or(false);
         let prompt_fut: BoxFuture<'_, Result<PromptOutcome>> = Box::pin(async move {
             if forked {
@@ -366,13 +388,19 @@ impl SessionRunner {
                 }
             }
         }
-        outcome.unwrap_or(RunOutcome::Completed)
+        let outcome = outcome.unwrap_or(RunOutcome::Completed);
+        if matches!(outcome, RunOutcome::Completed) {
+            if let Some(hooks) = prepared_runtime.and_then(|prepared| prepared.stop_hooks) {
+                hooks.stop(Some(&self.session_id)).await;
+            }
+        }
+        outcome
     }
 
     async fn runtime_scope_for(
         &self,
         runtime: &SkillRuntimeOptions,
-    ) -> Result<SessionRuntimeScope> {
+    ) -> Result<PreparedSkillRuntime> {
         let model = match runtime.model.as_deref() {
             Some(model_id) => Some(
                 self.host
@@ -387,11 +415,15 @@ impl SessionRunner {
         } else {
             Some(Arc::new(skill_hooks))
         };
-        Ok(SessionRuntimeScope {
-            model,
-            allowed_tools: runtime.allowed_tools.clone(),
-            disallowed_tools: runtime.disallowed_tools.clone(),
-            hooks,
+        Ok(PreparedSkillRuntime {
+            scope: SessionRuntimeScope {
+                model,
+                allowed_tools: runtime.allowed_tools.clone(),
+                disallowed_tools: runtime.disallowed_tools.clone(),
+                hooks: hooks.clone(),
+            },
+            stop_hooks: hooks,
+            forked: runtime.is_fork(),
         })
     }
 

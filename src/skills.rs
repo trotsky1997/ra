@@ -108,7 +108,11 @@ impl ResourceBundle {
         }
 
         // 3. OpenSpec catalog (progressive disclosure, like skills).
-        if let Some(section) = self.openspec.as_ref().and_then(|p| p.build_system_prompt_section()) {
+        if let Some(section) = self
+            .openspec
+            .as_ref()
+            .and_then(|p| p.build_system_prompt_section())
+        {
             buf.push_str(&section);
             ensure_trailing_blank(&mut buf);
         }
@@ -188,7 +192,11 @@ pub fn load_prompts(patterns: &[String]) -> Vec<PromptTemplate> {
         .filter_map(|p| {
             let body = std::fs::read_to_string(&p).ok()?;
             let name = p.file_stem()?.to_str()?.to_string();
-            Some(PromptTemplate { name, path: p, body })
+            Some(PromptTemplate {
+                name,
+                path: p,
+                body,
+            })
         })
         .collect()
 }
@@ -203,13 +211,19 @@ pub fn discover_agents_md(cwd: &Path) -> Vec<AgentsMd> {
     loop {
         let candidate = current.join("AGENTS.md");
         if let Ok(body) = std::fs::read_to_string(&candidate) {
-            out.push(AgentsMd { path: candidate, body, depth });
+            out.push(AgentsMd {
+                path: candidate,
+                body,
+                depth,
+            });
         }
         if current.join(".git").exists() {
             hit_git_root = true;
             break;
         }
-        let Some(parent) = current.parent() else { break };
+        let Some(parent) = current.parent() else {
+            break;
+        };
         if parent == current {
             break;
         }
@@ -252,10 +266,9 @@ struct Frontmatter {
 
 fn parse_skill(p: &Path) -> Result<Skill> {
     let raw = std::fs::read_to_string(p).context("read")?;
-    let (fm_raw, body) = split_frontmatter(&raw)
-        .with_context(|| "missing or malformed YAML frontmatter")?;
-    let fm: Frontmatter = serde_yaml::from_str(fm_raw)
-        .with_context(|| "parse YAML frontmatter")?;
+    let (fm_raw, body) =
+        split_frontmatter(&raw).with_context(|| "missing or malformed YAML frontmatter")?;
+    let fm: Frontmatter = serde_yaml::from_str(fm_raw).with_context(|| "parse YAML frontmatter")?;
     let name = fm
         .name
         .ok_or_else(|| anyhow::anyhow!("frontmatter missing required `name`"))?;
@@ -278,7 +291,9 @@ fn split_frontmatter(s: &str) -> Option<(&str, &str)> {
     // Skip BOM and leading whitespace.
     let s = s.strip_prefix('\u{FEFF}').unwrap_or(s);
     let s = s.trim_start_matches(|c: char| c == ' ' || c == '\t' || c == '\r');
-    let after_first = s.strip_prefix("---\n").or_else(|| s.strip_prefix("---\r\n"))?;
+    let after_first = s
+        .strip_prefix("---\n")
+        .or_else(|| s.strip_prefix("---\r\n"))?;
     // Find the closing `---` on its own line.
     for (i, _) in after_first.match_indices("\n---") {
         // Ensure it's `\n---` followed by newline or EOF.
@@ -355,7 +370,9 @@ fn glob_root(pat: &str) -> PathBuf {
     if root.as_os_str().is_empty() {
         PathBuf::from(".")
     } else if root.is_file() {
-        root.parent().map(PathBuf::from).unwrap_or(PathBuf::from("."))
+        root.parent()
+            .map(PathBuf::from)
+            .unwrap_or(PathBuf::from("."))
     } else {
         root
     }
@@ -365,7 +382,9 @@ fn walk_files(root: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
-        let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            continue;
+        };
         for entry in rd.flatten() {
             let p = entry.path();
             let Ok(ft) = entry.file_type() else { continue };

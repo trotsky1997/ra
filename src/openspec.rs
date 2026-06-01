@@ -163,7 +163,11 @@ impl OpenSpecProject {
                 } else {
                     String::new()
                 };
-                buf.push_str(&format!("- **{}**{progress}; dir: `{}`\n", c.id, c.dir.display()));
+                buf.push_str(&format!(
+                    "- **{}**{progress}; dir: `{}`\n",
+                    c.id,
+                    c.dir.display()
+                ));
                 if let Some(why) = &c.why {
                     buf.push_str(&format!("  - why: {}\n", one_line(why)));
                 }
@@ -207,7 +211,9 @@ fn find_openspec_dir(cwd: &Path) -> Option<PathBuf> {
         if current.join(".git").exists() {
             break;
         }
-        let Some(parent) = current.parent() else { break };
+        let Some(parent) = current.parent() else {
+            break;
+        };
         if parent == current {
             break;
         }

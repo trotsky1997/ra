@@ -455,10 +455,10 @@ impl RaConfig {
         let Some(path) = resolve_config_path(explicit_path) else {
             return Ok(Self::default());
         };
-        let raw = std::fs::read_to_string(&path)
-            .with_context(|| format!("read {}", path.display()))?;
-        let cfg: Self = toml::from_str(&raw)
-            .with_context(|| format!("parse {}", path.display()))?;
+        let raw =
+            std::fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
+        let cfg: Self =
+            toml::from_str(&raw).with_context(|| format!("parse {}", path.display()))?;
         if cfg.version != 1 {
             anyhow::bail!(
                 "{}: unsupported config version {} (expected 1)",
@@ -474,11 +474,7 @@ impl RaConfig {
     pub fn expand_path(s: &str, base: &Path) -> PathBuf {
         let expanded = shellexpand::tilde(s).to_string();
         let p = PathBuf::from(expanded);
-        if p.is_absolute() {
-            p
-        } else {
-            base.join(p)
-        }
+        if p.is_absolute() { p } else { base.join(p) }
     }
 }
 

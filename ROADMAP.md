@@ -52,7 +52,7 @@ on disk and tested; speculative ideas live as GitHub issues.
   scenario counts) and active changes (task progress, touched
   capabilities) into the system prompt with progressive disclosure.
   Archived changes are skipped; `[openspec]` toggles it and `path`
-  overrides the location. Ra consumes the convention, it doesn't
+  overrides the location. Ra consumes the convention; it doesn't
   reimplement the `openspec` CLI.
 - User-defined slash-command prompt templates.
 - Lifecycle hooks wire-compatible with the

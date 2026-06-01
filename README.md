@@ -198,6 +198,8 @@ Resolution order: `--config <path>` → `$RA_CONFIG` → `./ra.toml` →
 | `ls`    | Structured directory listing; non-recursive by default, recursive with depth/limit controls. |
 | `fuzzy` | Non-interactive fuzzy candidate filtering/ranking. |
 | `apply_patch` | Controlled `git apply` wrapper that checks patches before applying and uses file approval when present. |
+| `webfetch_fetch` | Fetches one web page as Markdown through `webfetch-cli`, writes `.md/`, and returns bounded JSON. |
+| `webfetch_crawl` | Crawls a bounded documentation subtree through `webfetch-cli`, mirrors `.md/`, and returns bounded JSON. |
 | `graphify_ensure` / `graphify_impact` / `graphify_update` / `graphify_query` / `graphify_path` / `graphify_explain` | Added when `[graphify]` is enabled; maintains and uses Graphify as Ra's R2A project graph. |
 
 Toggle the catalog via `[tools] builtin = […]`; an empty allow-list
@@ -212,6 +214,10 @@ one-off command pipelines.
 Native `git` / `gh` prioritize argv safety over RTK rewriting. If a
 high-volume `git` or `gh` command needs RTK output compression, run it
 through `bash` instead so the existing RTK rewrite path can apply.
+`webfetch_fetch` and `webfetch_crawl` run
+`npm exec --yes --package=github:trotsky1997/webfetch-cli -- webfetch-cli`
+under the hood; if `npm` is missing, the tools return structured install
+guidance instead of an opaque spawn error.
 
 ## Protocols & specs
 

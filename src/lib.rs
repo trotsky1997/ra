@@ -33,5 +33,5 @@ pub use tool_ctx::{
 pub use tools::{
     default_builtins, default_builtins_with_cfg, ApplyPatchTool, AstGrepTool, BashTool, EditTool,
     FuzzyTool, GhTool, GitTool, GlobTool, GrepTool, LsTool, LspTool, ReadTool, RtkRewriter, Tool,
-    WriteTool,
+    WebfetchCrawlTool, WebfetchFetchTool, WriteTool,
 };

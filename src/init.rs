@@ -37,7 +37,8 @@ banner = true
 # Structured search tools: ast_grep.
 # Native CLI tools: git, gh.
 # Extended tools: grep, glob, ls, fuzzy, apply_patch.
-# builtin = ["read", "write", "edit", "bash", "ast_grep", "git", "gh", "grep", "glob", "ls", "fuzzy", "apply_patch"]
+# Web docs tools: webfetch_fetch, webfetch_crawl.
+# builtin = ["read", "write", "edit", "bash", "ast_grep", "git", "gh", "grep", "glob", "ls", "fuzzy", "apply_patch", "webfetch_fetch", "webfetch_crawl"]
 builtin = []
 
 [skills]

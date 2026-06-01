@@ -108,6 +108,11 @@ scripts, tests, and one-off command pipelines. When a high-volume `git`
 or `gh` command needs RTK output compression, run it through `bash` so
 the existing RTK rewrite path can apply.
 
+Prefer `webfetch_fetch` and `webfetch_crawl` over `bash` for
+documentation retrieval. They preserve argv boundaries, return bounded
+JSON, and surface missing-`npm` installation guidance in a structured
+response.
+
 ## Native CLI tools
 
 These wrappers execute common developer CLIs without asking the model to
@@ -426,6 +431,85 @@ unsafe-path modes.
 | whitespace | string | no | `nowarn`, `warn`, `fix`, `error`, or `error-all` |
 | recount | boolean | no | `false` |
 | unidiff_zero | boolean | no | `false` |
+
+## Web documentation tools
+
+These wrappers run the standalone
+[`webfetch-cli`](https://github.com/trotsky1997/webfetch-cli) package via:
+
+```text
+npm exec --yes --package=github:trotsky1997/webfetch-cli -- webfetch-cli ...
+```
+
+Ra builds argv arrays directly, always asks webfetch-cli for `--json`,
+and returns a bounded JSON envelope. `output=all` is still subject to
+`max_output_bytes`. If `npm` is not on `PATH`, the tool returns
+`ok:false` with `error.kind:"missing_npm"` and installation guidance.
+
+Returned envelope:
+
+```json
+{
+  "ok": true,
+  "tool": "webfetch_fetch",
+  "command": { "program": "npm", "args": [], "display": "npm exec ..." },
+  "exit_code": 0,
+  "stdout": "{... webfetch-cli JSON ...}",
+  "stderr": null,
+  "truncated": false
+}
+```
+
+### `webfetch_fetch`
+
+Fetch one page as Markdown and write a cache file under `.md/`.
+
+```json
+{
+  "url": "https://example.com",
+  "output": "toc-only",
+  "raw_only": false,
+  "max_output_bytes": 100000
+}
+```
+
+| Field | Type | Required | Default | Notes |
+|-------|------|----------|---------|-------|
+| url | string | yes | | HTTP(S) URL or bare host accepted by webfetch-cli |
+| output | string | no | `toc-only` | `toc-only`, `path-only`, or `all` |
+| timeout_ms | number | no | webfetch-cli default | Per-attempt timeout |
+| cwd | string | no | session cwd | Directory where `.md/` is written |
+| raw_only | boolean | no | `false` | Skip hosted Markdown services |
+| max_output_bytes | number | no | `100000` | Bounds Ra's returned JSON envelope |
+
+### `webfetch_crawl`
+
+Crawl a bounded documentation subtree and mirror pages under `.md/`.
+
+```json
+{
+  "url": "https://docs.python.org/3/library/index.html",
+  "max_hops": 1,
+  "max_pages": 30,
+  "output": "summary"
+}
+```
+
+| Field | Type | Required | Default | Notes |
+|-------|------|----------|---------|-------|
+| url | string | yes | | Root URL |
+| parent_domain | string | no | root hostname | Allowed hostname suffix |
+| max_hops | number | no | webfetch-cli default | Link distance from root |
+| max_pages | number | no | webfetch-cli default | Page cap |
+| max_links | number | no | webfetch-cli default | Followed links per page |
+| concurrency | number | no | webfetch-cli default | Parallel fetches |
+| allow_query | boolean | no | `false` | Keep query-string URLs |
+| output | string | no | `summary` | `summary`, `path-only`, or `all` |
+| timeout_ms | number | no | webfetch-cli default | Per-attempt timeout |
+| cwd | string | no | session cwd | Directory where `.md/` is written |
+| raw_only | boolean | no | `false` | Skip hosted Markdown services |
+| verbose | boolean | no | `false` | Include crawl progress from stderr |
+| max_output_bytes | number | no | `200000` | Bounds Ra's returned JSON envelope |
 
 ## Adding new tools
 

@@ -17,6 +17,8 @@
 //! - `fuzzy` — non-interactive fuzzy ranking/filtering
 //! - `apply_patch` — controlled `git apply` wrapper
 //! - `lsp`   — openlsp code intelligence (diagnostics, hover, references, …)
+//! - `webfetch_fetch` — fetch one web page as Markdown via webfetch-cli
+//! - `webfetch_crawl` — crawl bounded documentation via webfetch-cli
 
 mod cli;
 mod core;
@@ -25,6 +27,7 @@ mod fs;
 mod lsp;
 mod rtk;
 mod search;
+mod webfetch;
 
 pub use cli::{GhTool, GitTool};
 pub use core::{BashTool, ReadTool};
@@ -33,6 +36,7 @@ pub use fs::{EditTool, WriteTool};
 pub use lsp::{resolve_openlsp_binary, LspTool};
 pub use rtk::RtkRewriter;
 pub use search::AstGrepTool;
+pub use webfetch::{WebfetchCrawlTool, WebfetchFetchTool};
 
 use crate::config::OpenlspSection;
 use std::sync::Arc;
@@ -93,6 +97,12 @@ pub fn default_builtins_with_cfg(
     if want("apply_patch") {
         out.push(Arc::new(ApplyPatchTool));
     }
+    if want("webfetch_fetch") {
+        out.push(Arc::new(WebfetchFetchTool));
+    }
+    if want("webfetch_crawl") {
+        out.push(Arc::new(WebfetchCrawlTool));
+    }
     if want("lsp") {
         if let Some(binary) = resolve_openlsp_binary(openlsp_cfg) {
             out.push(Arc::new(LspTool {
@@ -144,6 +154,18 @@ mod tests {
     #[test]
     fn allowlist_can_select_extended_tools_exactly() {
         assert_eq!(builtin_names(&["grep"]), vec!["grep"]);
+    }
+
+    #[test]
+    fn default_catalog_includes_webfetch_tools() {
+        let names = builtin_names(&[]);
+        assert!(names.contains(&"webfetch_fetch".to_string()));
+        assert!(names.contains(&"webfetch_crawl".to_string()));
+    }
+
+    #[test]
+    fn allowlist_can_select_webfetch_tools_exactly() {
+        assert_eq!(builtin_names(&["webfetch_fetch"]), vec!["webfetch_fetch"]);
     }
 
     #[test]

@@ -393,7 +393,9 @@ impl SessionRunner {
 
 fn tool_kind(name: &str) -> ToolKindHint {
     match name {
-        "read" | "grep" | "glob" | "ls" | "fuzzy" => ToolKindHint::Read,
+        "read" | "grep" | "glob" | "ls" | "fuzzy" | "webfetch_fetch" | "webfetch_crawl" => {
+            ToolKindHint::Read
+        }
         "ast_grep" => ToolKindHint::Search,
         "bash" | "git" | "gh" => ToolKindHint::Execute,
         _ => ToolKindHint::Other,
@@ -460,6 +462,22 @@ fn tool_title(name: &str, input: &serde_json::Value) -> String {
             .and_then(|v| v.as_str())
             .map(|q| format!("Fuzzy {q}"))
             .unwrap_or_else(|| "Fuzzy filter".into()),
+        "webfetch_fetch" => input
+            .get("url")
+            .and_then(|v| v.as_str())
+            .map(|url| {
+                let s = truncate_chars(url, 60);
+                format!("Fetch {s}")
+            })
+            .unwrap_or_else(|| "Fetch web page".into()),
+        "webfetch_crawl" => input
+            .get("url")
+            .and_then(|v| v.as_str())
+            .map(|url| {
+                let s = truncate_chars(url, 60);
+                format!("Crawl {s}")
+            })
+            .unwrap_or_else(|| "Crawl docs".into()),
         "apply_patch" => {
             if input
                 .get("check_only")
@@ -516,6 +534,16 @@ mod tests {
         let title = tool_title("git", &json!({ "args": [arg] }));
 
         assert!(title.starts_with("$ git "));
+        assert!(title.ends_with('…'));
+        assert!(title.contains('界'));
+    }
+
+    #[test]
+    fn tool_title_truncates_multibyte_webfetch_url_safely() {
+        let url = format!("https://example.com/{}界tail", "a".repeat(39));
+        let title = tool_title("webfetch_fetch", &json!({ "url": url }));
+
+        assert!(title.starts_with("Fetch https://example.com/"));
         assert!(title.ends_with('…'));
         assert!(title.contains('界'));
     }

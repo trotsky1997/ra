@@ -102,11 +102,11 @@ Output is the command's combined stdout+stderr; the local-fallback
 path also emits a `[exit=N]` event chunk on the broadcast bus.
 
 Prefer the native `git` and `gh` tools for argv-safe calls to those
-CLIs. Shell-native commands such as `grep`, `find`, and `ls`
-intentionally go through `bash`; Ra does not expose separate built-in
-wrappers for them. When a high-volume `git` or `gh` command needs RTK
-output compression, run it through `bash` so the existing RTK rewrite
-path can apply.
+CLIs. Prefer the extended `grep`, `glob`, `ls`, and `fuzzy` tools for
+structured read-only search and selection. Use `bash` for project
+scripts, tests, and one-off command pipelines. When a high-volume `git`
+or `gh` command needs RTK output compression, run it through `bash` so
+the existing RTK rewrite path can apply.
 
 ## Native CLI tools
 
@@ -321,6 +321,111 @@ Explain one matching node and list its neighboring relationships.
 |---------------|---------|----------|---------|
 | node          | string  | yes      |         |
 | max_neighbors | integer | no       | `20`    |
+
+## Extended tools
+
+These tools cover high-frequency workflows that benefit from typed
+parameters, bounded output, and behavior that is stable across shell
+environments. Read-only traversal uses gitignore-aware defaults and also
+skips common build/VCS directories (`.git`, `target`, `node_modules`)
+unless `no_ignore=true`.
+
+### `grep`
+
+Search file contents and return JSON matches.
+
+```json
+{ "pattern": "Tool", "path": "src", "glob": "*.rs" }
+```
+
+| Field | Type | Required | Default | Notes |
+|-------|------|----------|---------|-------|
+| pattern | string | yes | | regex unless `fixed_string=true` |
+| path | string | no | cwd | file or directory |
+| glob | string | no | | `*.rs` matches nested basenames; slash patterns match relative paths |
+| type | string | no | | file type alias such as `rust`, `python`, `json`, `markdown` |
+| case_insensitive | boolean | no | `false` | |
+| fixed_string | boolean | no | `false` | escape pattern before search |
+| include_hidden | boolean | no | `false` | include hidden paths |
+| no_ignore | boolean | no | `false` | disable gitignore/default skip filtering |
+| max_matches | number | no | `200` | alias: `limit` |
+
+### `glob`
+
+Discover files or directories and return JSON paths.
+
+```json
+{ "pattern": "*.rs", "path": "src", "type": "file", "limit": 100 }
+```
+
+| Field | Type | Required | Default |
+|-------|------|----------|---------|
+| pattern | string | no | `**/*` |
+| path | string | no | cwd |
+| type | string | no | `any`; accepts `file`/`f`, `dir`/`d`, `symlink`/`l` |
+| max_depth | number | no | unlimited |
+| include_hidden | boolean | no | `false` |
+| no_ignore | boolean | no | `false` |
+| limit | number | no | `500` |
+
+### `ls`
+
+List directory entries as JSON.
+
+```json
+{ "path": "src", "recursive": true, "max_depth": 2 }
+```
+
+| Field | Type | Required | Default |
+|-------|------|----------|---------|
+| path | string | no | cwd |
+| recursive | boolean | no | `false` |
+| max_depth | number | no | `3` when recursive |
+| include_hidden | boolean | no | `false` |
+| no_ignore | boolean | no | `false` |
+| limit | number | no | `500` |
+
+### `fuzzy`
+
+Rank or filter candidate strings without opening a TTY UI.
+
+```json
+{ "query": "main", "candidates": ["src/main.rs", "README.md"] }
+```
+
+| Field | Type | Required | Default |
+|-------|------|----------|---------|
+| candidates | array of strings | yes | |
+| query | string | yes | |
+| limit | number | no | `500` |
+| no_sort | boolean | no | `false` |
+| exact | boolean | no | `false` |
+
+### `apply_patch`
+
+Apply a unified diff through a controlled `git apply` subset. The tool
+runs `git apply --check` first; `check_only=true` validates without
+writing. It does not expose index-only, cached-only, reject, or
+unsafe-path modes.
+
+```json
+{
+  "patch": "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new\n"
+}
+```
+
+| Field | Type | Required | Default |
+|-------|------|----------|---------|
+| patch | string | yes | |
+| check_only | boolean | no | `false` |
+| reverse | boolean | no | `false` |
+| strip | number | no | git default |
+| directory | string | no | | safe relative path only |
+| cwd | string | no | process cwd |
+| ignore_whitespace | boolean | no | `false` |
+| whitespace | string | no | `nowarn`, `warn`, `fix`, `error`, or `error-all` |
+| recount | boolean | no | `false` |
+| unidiff_zero | boolean | no | `false` |
 
 ## Adding new tools
 

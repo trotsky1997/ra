@@ -31,6 +31,6 @@ pub use tool_ctx::{
     TerminalRunResult, ToolCtx,
 };
 pub use tools::{
-    default_builtins, AstGrepTool, BashTool, EditTool, GhTool, GitTool, ReadTool, RtkRewriter,
-    Tool, WriteTool,
+    default_builtins, ApplyPatchTool, AstGrepTool, BashTool, EditTool, FuzzyTool, GhTool, GitTool,
+    GlobTool, GrepTool, LsTool, ReadTool, RtkRewriter, Tool, WriteTool,
 };

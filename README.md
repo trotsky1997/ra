@@ -193,14 +193,21 @@ Resolution order: `--config <path>` → `$RA_CONFIG` → `./ra.toml` →
 | `ast_grep` | Read-only structural code search via ast-grep / `sg`; returns JSON matches. |
 | `git`   | Runs native `git` with argv-safe arguments; ACP hosts use the terminal reverse-call with shell quoting. This path does not use RTK. |
 | `gh`    | Runs native GitHub CLI (`gh`) with argv-safe arguments; ACP hosts use the terminal reverse-call with shell quoting. This path does not use RTK. |
+| `grep`  | Structured text search; skips hidden/gitignored/build directories by default and returns JSON matches. |
+| `glob`  | Structured file discovery with glob semantics and bounded JSON output. |
+| `ls`    | Structured directory listing; non-recursive by default, recursive with depth/limit controls. |
+| `fuzzy` | Non-interactive fuzzy candidate filtering/ranking. |
+| `apply_patch` | Controlled `git apply` wrapper that checks patches before applying and uses file approval when present. |
 | `graphify_ensure` / `graphify_impact` / `graphify_update` / `graphify_query` / `graphify_path` / `graphify_explain` | Added when `[graphify]` is enabled; maintains and uses Graphify as Ra's R2A project graph. |
 
 Toggle the catalog via `[tools] builtin = […]`; an empty allow-list
-ships every built-in tool. Prefer `git` / `gh` for those CLIs; `grep`,
-`find`, `ls`, and similar shell commands intentionally go through
-`bash` rather than separate built-in tool definitions. `ast_grep` is
+ships every built-in tool. Basic tools (`read`, `write`, `edit`,
+`bash`) provide the minimal local-work loop; extended tools cover
+high-frequency structured operations where narrower parameters and
+bounded output are better than composing shell strings. `ast_grep` is
 native because it is structured code search rather than a plain shell
-command.
+command. `bash` remains the fallback for project scripts, tests, and
+one-off command pipelines.
 
 Native `git` / `gh` prioritize argv safety over RTK rewriting. If a
 high-volume `git` or `gh` command needs RTK output compression, run it

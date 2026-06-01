@@ -11,15 +11,22 @@
 //! - `ast_grep` — structural code search via ast-grep
 //! - `git`   — run native git with argv-safe arguments
 //! - `gh`    — run native GitHub CLI with argv-safe arguments
+//! - `grep`  — structured text search
+//! - `glob`  — structured file discovery
+//! - `ls`    — structured directory listing
+//! - `fuzzy` — non-interactive fuzzy ranking/filtering
+//! - `apply_patch` — controlled `git apply` wrapper
 
 mod cli;
 mod core;
+mod extended;
 mod fs;
 mod rtk;
 mod search;
 
 pub use cli::{GhTool, GitTool};
 pub use core::{BashTool, ReadTool};
+pub use extended::{ApplyPatchTool, FuzzyTool, GlobTool, GrepTool, LsTool};
 pub use fs::{EditTool, WriteTool};
 pub use rtk::RtkRewriter;
 pub use search::AstGrepTool;
@@ -56,6 +63,21 @@ pub fn default_builtins(allowlist: &[String]) -> Vec<Arc<dyn Tool>> {
     if want("gh") {
         out.push(Arc::new(GhTool));
     }
+    if want("grep") {
+        out.push(Arc::new(GrepTool));
+    }
+    if want("glob") {
+        out.push(Arc::new(GlobTool));
+    }
+    if want("ls") {
+        out.push(Arc::new(LsTool));
+    }
+    if want("fuzzy") {
+        out.push(Arc::new(FuzzyTool));
+    }
+    if want("apply_patch") {
+        out.push(Arc::new(ApplyPatchTool));
+    }
     out
 }
 
@@ -80,7 +102,23 @@ mod tests {
     }
 
     #[test]
+    fn default_catalog_includes_extended_tools() {
+        let names = builtin_names(&[]);
+        for name in ["grep", "glob", "ls", "fuzzy", "apply_patch"] {
+            assert!(
+                names.contains(&name.to_string()),
+                "missing {name}: {names:?}"
+            );
+        }
+    }
+
+    #[test]
     fn allowlist_can_select_native_cli_tools() {
         assert_eq!(builtin_names(&["git", "gh"]), vec!["git", "gh"]);
+    }
+
+    #[test]
+    fn allowlist_can_select_extended_tools_exactly() {
+        assert_eq!(builtin_names(&["grep"]), vec!["grep"]);
     }
 }

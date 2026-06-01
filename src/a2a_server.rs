@@ -547,3 +547,16 @@ pub async fn run(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn agent_card_advertises_push_notifications() {
+        let card = build_card(8080, 50051, false);
+
+        assert_eq!(card.capabilities.streaming, Some(true));
+        assert_eq!(card.capabilities.push_notifications, Some(true));
+    }
+}

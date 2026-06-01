@@ -25,18 +25,6 @@ pub use self::core::Tool;
 /// Build the default tool set, honouring the `[tools] builtin = [...]`
 /// allow-list. An empty allow-list = ship every built-in tool.
 pub fn default_builtins(allowlist: &[String]) -> Vec<Arc<dyn Tool>> {
-    const KNOWN_BUILTINS: &[&str] = &["read", "write", "edit", "bash"];
-
-    if !allowlist.is_empty() {
-        for name in allowlist {
-            if !KNOWN_BUILTINS.contains(&name.as_str()) {
-                eprintln!(
-                    "[ra::tools] unknown builtin tool '{name}' in [tools] builtin allow-list; ignoring"
-                );
-            }
-        }
-    }
-
     let want = |name: &str| allowlist.is_empty() || allowlist.iter().any(|n| n == name);
 
     let mut out: Vec<Arc<dyn Tool>> = Vec::new();

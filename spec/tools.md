@@ -5,8 +5,7 @@ JSON schema below is also embedded in the agent's tool catalog at
 runtime — the LLM sees identical wire shapes.
 
 The set is filtered by the `[tools] builtin = [...]` allow-list in
-`ra.toml`. An empty allow-list ships every built-in tool. Unknown names
-in the allow-list are ignored with a startup warning.
+`ra.toml`. An empty allow-list ships every built-in tool.
 
 ## RTK (Rust Token Killer) integration
 

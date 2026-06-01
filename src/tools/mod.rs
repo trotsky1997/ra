@@ -20,6 +20,7 @@
 //! - `lsp`   — openlsp code intelligence (diagnostics, hover, references, …)
 //! - `webfetch_fetch` — fetch one web page as Markdown via webfetch-cli
 //! - `webfetch_crawl` — crawl bounded documentation via webfetch-cli
+//! - `openspec` — drive the agent-own OpenSpec SDD loop via the openspec CLI
 
 mod cli;
 mod core;
@@ -27,6 +28,7 @@ mod extended;
 mod fs;
 mod jq;
 mod lsp;
+mod openspec;
 mod rtk;
 mod search;
 mod webfetch;
@@ -37,6 +39,7 @@ pub use extended::{ApplyPatchTool, FuzzyTool, GlobTool, GrepTool, LsTool};
 pub use fs::{EditTool, WriteTool};
 pub use jq::JqTool;
 pub use lsp::{resolve_openlsp_binary, LspTool};
+pub use openspec::OpenSpecTool;
 pub use rtk::RtkRewriter;
 pub use search::AstGrepTool;
 pub use webfetch::{WebfetchCrawlTool, WebfetchFetchTool};
@@ -108,6 +111,9 @@ pub fn default_builtins_with_cfg(
     }
     if want("webfetch_crawl") {
         out.push(Arc::new(WebfetchCrawlTool));
+    }
+    if want("openspec") {
+        out.push(Arc::new(OpenSpecTool));
     }
     if want("lsp") {
         if let Some(binary) = resolve_openlsp_binary(openlsp_cfg) {
@@ -183,6 +189,17 @@ mod tests {
     #[test]
     fn allowlist_can_select_webfetch_tools_exactly() {
         assert_eq!(builtin_names(&["webfetch_fetch"]), vec!["webfetch_fetch"]);
+    }
+
+    #[test]
+    fn default_catalog_includes_openspec_tool() {
+        let names = builtin_names(&[]);
+        assert!(names.contains(&"openspec".to_string()));
+    }
+
+    #[test]
+    fn allowlist_can_select_openspec_exactly() {
+        assert_eq!(builtin_names(&["openspec"]), vec!["openspec"]);
     }
 
     #[test]

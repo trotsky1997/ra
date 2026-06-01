@@ -2,16 +2,15 @@
 //!
 //! Each tool is `dyn Tool`-safe and registered at startup. The set is
 //! filtered by the `[tools] builtin = [...]` allow-list in ra.toml — an
-//! empty allow-list ships every tool whose external dependencies are
-//! satisfied (e.g. `grep` only registers when `rg` is on PATH).
+//! empty allow-list ships every tool.
 //!
 //! - `read`  — read a file (ACP fs reverse-call when available)
 //! - `write` — write a file
 //! - `edit`  — replace a literal string inside a file (Claude Code shape)
 //! - `bash`  — run a shell command (ACP terminal reverse-call when available)
-//! - `grep`  — wrap ripgrep (rg) for code search
-//! - `find`  — wrap fd for file discovery
-//! - `ls`    — wrap eza (or exa) for directory listing
+//! - `grep`  — search file contents (pure Rust, no external binary)
+//! - `find`  — find files by name (pure Rust, no external binary)
+//! - `ls`    — list directory contents (pure Rust, no external binary)
 
 mod core;
 mod fs;
@@ -52,22 +51,13 @@ pub fn default_builtins(allowlist: &[String]) -> Vec<Arc<dyn Tool>> {
         out.push(Arc::new(BashTool));
     }
     if want("grep") {
-        match GrepTool::detect() {
-            Some(t) => out.push(Arc::new(t)),
-            None => eprintln!("[ra::tools] skipping 'grep': ripgrep (rg) not on PATH"),
-        }
+        out.push(Arc::new(GrepTool));
     }
     if want("find") {
-        match FindTool::detect() {
-            Some(t) => out.push(Arc::new(t)),
-            None => eprintln!("[ra::tools] skipping 'find': fd / fdfind not on PATH"),
-        }
+        out.push(Arc::new(FindTool));
     }
     if want("ls") {
-        match LsTool::detect() {
-            Some(t) => out.push(Arc::new(t)),
-            None => eprintln!("[ra::tools] skipping 'ls': eza / exa not on PATH"),
-        }
+        out.push(Arc::new(LsTool));
     }
     out
 }

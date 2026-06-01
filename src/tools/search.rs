@@ -1,206 +1,122 @@
-//! External-binary search tools: `grep` (ripgrep), `find` (fd), `ls` (eza).
+//! Pure-Rust search tools: `grep`, `find`, `ls`.
 //!
-//! Each tool detects its binary on PATH at startup via a static probe. If
-//! the binary is missing, `detect()` returns None and the tool registry
-//! drops it with a one-line log; the agent's tool catalog stays valid
-//! and the LLM never sees a tool it can't use.
+//! All three are implemented without any external binary dependency so Ra
+//! works as a true single binary. The implementations use:
 //!
-//! When [`RtkRewriter`](crate::tools::RtkRewriter) is configured on the
-//! ToolCtx, each tool first asks RTK to rewrite the shell-equivalent of
-//! the command it's about to run (`rg ...`, `fd ...`, `eza ...`). If
-//! RTK has a recipe (almost always for these binaries), the rewritten
-//! command runs through `/bin/sh -c` and we get RTK's compressed
-//! output; otherwise we exec the binary directly via argv.
+//! - `ignore::WalkBuilder` for gitignore-aware directory traversal (grep/find/ls)
+//! - `regex` crate for pattern matching (grep/find)
+//! - `globset` for glob patterns (grep --glob, find --glob)
 //!
-//! Output is captured combined stdout+stderr, truncated by the tool to
-//! ~64 KiB so a stray `find /` doesn't blow up the model's context.
+//! Output is truncated to ~64 KiB so a stray wide search doesn't blow up
+//! the model's context.
 
-use crate::events::Event;
 use crate::tool_ctx::ToolCtx;
 use crate::tools::core::Tool;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use globset::{Glob, GlobSet, GlobSetBuilder};
+use ignore::WalkBuilder;
+use regex::RegexBuilder;
 use schemars::{schema_for, JsonSchema};
 use serde::Deserialize;
-use std::path::PathBuf;
-use tokio::process::Command;
+use std::fmt::Write as FmtWrite;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::time::UNIX_EPOCH;
 
-/// Soft cap on captured output (per tool call). Anything larger gets
-/// truncated with a `[…N bytes truncated]` marker.
 const MAX_OUTPUT_BYTES: usize = 64 * 1024;
 
-fn locate(candidates: &[&str]) -> Option<PathBuf> {
-    for name in candidates {
-        if let Ok(p) = which::which(name) {
-            return Some(p);
-        }
-    }
-    None
-}
-
-/// Run a tool by either asking RTK to rewrite its shell-form first, or
-/// executing the argv directly. `argv[0]` is the binary path; the rest
-/// are arguments. `scope` is the ATOF scope label.
-///
-/// `call_id` is used solely so the `[rtk] ...` notice can be threaded
-/// onto the broadcast bus next to the tool's own ToolCallUpdate stream.
-async fn run_with_rtk(
-    argv: Vec<String>,
-    ctx: &ToolCtx,
-    call_id: &str,
-    scope: &'static str,
-) -> Result<String> {
-    let _scope = crate::nemo_obs::tool_scope(scope);
-
-    let rewritten = if ctx.rtk.is_active() {
-        // RTK matches commands by their canonical name. Pass the basename
-        // (so `/usr/bin/rg` looks like `rg`) and normalise the Debian
-        // alias `fdfind` → `fd` so RTK's recipe table catches it.
-        let probe = canonical_probe(&argv);
-        ctx.rtk.rewrite(&probe).await
-    } else {
-        None
-    };
-
-    let out = match rewritten {
-        Some(rewritten) => {
-            let _ = ctx.events.send(Event::ToolCallUpdate {
-                id: call_id.to_string(),
-                chunk: format!("[rtk] {} → {}", canonical_probe(&argv), rewritten),
-            });
-            tokio::process::Command::new("/bin/sh")
-                .arg("-c")
-                .arg(&rewritten)
-                .stdin(std::process::Stdio::null())
-                .output()
-                .await
-                .with_context(|| format!("spawn `{rewritten}`"))?
-        }
-        None => {
-            let mut cmd = Command::new(&argv[0]);
-            for a in &argv[1..] {
-                cmd.arg(a);
-            }
-            cmd.stdin(std::process::Stdio::null())
-                .output()
-                .await
-                .context("spawn external binary")?
-        }
-    };
-    finish_capture(out)
-}
-
-/// Build the shell-form string that RTK's rewrite table looks up. Strips
-/// the binary's directory (`/usr/bin/rg` → `rg`) and aliases the Debian
-/// `fdfind` back to its upstream name `fd` so RTK matches.
-fn canonical_probe(argv: &[String]) -> String {
-    if argv.is_empty() {
-        return String::new();
-    }
-    let mut bin = std::path::Path::new(&argv[0])
-        .file_name()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_else(|| argv[0].clone());
-    if bin == "fdfind" {
-        bin = "fd".into();
-    }
-    let mut argv = argv.to_vec();
-    argv[0] = bin;
-    quote_argv(&argv)
-}
-
-fn finish_capture(out: std::process::Output) -> Result<String> {
-    let mut combined = String::from_utf8_lossy(&out.stdout).into_owned();
-    if !out.stderr.is_empty() {
-        if !combined.is_empty() && !combined.ends_with('\n') {
-            combined.push('\n');
-        }
-        combined.push_str(&String::from_utf8_lossy(&out.stderr));
-    }
-    if combined.len() > MAX_OUTPUT_BYTES {
-        let cut = combined
+fn truncate(mut s: String) -> String {
+    if s.len() > MAX_OUTPUT_BYTES {
+        let cut = s
             .char_indices()
             .map(|(i, _)| i)
             .take_while(|i| *i < MAX_OUTPUT_BYTES)
             .last()
             .unwrap_or(MAX_OUTPUT_BYTES);
-        let dropped = combined.len() - cut;
-        combined.truncate(cut);
-        combined.push_str(&format!("\n[… {dropped} bytes truncated]"));
+        let dropped = s.len() - cut;
+        s.truncate(cut);
+        let _ = write!(s, "\n[… {dropped} bytes truncated]");
     }
-    if combined.is_empty() {
-        if let Some(code) = out.status.code() {
-            if code != 0 {
-                return Ok(format!("(no output, exit {code})"));
-            }
-        }
-    }
-    Ok(combined)
+    s
 }
 
-/// Quote an argv list back into a single shell-safe command string for
-/// RTK to look up by canonical form.
-fn quote_argv(argv: &[String]) -> String {
-    argv.iter()
-        .map(|a| {
-            if a.is_empty()
-                || a.chars().any(|c| {
-                    c.is_whitespace()
-                        || matches!(c, '"' | '\'' | '\\' | '$' | '`' | '*' | '?' | '|' | '&' | ';' | '<' | '>' | '(' | ')' | '[' | ']' | '{' | '}' | '#' | '!')
-                })
-            {
-                let escaped = a.replace('\'', "'\\''");
-                format!("'{escaped}'")
-            } else {
-                a.clone()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
+fn resolve_path(path: Option<&str>) -> PathBuf {
+    match path {
+        Some(p) if !p.is_empty() => PathBuf::from(p),
+        _ => std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+    }
 }
 
-// ---------- GrepTool (ripgrep) --------------------------------------------
+// ---------- GrepTool ---------------------------------------------------------
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct GrepParams {
-    /// Pattern to search for. Interpreted as a regex by ripgrep unless
-    /// `fixed_string=true`.
+    /// Pattern to search for (regex unless `fixed_string=true`).
     pub pattern: String,
-    /// Path or directory to search in. Defaults to the current working
-    /// directory.
+    /// Path or directory to search in. Defaults to cwd.
     #[serde(default)]
     pub path: Option<String>,
-    /// Case-insensitive search (`-i`).
+    /// Case-insensitive search.
     #[serde(default)]
     pub case_insensitive: bool,
-    /// Treat the pattern as a literal string, not a regex (`-F`).
+    /// Treat the pattern as a literal string, not a regex.
     #[serde(default)]
     pub fixed_string: bool,
-    /// Glob filter passed to `--glob` (e.g. `*.rs`).
+    /// Glob filter (e.g. `*.rs`). Only files matching this glob are searched.
     #[serde(default)]
     pub glob: Option<String>,
-    /// File-type filter passed to `--type` (e.g. `rust`, `py`).
+    /// File-type filter (e.g. `rust` → `*.rs`, `py` → `*.py`).
     #[serde(default, rename = "type")]
     pub file_type: Option<String>,
-    /// Cap on lines printed per file (`--max-count`).
+    /// Cap on lines printed per file.
     #[serde(default)]
     pub max_count: Option<u32>,
-    /// Show N lines of context around each match (`--context`).
+    /// Show N lines of context around each match.
     #[serde(default)]
     pub context: Option<u32>,
-    /// List matching filenames only (`-l`).
+    /// List matching filenames only.
     #[serde(default)]
     pub files_with_matches: bool,
 }
 
-pub struct GrepTool {
-    bin: PathBuf,
-}
+pub struct GrepTool;
 
 impl GrepTool {
     pub fn detect() -> Option<Self> {
-        Some(Self { bin: locate(&["rg"])? })
+        Some(Self)
     }
+}
+
+/// Map a file-type name to a glob extension pattern.
+fn type_to_glob(t: &str) -> Option<&'static str> {
+    match t {
+        "rust" | "rs" => Some("*.rs"),
+        "py" | "python" => Some("*.py"),
+        "js" | "javascript" => Some("*.js"),
+        "ts" | "typescript" => Some("*.ts"),
+        "go" => Some("*.go"),
+        "c" => Some("*.c"),
+        "cpp" | "cxx" => Some("*.cpp"),
+        "java" => Some("*.java"),
+        "rb" | "ruby" => Some("*.rb"),
+        "sh" | "bash" => Some("*.sh"),
+        "toml" => Some("*.toml"),
+        "yaml" | "yml" => Some("*.yaml"),
+        "json" => Some("*.json"),
+        "md" | "markdown" => Some("*.md"),
+        "html" => Some("*.html"),
+        "css" => Some("*.css"),
+        _ => None,
+    }
+}
+
+fn build_glob_set(globs: &[&str]) -> Result<GlobSet> {
+    let mut builder = GlobSetBuilder::new();
+    for g in globs {
+        builder.add(Glob::new(g).with_context(|| format!("invalid glob: {g}"))?);
+    }
+    builder.build().context("build globset")
 }
 
 #[async_trait]
@@ -209,10 +125,10 @@ impl Tool for GrepTool {
         "grep"
     }
     fn description(&self) -> &str {
-        "Search file contents using ripgrep (rg). Recursive, respects \
-         .gitignore by default, fast on large repos. Use `pattern` plus \
-         optional `path`, `glob`, `type`, `case_insensitive`, \
-         `fixed_string`, `context`, `max_count`, `files_with_matches`."
+        "Search file contents using built-in regex engine. Recursive, respects \
+         .gitignore by default. Use `pattern` plus optional `path`, `glob`, \
+         `type`, `case_insensitive`, `fixed_string`, `context`, `max_count`, \
+         `files_with_matches`."
     }
     fn schema(&self) -> serde_json::Value {
         serde_json::to_value(schema_for!(GrepParams)).unwrap()
@@ -220,54 +136,130 @@ impl Tool for GrepTool {
 
     async fn execute(
         &self,
-        call_id: &str,
+        _call_id: &str,
         input: serde_json::Value,
-        ctx: &ToolCtx,
+        _ctx: &ToolCtx,
     ) -> Result<String> {
-        let p: GrepParams =
-            serde_json::from_value(input).context("invalid params for grep")?;
+        let _scope = crate::nemo_obs::tool_scope("grep");
+        let p: GrepParams = serde_json::from_value(input).context("invalid params for grep")?;
 
-        let mut argv: Vec<String> = vec![
-            self.bin.display().to_string(),
-            "--color=never".into(),
-            "--line-number".into(),
-        ];
-        if p.case_insensitive {
-            argv.push("-i".into());
-        }
-        if p.fixed_string {
-            argv.push("-F".into());
-        }
-        if p.files_with_matches {
-            argv.push("-l".into());
-        }
+        let pattern = if p.fixed_string {
+            regex::escape(&p.pattern)
+        } else {
+            p.pattern.clone()
+        };
+        let re = RegexBuilder::new(&pattern)
+            .case_insensitive(p.case_insensitive)
+            .build()
+            .with_context(|| format!("invalid regex: {}", p.pattern))?;
+
+        // Build glob filter
+        let mut glob_patterns: Vec<&str> = Vec::new();
+        let glob_str;
         if let Some(g) = &p.glob {
-            argv.push("--glob".into());
-            argv.push(g.clone());
+            glob_str = g.clone();
+            glob_patterns.push(&glob_str);
         }
+        let type_glob;
         if let Some(t) = &p.file_type {
-            argv.push("--type".into());
-            argv.push(t.clone());
+            if let Some(g) = type_to_glob(t) {
+                type_glob = g.to_string();
+                glob_patterns.push(&type_glob);
+            }
         }
-        if let Some(n) = p.max_count {
-            argv.push("--max-count".into());
-            argv.push(n.to_string());
-        }
-        if let Some(n) = p.context {
-            argv.push("--context".into());
-            argv.push(n.to_string());
-        }
-        argv.push("--".into());
-        argv.push(p.pattern.clone());
-        if let Some(path) = &p.path {
-            argv.push(path.clone());
+        let glob_set = if glob_patterns.is_empty() {
+            None
+        } else {
+            Some(build_glob_set(&glob_patterns)?)
+        };
+
+        let root = resolve_path(p.path.as_deref());
+        let context_lines = p.context.unwrap_or(0) as usize;
+        let max_count = p.max_count.map(|n| n as usize);
+
+        let mut out = String::new();
+        let mut total_matches: usize = 0;
+
+        let walker = WalkBuilder::new(&root)
+            .hidden(false)
+            .git_ignore(true)
+            .git_global(true)
+            .git_exclude(true)
+            .build();
+
+        for entry in walker {
+            let entry = match entry {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+            if entry.file_type().map(|t| !t.is_file()).unwrap_or(true) {
+                continue;
+            }
+            let path = entry.path();
+
+            // Apply glob filter against filename
+            if let Some(gs) = &glob_set {
+                let fname = path.file_name().unwrap_or_default();
+                if !gs.is_match(fname) {
+                    continue;
+                }
+            }
+
+            let content = match fs::read(path) {
+                Ok(b) => b,
+                Err(_) => continue,
+            };
+            // Skip binary files
+            if content.contains(&0u8) {
+                continue;
+            }
+            let text = String::from_utf8_lossy(&content);
+            let lines: Vec<&str> = text.lines().collect();
+
+            let mut file_matches = 0usize;
+            let mut printed_lines: std::collections::HashSet<usize> = std::collections::HashSet::new();
+
+            for (i, line) in lines.iter().enumerate() {
+                if re.is_match(line) {
+                    file_matches += 1;
+                    if let Some(mc) = max_count {
+                        if file_matches > mc {
+                            break;
+                        }
+                    }
+                    total_matches += 1;
+
+                    if p.files_with_matches {
+                        let _ = writeln!(out, "{}", path.display());
+                        break;
+                    }
+
+                    // Context range
+                    let start = i.saturating_sub(context_lines);
+                    let end = (i + context_lines + 1).min(lines.len());
+                    for j in start..end {
+                        if printed_lines.insert(j) {
+                            let sep = if j == i { ":" } else { "-" };
+                            let _ = writeln!(out, "{}:{}{}", path.display(), j + 1, sep);
+                            let _ = writeln!(out, "{}", lines[j]);
+                        }
+                    }
+                    if out.len() > MAX_OUTPUT_BYTES {
+                        return Ok(truncate(out));
+                    }
+                }
+            }
+            let _ = total_matches; // suppress unused warning
         }
 
-        run_with_rtk(argv, ctx, call_id, "grep").await
+        if out.is_empty() {
+            return Ok("(no matches)".into());
+        }
+        Ok(truncate(out))
     }
 }
 
-// ---------- FindTool (fd) --------------------------------------------------
+// ---------- FindTool ---------------------------------------------------------
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct FindParams {
@@ -275,38 +267,34 @@ pub struct FindParams {
     /// Empty / omitted lists everything under `path`.
     #[serde(default)]
     pub pattern: Option<String>,
-    /// Directory to search in. Defaults to the current working directory.
+    /// Directory to search in. Defaults to cwd.
     #[serde(default)]
     pub path: Option<String>,
-    /// Treat `pattern` as a glob (`--glob`).
+    /// Treat `pattern` as a glob.
     #[serde(default)]
     pub glob: bool,
-    /// Restrict to files (`f`), directories (`d`), symlinks (`l`), or
-    /// executables (`x`). Maps to `--type`.
+    /// Restrict to `f` (files), `d` (directories), `l` (symlinks), `x` (executables).
     #[serde(default, rename = "type")]
     pub file_type: Option<String>,
     /// File extension to filter on (e.g. `rs`).
     #[serde(default)]
     pub extension: Option<String>,
-    /// Include hidden files / directories (`--hidden`).
+    /// Include hidden files / directories.
     #[serde(default)]
     pub hidden: bool,
-    /// Don't honour .gitignore (`--no-ignore`).
+    /// Don't honour .gitignore.
     #[serde(default)]
     pub no_ignore: bool,
-    /// Cap on results (`--max-results`).
+    /// Cap on results.
     #[serde(default)]
     pub max_results: Option<u32>,
 }
 
-pub struct FindTool {
-    bin: PathBuf,
-}
+pub struct FindTool;
 
 impl FindTool {
     pub fn detect() -> Option<Self> {
-        // Debian ships fd as `fdfind` to avoid colliding with the kernel's `fd`.
-        Some(Self { bin: locate(&["fd", "fdfind"])? })
+        Some(Self)
     }
 }
 
@@ -316,10 +304,9 @@ impl Tool for FindTool {
         "find"
     }
     fn description(&self) -> &str {
-        "Find files / directories by name using fd. Honours .gitignore \
-         by default. Use `pattern` (regex unless `glob=true`), optional \
-         `path`, `type` (f/d/l/x), `extension`, `hidden`, `no_ignore`, \
-         `max_results`."
+        "Find files / directories by name. Honours .gitignore by default. \
+         Use `pattern` (regex unless `glob=true`), optional `path`, \
+         `type` (f/d/l/x), `extension`, `hidden`, `no_ignore`, `max_results`."
     }
     fn schema(&self) -> serde_json::Value {
         serde_json::to_value(schema_for!(FindParams)).unwrap()
@@ -327,81 +314,266 @@ impl Tool for FindTool {
 
     async fn execute(
         &self,
-        call_id: &str,
+        _call_id: &str,
         input: serde_json::Value,
-        ctx: &ToolCtx,
+        _ctx: &ToolCtx,
     ) -> Result<String> {
-        let p: FindParams =
-            serde_json::from_value(input).context("invalid params for find")?;
+        let _scope = crate::nemo_obs::tool_scope("find");
+        let p: FindParams = serde_json::from_value(input).context("invalid params for find")?;
 
-        let mut argv: Vec<String> = vec![
-            self.bin.display().to_string(),
-            "--color=never".into(),
-        ];
-        if p.glob {
-            argv.push("--glob".into());
+        let root = resolve_path(p.path.as_deref());
+        let max_results = p.max_results.map(|n| n as usize);
+
+        // Compile pattern
+        enum PatternMatcher {
+            None,
+            Regex(regex::Regex),
+            Glob(GlobSet),
         }
-        if p.hidden {
-            argv.push("--hidden".into());
-        }
-        if p.no_ignore {
-            argv.push("--no-ignore".into());
-        }
-        if let Some(t) = &p.file_type {
-            argv.push("--type".into());
-            argv.push(t.clone());
-        }
-        if let Some(ext) = &p.extension {
-            argv.push("--extension".into());
-            argv.push(ext.clone());
-        }
-        if let Some(n) = p.max_results {
-            argv.push("--max-results".into());
-            argv.push(n.to_string());
-        }
-        // fd's positional args are: PATTERN [PATH...]. Pass empty string
-        // when listing-only so PATH still applies.
-        argv.push(p.pattern.clone().unwrap_or_default());
-        if let Some(path) = &p.path {
-            argv.push(path.clone());
+        let matcher = match &p.pattern {
+            None => PatternMatcher::None,
+            Some(s) if s.is_empty() => PatternMatcher::None,
+            Some(pat) if p.glob => {
+                let gs = build_glob_set(&[pat])?;
+                PatternMatcher::Glob(gs)
+            }
+            Some(pat) => {
+                let re = regex::Regex::new(pat)
+                    .with_context(|| format!("invalid regex: {pat}"))?;
+                PatternMatcher::Regex(re)
+            }
+        };
+
+        let walker = WalkBuilder::new(&root)
+            .hidden(!p.hidden)
+            .git_ignore(!p.no_ignore)
+            .git_global(!p.no_ignore)
+            .git_exclude(!p.no_ignore)
+            .build();
+
+        let mut out = String::new();
+        let mut count = 0usize;
+
+        for entry in walker {
+            let entry = match entry {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+
+            let ft = entry.file_type();
+            // Type filter
+            if let Some(type_filter) = &p.file_type {
+                let ok = match type_filter.as_str() {
+                    "f" => ft.as_ref().map(|t| t.is_file()).unwrap_or(false),
+                    "d" => ft.as_ref().map(|t| t.is_dir()).unwrap_or(false),
+                    "l" => ft.as_ref().map(|t| t.is_symlink()).unwrap_or(false),
+                    "x" => {
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs::PermissionsExt;
+                            ft.as_ref().map(|t| t.is_file()).unwrap_or(false)
+                                && fs::metadata(entry.path())
+                                    .map(|m| m.permissions().mode() & 0o111 != 0)
+                                    .unwrap_or(false)
+                        }
+                        #[cfg(not(unix))]
+                        { ft.as_ref().map(|t| t.is_file()).unwrap_or(false) }
+                    }
+                    _ => true,
+                };
+                if !ok {
+                    continue;
+                }
+            }
+
+            let path = entry.path();
+
+            // Extension filter
+            if let Some(ext) = &p.extension {
+                let file_ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                if file_ext != ext.trim_start_matches('.') {
+                    continue;
+                }
+            }
+
+            // Pattern filter (against filename only)
+            let fname = path.file_name().unwrap_or_default().to_string_lossy();
+            let matches = match &matcher {
+                PatternMatcher::None => true,
+                PatternMatcher::Regex(re) => re.is_match(&fname),
+                PatternMatcher::Glob(gs) => gs.is_match(fname.as_ref()),
+            };
+            if !matches {
+                continue;
+            }
+
+            let _ = writeln!(out, "{}", path.display());
+            count += 1;
+            if let Some(max) = max_results {
+                if count >= max {
+                    break;
+                }
+            }
+            if out.len() > MAX_OUTPUT_BYTES {
+                return Ok(truncate(out));
+            }
         }
 
-        run_with_rtk(argv, ctx, call_id, "find").await
+        if out.is_empty() {
+            return Ok("(no results)".into());
+        }
+        Ok(truncate(out))
     }
 }
 
-// ---------- LsTool (eza / exa) --------------------------------------------
+// ---------- LsTool -----------------------------------------------------------
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct LsParams {
-    /// Path to list. Defaults to the current working directory.
+    /// Path to list. Defaults to cwd.
     #[serde(default)]
     pub path: Option<String>,
-    /// Show hidden entries (`-a`).
+    /// Show hidden entries.
     #[serde(default)]
     pub all: bool,
-    /// Long format with size + permissions (`-l`).
+    /// Long format with size + permissions.
     #[serde(default)]
     pub long: bool,
-    /// Render as a tree (`--tree`).
+    /// Render as a tree.
     #[serde(default)]
     pub tree: bool,
-    /// Recurse depth (`--level`); only meaningful with `tree=true`.
+    /// Recurse depth (only meaningful with `tree=true`).
     #[serde(default)]
     pub level: Option<u32>,
-    /// Sort by modified time (`--sort=modified`).
+    /// Sort by modified time (newest first).
     #[serde(default)]
     pub sort_modified: bool,
 }
 
-pub struct LsTool {
-    bin: PathBuf,
-}
+pub struct LsTool;
 
 impl LsTool {
     pub fn detect() -> Option<Self> {
-        // eza is the actively-maintained successor; exa is the original.
-        Some(Self { bin: locate(&["eza", "exa"])? })
+        Some(Self)
+    }
+}
+
+struct DirEntry {
+    path: PathBuf,
+    name: String,
+    is_dir: bool,
+    size: u64,
+    modified: u64,
+    #[cfg(unix)]
+    mode: u32,
+}
+
+fn read_dir_entries(dir: &Path, show_hidden: bool) -> Vec<DirEntry> {
+    let mut entries = Vec::new();
+    let rd = match fs::read_dir(dir) {
+        Ok(r) => r,
+        Err(_) => return entries,
+    };
+    for e in rd.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if !show_hidden && name.starts_with('.') {
+            continue;
+        }
+        let meta = match e.metadata() {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        let modified = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        #[cfg(unix)]
+        let mode = {
+            use std::os::unix::fs::PermissionsExt;
+            meta.permissions().mode()
+        };
+        entries.push(DirEntry {
+            path: e.path(),
+            name,
+            is_dir: meta.is_dir(),
+            size: meta.len(),
+            modified,
+            #[cfg(unix)]
+            mode,
+        });
+    }
+    entries
+}
+
+fn format_size(bytes: u64) -> String {
+    if bytes < 1024 {
+        format!("{bytes}B")
+    } else if bytes < 1024 * 1024 {
+        format!("{:.1}K", bytes as f64 / 1024.0)
+    } else if bytes < 1024 * 1024 * 1024 {
+        format!("{:.1}M", bytes as f64 / (1024.0 * 1024.0))
+    } else {
+        format!("{:.1}G", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+    }
+}
+
+#[cfg(unix)]
+fn format_mode(mode: u32, is_dir: bool) -> String {
+    let d = if is_dir { 'd' } else { '-' };
+    let bits = [
+        (0o400, 'r'), (0o200, 'w'), (0o100, 'x'),
+        (0o040, 'r'), (0o020, 'w'), (0o010, 'x'),
+        (0o004, 'r'), (0o002, 'w'), (0o001, 'x'),
+    ];
+    let perms: String = bits.iter().map(|(b, c)| if mode & b != 0 { *c } else { '-' }).collect();
+    format!("{d}{perms}")
+}
+
+fn ls_flat(dir: &Path, params: &LsParams, out: &mut String) {
+    let mut entries = read_dir_entries(dir, params.all);
+    if params.sort_modified {
+        entries.sort_by(|a, b| b.modified.cmp(&a.modified));
+    } else {
+        entries.sort_by(|a, b| a.name.cmp(&b.name));
+    }
+    for e in &entries {
+        if params.long {
+            #[cfg(unix)]
+            let mode_str = format_mode(e.mode, e.is_dir);
+            #[cfg(not(unix))]
+            let mode_str = if e.is_dir { "d---------".to_string() } else { "----------".to_string() };
+            let size_str = if e.is_dir { "     -".to_string() } else { format!("{:>6}", format_size(e.size)) };
+            let suffix = if e.is_dir { "/" } else { "" };
+            let _ = writeln!(out, "{mode_str} {size_str}  {}{suffix}", e.name);
+        } else {
+            let suffix = if e.is_dir { "/" } else { "" };
+            let _ = writeln!(out, "{}{suffix}", e.name);
+        }
+    }
+}
+
+fn ls_tree(dir: &Path, params: &LsParams, prefix: &str, depth: u32, max_depth: u32, out: &mut String) {
+    let mut entries = read_dir_entries(dir, params.all);
+    if params.sort_modified {
+        entries.sort_by(|a, b| b.modified.cmp(&a.modified));
+    } else {
+        entries.sort_by(|a, b| a.name.cmp(&b.name));
+    }
+    let len = entries.len();
+    for (i, e) in entries.iter().enumerate() {
+        let is_last = i + 1 == len;
+        let connector = if is_last { "└── " } else { "├── " };
+        let suffix = if e.is_dir { "/" } else { "" };
+        let _ = writeln!(out, "{prefix}{connector}{}{suffix}", e.name);
+        if e.is_dir && depth < max_depth {
+            let new_prefix = format!("{}{}", prefix, if is_last { "    " } else { "│   " });
+            ls_tree(&e.path, params, &new_prefix, depth + 1, max_depth, out);
+        }
+        if out.len() > MAX_OUTPUT_BYTES {
+            return;
+        }
     }
 }
 
@@ -411,8 +583,8 @@ impl Tool for LsTool {
         "ls"
     }
     fn description(&self) -> &str {
-        "List directory contents using eza (or exa). Optional `path`, \
-         `all`, `long`, `tree`, `level`, `sort_modified`."
+        "List directory contents. Optional `path`, `all`, `long`, `tree`, \
+         `level`, `sort_modified`."
     }
     fn schema(&self) -> serde_json::Value {
         serde_json::to_value(schema_for!(LsParams)).unwrap()
@@ -420,37 +592,28 @@ impl Tool for LsTool {
 
     async fn execute(
         &self,
-        call_id: &str,
+        _call_id: &str,
         input: serde_json::Value,
-        ctx: &ToolCtx,
+        _ctx: &ToolCtx,
     ) -> Result<String> {
-        let p: LsParams =
-            serde_json::from_value(input).context("invalid params for ls")?;
+        let _scope = crate::nemo_obs::tool_scope("ls");
+        let p: LsParams = serde_json::from_value(input).context("invalid params for ls")?;
 
-        let mut argv: Vec<String> = vec![
-            self.bin.display().to_string(),
-            "--color=never".into(),
-        ];
-        if p.all {
-            argv.push("-a".into());
-        }
-        if p.long {
-            argv.push("-l".into());
-        }
+        let dir = resolve_path(p.path.as_deref());
+        let mut out = String::new();
+
         if p.tree {
-            argv.push("--tree".into());
-        }
-        if let Some(lv) = p.level {
-            argv.push("--level".into());
-            argv.push(lv.to_string());
-        }
-        if p.sort_modified {
-            argv.push("--sort=modified".into());
-        }
-        if let Some(path) = &p.path {
-            argv.push(path.clone());
+            let max_depth = p.level.unwrap_or(3);
+            let root_name = dir.file_name().unwrap_or(dir.as_os_str()).to_string_lossy();
+            let _ = writeln!(out, "{}/", root_name);
+            ls_tree(&dir, &p, "", 0, max_depth, &mut out);
+        } else {
+            ls_flat(&dir, &p, &mut out);
         }
 
-        run_with_rtk(argv, ctx, call_id, "ls").await
+        if out.is_empty() {
+            return Ok("(empty directory)".into());
+        }
+        Ok(truncate(out))
     }
 }

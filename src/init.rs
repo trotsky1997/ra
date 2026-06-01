@@ -35,10 +35,10 @@ banner = true
 # Empty means: enable every built-in tool.
 # Basic tools: read, write, edit, bash.
 # Structured search tools: ast_grep.
-# Native CLI tools: git, gh.
+# Native CLI tools: git, gh, jq.
 # Extended tools: grep, glob, ls, fuzzy, apply_patch.
 # Web docs tools: webfetch_fetch, webfetch_crawl.
-# builtin = ["read", "write", "edit", "bash", "ast_grep", "git", "gh", "grep", "glob", "ls", "fuzzy", "apply_patch", "webfetch_fetch", "webfetch_crawl"]
+# builtin = ["read", "write", "edit", "bash", "ast_grep", "git", "gh", "jq", "grep", "glob", "ls", "fuzzy", "apply_patch", "webfetch_fetch", "webfetch_crawl"]
 builtin = []
 
 [skills]

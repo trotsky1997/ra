@@ -11,6 +11,7 @@
 //! - `ast_grep` — structural code search via ast-grep
 //! - `git`   — run native git with argv-safe arguments
 //! - `gh`    — run native GitHub CLI with argv-safe arguments
+//! - `jq`    — run jq filters with argv-safe stdin
 //! - `grep`  — structured text search
 //! - `glob`  — structured file discovery
 //! - `ls`    — structured directory listing
@@ -24,6 +25,7 @@ mod cli;
 mod core;
 mod extended;
 mod fs;
+mod jq;
 mod lsp;
 mod rtk;
 mod search;
@@ -33,6 +35,7 @@ pub use cli::{GhTool, GitTool};
 pub use core::{BashTool, ReadTool};
 pub use extended::{ApplyPatchTool, FuzzyTool, GlobTool, GrepTool, LsTool};
 pub use fs::{EditTool, WriteTool};
+pub use jq::JqTool;
 pub use lsp::{resolve_openlsp_binary, LspTool};
 pub use rtk::RtkRewriter;
 pub use search::AstGrepTool;
@@ -81,6 +84,9 @@ pub fn default_builtins_with_cfg(
     }
     if want("gh") {
         out.push(Arc::new(GhTool));
+    }
+    if want("jq") {
+        out.push(Arc::new(JqTool));
     }
     if want("grep") {
         out.push(Arc::new(GrepTool));
@@ -149,6 +155,17 @@ mod tests {
     #[test]
     fn allowlist_can_select_native_cli_tools() {
         assert_eq!(builtin_names(&["git", "gh"]), vec!["git", "gh"]);
+    }
+
+    #[test]
+    fn default_catalog_includes_jq_tool() {
+        let names = builtin_names(&[]);
+        assert!(names.contains(&"jq".to_string()));
+    }
+
+    #[test]
+    fn allowlist_can_select_jq_exactly() {
+        assert_eq!(builtin_names(&["jq"]), vec!["jq"]);
     }
 
     #[test]

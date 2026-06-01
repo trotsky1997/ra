@@ -39,6 +39,7 @@ api_key_env = "ANTHROPIC_API_KEY"
 #   ast_grep — structural code search via ast-grep / verified sg alias
 #   git    — run native git with argv-safe arguments
 #   gh     — run native GitHub CLI with argv-safe arguments
+#   jq     — run jq filters against inline JSON or a JSON file
 #   grep   — structured text search
 #   glob   — structured file discovery
 #   ls     — structured directory listing
@@ -48,7 +49,7 @@ api_key_env = "ANTHROPIC_API_KEY"
 #   webfetch_crawl — crawl bounded docs as Markdown via webfetch-cli
 # An empty list (or omitted section) ships every built-in tool.
 [tools]
-# builtin = ["read", "write", "edit", "bash", "ast_grep", "git", "gh", "grep", "glob", "ls", "fuzzy", "apply_patch", "webfetch_fetch", "webfetch_crawl"]
+# builtin = ["read", "write", "edit", "bash", "ast_grep", "git", "gh", "jq", "grep", "glob", "ls", "fuzzy", "apply_patch", "webfetch_fetch", "webfetch_crawl"]
 builtin = []
 
 # ─── Skills (Claude Code / agentskills.io) ──────────────────────────

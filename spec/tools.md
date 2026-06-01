@@ -111,11 +111,11 @@ them.
 
 Search code with [ast-grep](https://ast-grep.github.io/) and return
 JSON. This tool shells out directly to `ast-grep run --json=stream`
-(or `sg` when `ast-grep` is not on PATH), parses the JSON stream, and
-returns a stable object. Relative paths are resolved against the
-session cwd. Exit status `1` with empty stderr means “no matches” and
-is returned as an empty result rather than an error; status `1` with
-stderr is treated as an ast-grep error.
+(or an `sg` alias whose `--version` output identifies it as ast-grep),
+parses the JSON stream, and returns a stable object. Relative paths are
+resolved against the session cwd. Exit status `1` with empty stderr
+means “no matches” and is returned as an empty result rather than an
+error; status `1` with stderr is treated as an ast-grep error.
 
 ```json
 {
@@ -156,7 +156,7 @@ Returned shape:
 Errors:
 - `ast_grep requires a non-empty pattern`
 - `context conflicts with before/after`
-- `ast-grep not found on PATH; install ast-grep or sg to use ast_grep`
+- `ast-grep not found on PATH; install ast-grep or an ast-grep sg alias to use ast_grep`
 - `ast-grep exited with status N: <output>`
 
 ## Adding new tools

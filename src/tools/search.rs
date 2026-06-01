@@ -214,9 +214,45 @@ fn validate_query(params: &AstGrepParams) -> Result<()> {
 }
 
 fn find_ast_grep_binary() -> Result<PathBuf> {
-    which::which("ast-grep")
-        .or_else(|_| which::which("sg"))
-        .context("ast-grep not found on PATH; install `ast-grep` or `sg` to use ast_grep")
+    let mut rejected = Vec::new();
+    for name in ["ast-grep", "sg"] {
+        let Ok(path) = which::which(name) else {
+            continue;
+        };
+        match is_ast_grep_binary(&path) {
+            Ok(true) => return Ok(path),
+            Ok(false) => rejected.push(format!(
+                "`{}` at {} did not report ast-grep from --version",
+                name,
+                path.display()
+            )),
+            Err(e) => rejected.push(format!("`{}` at {}: {e:#}", name, path.display())),
+        }
+    }
+
+    let mut msg =
+        "ast-grep not found on PATH; install `ast-grep` or an ast-grep `sg` alias to use ast_grep"
+            .to_string();
+    if !rejected.is_empty() {
+        msg.push_str("; rejected candidates: ");
+        msg.push_str(&rejected.join("; "));
+    }
+    Err(anyhow!(msg))
+}
+
+fn is_ast_grep_binary(binary: &Path) -> Result<bool> {
+    let output = std::process::Command::new(binary)
+        .arg("--version")
+        .stdin(Stdio::null())
+        .output()
+        .with_context(|| format!("run `{}` --version", binary.display()))?;
+    let mut version = String::from_utf8_lossy(&output.stdout).into_owned();
+    version.push_str(&String::from_utf8_lossy(&output.stderr));
+    Ok(output.status.success() && looks_like_ast_grep_version(&version))
+}
+
+fn looks_like_ast_grep_version(version: &str) -> bool {
+    version.to_ascii_lowercase().contains("ast-grep")
 }
 
 async fn run_ast_grep(
@@ -565,6 +601,14 @@ mod tests {
         params.context = Some(1);
         params.before = Some(1);
         assert!(AstGrepInvocation::from_params(params).is_err());
+    }
+
+    #[test]
+    fn recognizes_only_ast_grep_version_output() {
+        assert!(looks_like_ast_grep_version("ast-grep 0.42.1"));
+        assert!(looks_like_ast_grep_version("AST-GREP 0.42.1"));
+        assert!(!looks_like_ast_grep_version("sg from shadow-utils 4.13"));
+        assert!(!looks_like_ast_grep_version("util-linux sg 2.39"));
     }
 
     #[test]

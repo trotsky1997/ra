@@ -7,10 +7,11 @@ Ra advertises skills support, but its current definition is still closer to an o
 ## Goals & Success Metrics
 
 - Existing Claude Code project and personal skills load in Ra without additional configuration.
+- Project skills load when Ra starts in a nested directory below the repository root.
 - Skills without `name` or `description` frontmatter remain usable using Claude Code fallbacks.
 - Skills marked `disable-model-invocation: true` do not appear in the model-facing skills catalog but can still be directly invoked.
 - Skills marked `user-invocable: false` remain model-visible when otherwise eligible but are not slash-invocable.
-- Focused tests cover discovery, parsing, catalog visibility, and slash expansion.
+- Focused tests cover discovery, parsing, catalog visibility, and slash expansion including argument substitution.
 
 ## User Personas & Stories
 
@@ -23,11 +24,14 @@ Ra advertises skills support, but its current definition is still closer to an o
 | Priority | Requirement |
 | --- | --- |
 | Must | Auto-discover project and personal `.claude/skills/**/SKILL.md` paths in addition to Ra and universal skills paths. |
+| Must | Discover project skills from cwd upward to the repository root. |
 | Must | Derive the slash command name from the skill directory name. |
 | Must | Treat `name` as an optional display name, falling back to the command name. |
 | Must | Treat `description` as optional, falling back to the first markdown paragraph. |
 | Must | Hide `disable-model-invocation: true` skills from the system prompt catalog. |
 | Must | Hide `user-invocable: false` skills from slash-command templates. |
+| Must | Render `$ARGUMENTS`, `$ARGUMENTS[N]`, `$N`, and named `$name` placeholders for directly invoked skills. |
+| Must | Append `ARGUMENTS: <raw args>` for direct skill invocation when the skill body has no placeholders. |
 | Should | Include `when_to_use` in model-facing descriptions. |
 | Could | Preserve parsed Claude Code frontmatter fields for future runtime enforcement. |
 | Won't | Implement subagent execution, model/effort overrides, scoped tool permissions, or dynamic shell context injection in this change. |

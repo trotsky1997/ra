@@ -8,3 +8,6 @@
 - [x] Add focused tests for discovery, optional frontmatter, model visibility, and slash invocation.
 - [x] Run formatting and focused/full test suites.
 - [x] Open a GitHub issue and PR for review.
+- [x] Add skill argument placeholder rendering and no-placeholder fallback.
+- [x] Add cwd-to-repo-root project skill discovery.
+- [x] Re-run focused/full validation after review fixes.

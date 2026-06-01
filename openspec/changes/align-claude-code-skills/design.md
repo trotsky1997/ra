@@ -29,9 +29,21 @@ Alternative considered: keep using frontmatter `name` as the key. This would pre
 
 ### Reuse prompt templates for direct invocation
 
-`ResourceBundle::prompt_map` already feeds a shared slash-command dispatcher used by ACP, A2A, and TUI. Add user-invocable skill bodies to the same map, then let `/skill args` expand through existing runner behavior.
+`ResourceBundle::prompt_map` already feeds a shared slash-command dispatcher used by ACP, A2A, and TUI. Add user-invocable skill bodies to the same map as typed `SlashTemplate` values so the runner can preserve legacy prompt-template behavior while rendering Claude Code skill arguments.
 
 Alternative considered: add a separate Skill tool and runtime state. That is closer to Claude Code's internal architecture but larger than needed for the current behavior contract.
+
+### Render skill arguments in the runner
+
+Skill templates should replace `$ARGUMENTS`, positional `$0`/`$1` placeholders, and named placeholders declared by frontmatter `arguments`. If a skill receives arguments but contains no placeholders, append `ARGUMENTS: <raw args>` to match Claude Code's direct invocation fallback. Plain prompt templates keep the legacy behavior of appending raw args without the `ARGUMENTS:` label.
+
+Alternative considered: perform argument rendering while building the resource bundle. That cannot work because rendering needs the user's per-invocation arguments.
+
+### Walk project skills from cwd to repository root
+
+Default project discovery should include `.claude/skills` and `.agents/skills` directories from the launch cwd up through the repository root, mirroring the existing AGENTS.md walking pattern. Global `~/.claude/skills` and `~/.agents/skills` remain single fixed globs.
+
+Alternative considered: rely on `./.claude/skills/**/SKILL.md` only. That misses repo-root skills when Ra is launched from nested package directories.
 
 ### Model catalog filters out disabled skills
 

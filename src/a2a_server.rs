@@ -46,6 +46,7 @@ use crate::model::Model;
 use crate::nemo_obs;
 use crate::session::Session;
 use crate::session_runner::{RunOutcome, RunnerEvent, RunnerHost, SessionRunner};
+use crate::skills::SlashTemplate;
 use crate::store::SessionStore;
 use crate::tools::Tool;
 
@@ -63,7 +64,7 @@ pub struct A2aState {
     /// System prompt seeded into every new Session, mirroring acp_server.
     system_prompt: Option<String>,
     /// Slash command templates handed to the SessionRunner.
-    prompt_templates: Arc<std::collections::HashMap<String, String>>,
+    prompt_templates: Arc<std::collections::HashMap<String, SlashTemplate>>,
     /// Optional lifecycle hooks attached to every Session.
     hooks: Option<Arc<crate::hooks::HookEngine>>,
     /// RTK rewriter applied to every Session built from this state.
@@ -76,7 +77,7 @@ impl A2aState {
         model_factory: Arc<dyn ModelFactory>,
         extra_tools: Vec<Arc<dyn Tool>>,
         system_prompt: Option<String>,
-        prompt_templates: Arc<std::collections::HashMap<String, String>>,
+        prompt_templates: Arc<std::collections::HashMap<String, SlashTemplate>>,
         hooks: Option<Arc<crate::hooks::HookEngine>>,
         rtk: crate::tools::RtkRewriter,
     ) -> Self {
@@ -479,7 +480,7 @@ pub async fn run(
     grpc_port: u16,
     extra_tools: Vec<Arc<dyn Tool>>,
     system_prompt: Option<String>,
-    prompt_templates: Arc<std::collections::HashMap<String, String>>,
+    prompt_templates: Arc<std::collections::HashMap<String, SlashTemplate>>,
     hooks: Option<Arc<crate::hooks::HookEngine>>,
     bearer_token: Option<String>,
     rtk: crate::tools::RtkRewriter,

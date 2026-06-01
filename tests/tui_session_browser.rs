@@ -25,6 +25,7 @@ use ra::{
     atif_codec,
     model::{Message, Model, ModelChunk, StopReason, ToolSpec},
     session_runner::{RunOutcome, RunnerHost, SessionRunner},
+    skills::SlashTemplate,
     store::SessionStore,
     Session,
 };
@@ -190,7 +191,7 @@ async fn prompt_template_expanded_before_model() {
     let mut templates = HashMap::new();
     templates.insert(
         "greet".to_string(),
-        "Say hello to the user warmly.".to_string(),
+        SlashTemplate::prompt("Say hello to the user warmly.".to_string()),
     );
 
     let host = Arc::new(NullHost);
@@ -221,7 +222,7 @@ async fn prompt_template_with_args_appended() {
     let mut templates = HashMap::new();
     templates.insert(
         "greet".to_string(),
-        "Say hello to the user warmly.".to_string(),
+        SlashTemplate::prompt("Say hello to the user warmly.".to_string()),
     );
 
     let host = Arc::new(NullHost);

@@ -11,6 +11,10 @@ Ra SHALL discover Claude Code skill entrypoints from project and personal `.clau
 - **WHEN** `[skills].discover` is enabled and skills exist in `.ra/skills/` or `.agents/skills/`
 - **THEN** Ra continues to load those skills
 
+#### Scenario: Project skills are discovered from cwd to repository root
+- **WHEN** Ra starts in a nested project directory below a repository root that contains `.claude/skills/repo-skill/SKILL.md`
+- **THEN** Ra loads `repo-skill` without requiring the user to start at the repository root
+
 ### Requirement: Claude Code Frontmatter Compatibility
 Ra SHALL parse Claude Code skills with optional `name` and `description` frontmatter fields.
 
@@ -42,8 +46,12 @@ Ra SHALL expose user-invocable skills as slash commands that expand to the skill
 
 #### Scenario: Skill slash command expands to body
 - **WHEN** the user enters `/deploy staging`
-- **THEN** Ra sends the `deploy` skill body to the model with `staging` appended as arguments
+- **THEN** Ra sends the `deploy` skill body to the model and includes `ARGUMENTS: staging` when the skill body has no argument placeholders
 
 #### Scenario: Non-user-invocable skill is hidden from slash map
 - **WHEN** a skill has `user-invocable: false`
 - **THEN** Ra does not expose it as a slash-command template
+
+#### Scenario: Skill arguments replace placeholders
+- **WHEN** the user enters `/migrate SearchBar React Vue` and the skill body contains `$ARGUMENTS`, `$ARGUMENTS[1]`, `$0`, or named argument placeholders such as `$component`
+- **THEN** Ra replaces those placeholders before sending the rendered prompt to the model

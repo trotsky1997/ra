@@ -22,6 +22,7 @@
 use anyhow::{Context, Result};
 use globset::{Glob, GlobSetBuilder};
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 /// One agent skill following Claude Code / agentskills.io conventions.
@@ -37,6 +38,8 @@ pub struct Skill {
     pub description: String,
     /// Optional `when_to_use:` field appended to the model-facing blurb.
     pub when_to_use: Option<String>,
+    /// Named positional arguments from frontmatter `arguments`.
+    pub arguments: Vec<String>,
     /// Optional `compatibility:` field.
     pub compatibility: Option<String>,
     /// Optional `license:` field.
@@ -59,6 +62,32 @@ pub struct PromptTemplate {
     pub name: String,
     pub path: PathBuf,
     pub body: String,
+}
+
+/// Slash-command template handed to [`crate::session_runner::SessionRunner`].
+#[derive(Debug, Clone)]
+pub struct SlashTemplate {
+    pub body: String,
+    pub arguments: Vec<String>,
+    pub append_arguments_fallback: bool,
+}
+
+impl SlashTemplate {
+    pub fn prompt(body: String) -> Self {
+        Self {
+            body,
+            arguments: Vec::new(),
+            append_arguments_fallback: false,
+        }
+    }
+
+    pub fn skill(body: String, arguments: Vec<String>) -> Self {
+        Self {
+            body,
+            arguments,
+            append_arguments_fallback: true,
+        }
+    }
 }
 
 /// One AGENTS.md found while walking up the project tree.
@@ -191,15 +220,20 @@ impl ResourceBundle {
     }
 
     /// Slash-command name → template body, ready to hand to SessionRunner.
-    pub fn prompt_map(&self) -> std::collections::HashMap<String, String> {
-        let mut map: std::collections::HashMap<String, String> = self
+    pub fn prompt_map(&self) -> HashMap<String, SlashTemplate> {
+        let mut map: HashMap<String, SlashTemplate> = self
             .skills
             .iter()
             .filter(|s| s.user_invocable)
-            .map(|s| (s.command_name.clone(), s.body.clone()))
+            .map(|s| {
+                (
+                    s.command_name.clone(),
+                    SlashTemplate::skill(s.body.clone(), s.arguments.clone()),
+                )
+            })
             .collect();
         for p in &self.prompts {
-            map.insert(p.name.clone(), p.body.clone());
+            map.insert(p.name.clone(), SlashTemplate::prompt(p.body.clone()));
         }
         map
     }
@@ -220,9 +254,9 @@ pub fn load_skills(patterns: &[String]) -> Vec<Skill> {
         .collect()
 }
 
-/// The default skill-discovery globs Ra scans when
-/// `[skills] discover = true`: Ra-native skills, universal/cross-agent
-/// skills, and Claude Code's project/personal skill directories.
+/// The default skill-discovery globs Ra scans when `[skills] discover = true`.
+/// Project-relative entries are anchored at cwd; `build_resource_bundle` adds
+/// cwd → git-root project skill directories on top.
 pub fn default_discover_globs() -> Vec<String> {
     vec![
         "./.ra/skills/**/SKILL.md".to_string(),
@@ -232,6 +266,23 @@ pub fn default_discover_globs() -> Vec<String> {
         "./.claude/skills/**/SKILL.md".to_string(),
         "~/.claude/skills/**/SKILL.md".to_string(),
     ]
+}
+
+pub fn discover_project_skill_globs(cwd: &Path) -> Vec<String> {
+    let mut out = Vec::new();
+    for dir in project_walk_dirs(cwd) {
+        out.push(
+            dir.join(".agents/skills/**/SKILL.md")
+                .to_string_lossy()
+                .into_owned(),
+        );
+        out.push(
+            dir.join(".claude/skills/**/SKILL.md")
+                .to_string_lossy()
+                .into_owned(),
+        );
+    }
+    out
 }
 
 pub fn load_prompts(patterns: &[String]) -> Vec<PromptTemplate> {
@@ -311,7 +362,6 @@ struct Frontmatter {
     #[serde(rename = "argument-hint")]
     #[allow(dead_code)]
     argument_hint: Option<String>,
-    #[allow(dead_code)]
     arguments: Option<serde_yaml::Value>,
     #[serde(rename = "disable-model-invocation")]
     disable_model_invocation: Option<bool>,
@@ -347,11 +397,13 @@ fn parse_skill(p: &Path) -> Result<Skill> {
     let command_name = skill_command_name(p)?;
     let name = fm.name.clone().unwrap_or_else(|| command_name.clone());
     let description = skill_description(&fm, body);
+    let arguments = parse_arguments(fm.arguments.as_ref());
     Ok(Skill {
         command_name,
         name,
         description,
         when_to_use: fm.when_to_use,
+        arguments,
         compatibility: fm.compatibility,
         license: fm.license,
         disable_model_invocation: fm.disable_model_invocation.unwrap_or(false),
@@ -359,6 +411,24 @@ fn parse_skill(p: &Path) -> Result<Skill> {
         path: p.to_path_buf(),
         body: body.to_string(),
     })
+}
+
+fn parse_arguments(raw: Option<&serde_yaml::Value>) -> Vec<String> {
+    match raw {
+        Some(serde_yaml::Value::String(s)) => s
+            .split_whitespace()
+            .filter(|arg| !arg.is_empty())
+            .map(ToOwned::to_owned)
+            .collect(),
+        Some(serde_yaml::Value::Sequence(items)) => items
+            .iter()
+            .filter_map(|item| item.as_str())
+            .map(str::trim)
+            .filter(|arg| !arg.is_empty())
+            .map(ToOwned::to_owned)
+            .collect(),
+        _ => Vec::new(),
+    }
 }
 
 fn skill_command_name(p: &Path) -> Result<String> {
@@ -487,6 +557,30 @@ fn expand_globs(patterns: &[String], category: &str) -> Vec<PathBuf> {
     out
 }
 
+fn project_walk_dirs(cwd: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut current: PathBuf = cwd.to_path_buf();
+    let mut depth = 0usize;
+    loop {
+        out.push(current.clone());
+        if current.join(".git").exists() {
+            break;
+        }
+        let Some(parent) = current.parent() else {
+            break;
+        };
+        if parent == current {
+            break;
+        }
+        current = parent.to_path_buf();
+        depth += 1;
+        if depth > 16 {
+            break;
+        }
+    }
+    out
+}
+
 fn glob_root(pat: &str) -> PathBuf {
     let mut root = PathBuf::new();
     for component in Path::new(pat).components() {
@@ -555,6 +649,8 @@ pub fn build_resource_bundle(config: &crate::config::RaConfig, emit_logs: bool) 
     if config.skills.enabled {
         let mut all_patterns: Vec<String> = Vec::new();
         if config.skills.discover {
+            let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
+            all_patterns.extend(discover_project_skill_globs(&cwd));
             all_patterns.extend(default_discover_globs());
         }
         all_patterns.extend(config.skills.paths.iter().cloned());

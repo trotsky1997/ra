@@ -49,6 +49,7 @@ use crate::atif_codec;
 use crate::model::Model;
 use crate::session::Session;
 use crate::session_runner::{RunOutcome, RunnerEvent, RunnerHost, SessionRunner, ToolKindHint};
+use crate::skills::SlashTemplate;
 use crate::store::SessionStore;
 use crate::tool_ctx::{ClientHandle, PermissionOutcome, TerminalRunResult};
 use crate::tools::Tool;
@@ -176,7 +177,7 @@ struct SharedState {
     system_prompt: Option<String>,
     /// Prompt templates keyed by slash-command name. Injected into the
     /// SessionRunner so `/<name>` expands into LLM input.
-    prompt_templates: Arc<std::collections::HashMap<String, String>>,
+    prompt_templates: Arc<std::collections::HashMap<String, SlashTemplate>>,
     /// Optional lifecycle hooks engine, attached to every Session.
     hooks: Option<Arc<crate::hooks::HookEngine>>,
     /// RTK rewriter applied to every Session built from this state.
@@ -199,7 +200,7 @@ impl SharedState {
         model_factory: Arc<dyn ModelFactory>,
         extra_tools: Vec<Arc<dyn Tool>>,
         system_prompt: Option<String>,
-        prompt_templates: Arc<std::collections::HashMap<String, String>>,
+        prompt_templates: Arc<std::collections::HashMap<String, SlashTemplate>>,
         hooks: Option<Arc<crate::hooks::HookEngine>>,
         rtk: crate::tools::RtkRewriter,
     ) -> Self {
@@ -482,7 +483,7 @@ pub async fn run(
     model_factory: Arc<dyn ModelFactory>,
     extra_tools: Vec<Arc<dyn Tool>>,
     system_prompt: Option<String>,
-    prompt_templates: Arc<std::collections::HashMap<String, String>>,
+    prompt_templates: Arc<std::collections::HashMap<String, SlashTemplate>>,
     hooks: Option<Arc<crate::hooks::HookEngine>>,
     rtk: crate::tools::RtkRewriter,
 ) -> AcpResult<()> {

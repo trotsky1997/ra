@@ -17,9 +17,11 @@ use crate::events::Event as RaEvent;
 use crate::model::Message as RaMessage;
 use crate::nemo_obs;
 use crate::session::{PromptOutcome, Session};
+use crate::skills::SlashTemplate;
 use anyhow::Result;
 use async_trait::async_trait;
 use futures::future::BoxFuture;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Hint to clients about the kind of work a tool does. Maps to ACP `ToolKind`
@@ -135,7 +137,7 @@ pub struct SessionRunner {
     /// is `/<name>` (no args) or `/<name> <args>`, the body is sent to
     /// the LLM as the actual prompt instead. Built from disk via
     /// `crate::skills::load_prompts` and injected from the host.
-    prompt_templates: Arc<std::collections::HashMap<String, String>>,
+    prompt_templates: Arc<HashMap<String, SlashTemplate>>,
 }
 
 impl SessionRunner {
@@ -144,7 +146,7 @@ impl SessionRunner {
             session,
             session_id,
             host,
-            prompt_templates: Arc::new(std::collections::HashMap::new()),
+            prompt_templates: Arc::new(HashMap::new()),
         }
     }
 
@@ -152,10 +154,7 @@ impl SessionRunner {
     /// will fire any `/<name>` whose name matches a key here, sending
     /// the value as the LLM prompt.
     #[must_use]
-    pub fn with_prompt_templates(
-        mut self,
-        templates: Arc<std::collections::HashMap<String, String>>,
-    ) -> Self {
+    pub fn with_prompt_templates(mut self, templates: Arc<HashMap<String, SlashTemplate>>) -> Self {
         self.prompt_templates = templates;
         self
     }
@@ -244,12 +243,8 @@ impl SessionRunner {
                 self.run_slash(&cmd, on_event).await;
                 return RunOutcome::Completed;
             }
-            if let Some(body) = self.prompt_templates.get(&cmd.name).cloned() {
-                effective_text = if cmd.args.is_empty() {
-                    body
-                } else {
-                    format!("{body}\n\n{}", cmd.args)
-                };
+            if let Some(template) = self.prompt_templates.get(&cmd.name).cloned() {
+                effective_text = render_slash_template(&template, &cmd.args);
             }
         }
 
@@ -389,6 +384,54 @@ impl SessionRunner {
             _ => unreachable!("parse_slash_command vetted the name"),
         }
     }
+}
+
+fn render_slash_template(template: &SlashTemplate, args: &str) -> String {
+    let args = args.trim();
+    if args.is_empty() {
+        return template.body.clone();
+    }
+
+    let argv = split_slash_args(args);
+    let mut rendered = template.body.clone();
+    let mut replaced = false;
+
+    for (i, value) in argv.iter().enumerate() {
+        let indexed_placeholder = format!("$ARGUMENTS[{i}]");
+        if rendered.contains(&indexed_placeholder) {
+            rendered = rendered.replace(&indexed_placeholder, value);
+            replaced = true;
+        }
+        let placeholder = format!("${i}");
+        if rendered.contains(&placeholder) {
+            rendered = rendered.replace(&placeholder, value);
+            replaced = true;
+        }
+    }
+    if rendered.contains("$ARGUMENTS") {
+        rendered = rendered.replace("$ARGUMENTS", args);
+        replaced = true;
+    }
+    for (i, name) in template.arguments.iter().enumerate() {
+        let Some(value) = argv.get(i) else { continue };
+        let placeholder = format!("${name}");
+        if rendered.contains(&placeholder) {
+            rendered = rendered.replace(&placeholder, value);
+            replaced = true;
+        }
+    }
+
+    if replaced {
+        rendered
+    } else if template.append_arguments_fallback {
+        format!("{rendered}\n\nARGUMENTS: {args}")
+    } else {
+        format!("{rendered}\n\n{args}")
+    }
+}
+
+fn split_slash_args(args: &str) -> Vec<String> {
+    args.split_whitespace().map(ToOwned::to_owned).collect()
 }
 
 fn tool_kind(name: &str) -> ToolKindHint {

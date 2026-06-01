@@ -2,7 +2,10 @@
 //! SKILL.md files from Ra, universal/cross-agent, and Claude Code
 //! layouts without any explicit `paths` entry.
 
-use ra::skills::{default_discover_globs, load_skills, ResourceBundle};
+use ra::{
+    config::RaConfig,
+    skills::{build_resource_bundle, default_discover_globs, load_skills, ResourceBundle},
+};
 use std::fs;
 use std::sync::{Mutex, OnceLock};
 use tempfile::TempDir;
@@ -134,4 +137,75 @@ fn model_and_user_invocation_visibility_are_separate() {
         !slash.contains_key("background"),
         "user-invocable=false must hide from slash map"
     );
+}
+
+#[test]
+fn build_resource_bundle_discovers_project_skills_from_cwd_to_repo_root() {
+    let _guard = cwd_lock();
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    fs::create_dir(root.join(".git")).unwrap();
+    let nested = root.join("packages/frontend/src");
+    fs::create_dir_all(&nested).unwrap();
+    write_skill(
+        &root.join(".claude/skills"),
+        "repo-root",
+        "Repo root project skill.",
+    );
+    write_skill(
+        &root.join("packages/frontend/.claude/skills"),
+        "package",
+        "Package project skill.",
+    );
+
+    std::env::set_current_dir(&nested).unwrap();
+
+    let config = RaConfig::default();
+    let bundle = build_resource_bundle(&config, false);
+    let names: Vec<&str> = bundle
+        .skills
+        .iter()
+        .map(|s| s.command_name.as_str())
+        .collect();
+
+    for expected in ["repo-root", "package"] {
+        assert!(
+            names.contains(&expected),
+            "expected cwd→repo-root discovery to find {expected:?}, got {:?}",
+            names
+        );
+    }
+}
+
+#[test]
+fn prompt_map_preserves_skill_arguments_metadata() {
+    let _guard = cwd_lock();
+    let tmp = TempDir::new().unwrap();
+    let cwd = tmp.path();
+    let skill_dir = cwd.join(".claude/skills/migrate");
+    fs::create_dir_all(&skill_dir).unwrap();
+    fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\ndescription: Migrate a component\narguments: [component, source, target]\n---\n\nMigrate $component from $source to $target.\n",
+    )
+    .unwrap();
+
+    std::env::set_current_dir(cwd).unwrap();
+
+    let bundle = ResourceBundle {
+        skills: load_skills(&default_discover_globs()),
+        ..ResourceBundle::default()
+    };
+    let slash = bundle.prompt_map();
+    let template = slash.get("migrate").expect("migrate slash template");
+
+    assert_eq!(
+        template.arguments,
+        vec![
+            "component".to_string(),
+            "source".to_string(),
+            "target".to_string()
+        ]
+    );
+    assert!(template.append_arguments_fallback);
 }

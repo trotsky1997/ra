@@ -1,3 +1,5 @@
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.71s
+     Running `target/debug/gen-schema`
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "RaConfig",
@@ -31,6 +33,9 @@
     },
     "obs": {
       "$ref": "#/definitions/ObsSection"
+    },
+    "openlsp": {
+      "$ref": "#/definitions/OpenlspSection"
     },
     "openspec": {
       "$ref": "#/definitions/OpenSpecSection"
@@ -425,6 +430,40 @@
         },
         "path": {
           "description": "Override the directory Ra discovers. By default Ra walks cwd up to the git root looking for a folder literally named `openspec`; set this to point at a non-standard location. `~` is expanded and relative paths resolve against the cwd.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "OpenlspSection": {
+      "description": "`[openlsp]` — native [openlsp](https://github.com/trotsky1997/openlsp) integration. When enabled (the default), Ra registers a built-in `lsp` tool that dispatches openlsp command envelopes via a child process. The tool is silently omitted if no openlsp binary can be resolved.",
+      "type": "object",
+      "properties": {
+        "binary": {
+          "description": "Override the openlsp binary path. By default Ra tries `openlsp` on PATH, then `bunx openlsp` if `bun` is available.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "enabled": {
+          "description": "Default true. Set false to disable the lsp built-in tool even when openlsp is installed.",
+          "default": true,
+          "type": "boolean"
+        },
+        "timeout": {
+          "description": "Per-call timeout in seconds. Default 30.0.",
+          "default": 30.0,
+          "type": "number",
+          "format": "double"
+        },
+        "workspace_root": {
+          "description": "Workspace root passed to openlsp via `--workspace-root`. Defaults to the session cwd when unset.",
           "default": null,
           "type": [
             "string",

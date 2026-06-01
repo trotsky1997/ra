@@ -60,6 +60,8 @@ pub struct RaConfig {
     pub resources: ResourcesSection,
     #[serde(default)]
     pub rtk: RtkSection,
+    #[serde(default)]
+    pub openlsp: OpenlspSection,
 }
 
 fn default_version() -> u32 {
@@ -489,6 +491,45 @@ impl<'de> Deserialize<'de> for RtkMode {
     }
 }
 
+/// `[openlsp]` — native [openlsp](https://github.com/trotsky1997/openlsp)
+/// integration. When enabled (the default), Ra registers a built-in `lsp`
+/// tool that dispatches openlsp command envelopes via a child process.
+/// The tool is silently omitted if no openlsp binary can be resolved.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct OpenlspSection {
+    /// Default true. Set false to disable the lsp built-in tool even when
+    /// openlsp is installed.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Override the openlsp binary path. By default Ra tries `openlsp` on
+    /// PATH, then `bunx openlsp` if `bun` is available.
+    #[serde(default)]
+    pub binary: Option<String>,
+    /// Workspace root passed to openlsp via `--workspace-root`. Defaults to
+    /// the session cwd when unset.
+    #[serde(default)]
+    pub workspace_root: Option<String>,
+    /// Per-call timeout in seconds. Default 30.0.
+    #[serde(default = "default_openlsp_timeout")]
+    pub timeout: f64,
+}
+
+impl Default for OpenlspSection {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            binary: None,
+            workspace_root: None,
+            timeout: default_openlsp_timeout(),
+        }
+    }
+}
+
+fn default_openlsp_timeout() -> f64 {
+    30.0
+}
+
 // ---------- loading -----------------------------------------------------
 
 impl RaConfig {
@@ -712,5 +753,34 @@ path = "./custom-graph/graph.json"
             cfg.graphify.path.as_deref(),
             Some("./custom-graph/graph.json")
         );
+    }
+
+    #[test]
+    fn openlsp_defaults_and_parses_overrides() {
+        // Omitted section => enabled by default, 30s timeout.
+        let cfg: RaConfig = toml::from_str("version = 1\n").unwrap();
+        assert!(cfg.openlsp.enabled);
+        assert!(cfg.openlsp.binary.is_none());
+        assert!(cfg.openlsp.workspace_root.is_none());
+        assert!((cfg.openlsp.timeout - 30.0).abs() < f64::EPSILON);
+
+        // Explicit section with overrides.
+        let toml_doc = r#"
+version = 1
+
+[openlsp]
+enabled = false
+binary = "/usr/local/bin/openlsp"
+workspace_root = "/home/user/project"
+timeout = 60.0
+"#;
+        let cfg: RaConfig = toml::from_str(toml_doc).unwrap();
+        assert!(!cfg.openlsp.enabled);
+        assert_eq!(cfg.openlsp.binary.as_deref(), Some("/usr/local/bin/openlsp"));
+        assert_eq!(
+            cfg.openlsp.workspace_root.as_deref(),
+            Some("/home/user/project")
+        );
+        assert!((cfg.openlsp.timeout - 60.0).abs() < f64::EPSILON);
     }
 }

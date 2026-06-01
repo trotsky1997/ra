@@ -35,7 +35,7 @@ use crate::session::Session;
 use crate::session_runner::{RunnerHost, SessionRunner};
 use crate::store::{SessionMeta, SessionStore};
 use crate::tool_ctx::{FileChange, FileChangeApprover, FileChangeDecision};
-use crate::tools::default_builtins;
+use crate::tools::default_builtins_with_cfg;
 
 /// One rendered line in the scrollback. Kept minimal; everything else
 /// is derived (palette, prefix, wrap) at draw time.
@@ -164,7 +164,7 @@ async fn build_session(
     let system_prompt = bundle.build_system_prompt();
     let prompt_templates = Arc::new(bundle.prompt_map());
 
-    let mut tools = default_builtins(&config.tools.builtin);
+    let mut tools = default_builtins_with_cfg(&config.tools.builtin, &config.openlsp);
     if let Some(workflow) = &bundle.graphify {
         if let Some(project) = &workflow.project {
             eprintln!(

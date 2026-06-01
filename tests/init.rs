@@ -91,3 +91,44 @@ fn init_can_add_example_skill_without_overwriting_it_on_rerun() {
         "example skill should not be overwritten without --force"
     );
 }
+
+#[test]
+fn init_errors_when_config_path_is_not_a_file() {
+    let tmp = TempDir::new().unwrap();
+    fs::create_dir(tmp.path().join("ra.toml")).unwrap();
+
+    let output = run_ra_init(tmp.path(), &[]);
+    assert!(
+        !output.status.success(),
+        "ra init should fail when ra.toml is a directory"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("not a regular file"),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn init_errors_when_example_skill_path_is_not_a_file() {
+    let tmp = TempDir::new().unwrap();
+    fs::create_dir_all(
+        tmp.path()
+            .join(".ra")
+            .join("skills")
+            .join("example")
+            .join("SKILL.md"),
+    )
+    .unwrap();
+
+    let output = run_ra_init(tmp.path(), &["--example-skill"]);
+    assert!(
+        !output.status.success(),
+        "ra init --example-skill should fail when SKILL.md is a directory"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("not a regular file"),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}

@@ -75,34 +75,67 @@ enum Cmd {
     Tui,
 }
 
+enum RuntimeCmd {
+    Run { prompt: Option<String> },
+    Acp,
+    Serve { http_port: u16, grpc_port: u16 },
+    Resume { id: String, prompt: String },
+    Sessions,
+    Tui,
+    LegacyPrompt { prompt: Option<String> },
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
-    if let Some(Cmd::Init { force, example_skill }) = &cli.cmd {
-        return run_init(*force, *example_skill);
-    }
+
+    let cmd = match cli.cmd {
+        Some(Cmd::Init {
+            force,
+            example_skill,
+        }) => return run_init(force, example_skill),
+        Some(Cmd::Acp) => RuntimeCmd::Acp,
+        Some(Cmd::Run { prompt }) => RuntimeCmd::Run { prompt },
+        Some(Cmd::Serve {
+            http_port,
+            grpc_port,
+        }) => RuntimeCmd::Serve {
+            http_port,
+            grpc_port,
+        },
+        Some(Cmd::Resume { id, prompt }) => RuntimeCmd::Resume { id, prompt },
+        Some(Cmd::Sessions) => RuntimeCmd::Sessions,
+        Some(Cmd::Tui) => RuntimeCmd::Tui,
+        None => RuntimeCmd::LegacyPrompt { prompt: cli.prompt },
+    };
 
     let config = ra::config::RaConfig::load(cli.config.as_deref())?;
     apply_run_config(&config.run);
     apply_obs_config(&config.obs);
 
-    match cli.cmd {
-        Some(Cmd::Init { .. }) => unreachable!("handled before config loading"),
-        Some(Cmd::Acp) => run_acp(&config).await,
-        Some(Cmd::Run { prompt }) => run_print(prompt, &config).await,
-        Some(Cmd::Serve { http_port, grpc_port }) => {
-            run_serve(http_port, grpc_port, &config).await
-        }
-        Some(Cmd::Resume { id, prompt }) => run_resume(&id, prompt, &config).await,
-        Some(Cmd::Sessions) => run_list_sessions(&config).await,
-        Some(Cmd::Tui) => run_tui(&config).await,
-        None => run_print(cli.prompt, &config).await,
+    match cmd {
+        RuntimeCmd::Acp => run_acp(&config).await,
+        RuntimeCmd::Run { prompt } => run_print(prompt, &config).await,
+        RuntimeCmd::Serve {
+            http_port,
+            grpc_port,
+        } => run_serve(http_port, grpc_port, &config).await,
+        RuntimeCmd::Resume { id, prompt } => run_resume(&id, prompt, &config).await,
+        RuntimeCmd::Sessions => run_list_sessions(&config).await,
+        RuntimeCmd::Tui => run_tui(&config).await,
+        RuntimeCmd::LegacyPrompt { prompt } => run_print(prompt, &config).await,
     }
 }
 
 fn run_init(force: bool, example_skill: bool) -> anyhow::Result<()> {
     let cwd = std::env::current_dir()?;
-    let report = ra::init::init_project(&cwd, ra::init::InitOptions { force, example_skill })?;
+    let report = ra::init::init_project(
+        &cwd,
+        ra::init::InitOptions {
+            force,
+            example_skill,
+        },
+    )?;
 
     println!("Initialized Ra project in {}", cwd.display());
     print_init_paths("created", &cwd, &report.created);

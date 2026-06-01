@@ -119,9 +119,14 @@ fn create_dir_if_missing(path: &Path, report: &mut InitReport) -> Result<()> {
 }
 
 fn write_template(path: &Path, contents: &str, force: bool, report: &mut InitReport) -> Result<()> {
-    if path.exists() && !force {
-        report.skipped.push(path.to_path_buf());
-        return Ok(());
+    if path.exists() {
+        if !path.is_file() {
+            anyhow::bail!("{} exists but is not a regular file", path.display());
+        }
+        if !force {
+            report.skipped.push(path.to_path_buf());
+            return Ok(());
+        }
     }
 
     if let Some(parent) = path.parent() {

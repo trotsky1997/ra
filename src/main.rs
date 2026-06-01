@@ -486,99 +486,17 @@ fn build_hooks(config: &ra::config::RaConfig) -> Option<Arc<ra::hooks::HookEngin
     }
 }
 
-/// Read `[skills]`, `[prompts]`, `[agents_md]`, and `[resources]` and
-/// return the composed system prompt + slash-template map.
+/// Read `[skills]`, `[prompts]`, `[agents_md]`, `[openspec]`, and
+/// `[resources]` and return the composed system prompt + slash-template
+/// map. Thin wrapper over `ra::skills::build_resource_bundle` (shared
+/// with the TUI).
 fn load_skills_and_prompts(
     config: &ra::config::RaConfig,
 ) -> (
     Option<String>,
     Arc<std::collections::HashMap<String, String>>,
 ) {
-    let mut bundle = ra::skills::ResourceBundle::default();
-
-    if config.skills.enabled {
-        // Auto-discover from .ra/skills/ + per-agent skills.sh layouts,
-        // and union with whatever the user listed in `[skills] paths`.
-        // expand_globs de-dupes by absolute path, so an explicit path
-        // that overlaps a discovery glob is still loaded once.
-        let mut all_patterns: Vec<String> = Vec::new();
-        if config.skills.discover {
-            all_patterns.extend(ra::skills::default_discover_globs());
-        }
-        all_patterns.extend(config.skills.paths.iter().cloned());
-        if !all_patterns.is_empty() {
-            bundle.skills = ra::skills::load_skills(&all_patterns);
-            if !bundle.skills.is_empty() {
-                eprintln!("[ra] loaded {} skill(s)", bundle.skills.len());
-            }
-        }
-    }
-    if config.prompts.enabled {
-        bundle.prompts = ra::skills::load_prompts(&config.prompts.paths);
-        if !bundle.prompts.is_empty() {
-            eprintln!("[ra] loaded {} prompt template(s)", bundle.prompts.len());
-        }
-    }
-    if config.agents_md.enabled {
-        let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
-        bundle.agents_md = ra::skills::discover_agents_md(&cwd);
-        if !bundle.agents_md.is_empty() {
-            eprintln!(
-                "[ra] discovered {} AGENTS.md file(s)",
-                bundle.agents_md.len()
-            );
-        }
-    }
-    if config.openspec.enabled {
-        let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
-        let project = match &config.openspec.path {
-            // Explicit override: load exactly that dir if it exists.
-            Some(p) => {
-                let dir = ra::config::RaConfig::expand_path(p, &cwd);
-                if dir.is_dir() {
-                    Some(ra::openspec::load(&dir))
-                } else {
-                    eprintln!(
-                        "[ra] openspec.path {} is not a directory; skipping",
-                        dir.display()
-                    );
-                    None
-                }
-            }
-            // Default: walk cwd → git root for an `openspec/` dir.
-            None => ra::openspec::discover(&cwd),
-        };
-        bundle.openspec = project.filter(|p| !p.is_empty()).map(|mut p| {
-            p.agent_own = config.openspec.agent_own;
-            p
-        });
-        if let Some(p) = &bundle.openspec {
-            eprintln!(
-                "[ra] discovered OpenSpec project at {} ({} spec(s), {} active change(s))",
-                p.root.display(),
-                p.specs.len(),
-                p.changes.len()
-            );
-        } else if config.openspec.agent_own {
-            // No project discovered, but agent-own SDD is on: let the agent
-            // know it may bootstrap OpenSpec itself (closes the chicken-and-
-            // egg gap where the init guidance lives inside the catalog that
-            // only renders once a project exists).
-            bundle.openspec_bootstrap = true;
-        }
-    }
-    let mut plain_paths = Vec::new();
-    if let Some(p) = &config.resources.system_prompt_path {
-        plain_paths.push(p.clone());
-    }
-    plain_paths.extend(config.resources.append_system_prompt_paths.clone());
-    if !plain_paths.is_empty() {
-        bundle.plain = ra::skills::load_plain_resources(&plain_paths);
-        if !bundle.plain.is_empty() {
-            eprintln!("[ra] loaded {} plain resource(s)", bundle.plain.len());
-        }
-    }
-
+    let bundle = ra::skills::build_resource_bundle(config, true);
     let system_prompt = bundle.build_system_prompt();
     let templates = bundle.prompt_map();
     (system_prompt, Arc::new(templates))

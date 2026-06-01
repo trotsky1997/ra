@@ -113,11 +113,17 @@ impl OpenSpecProject {
     }
 
     /// Render the progressive-disclosure system-prompt section. Returns
-    /// `None` when the project carries no signal. Mirrors the structure
+    /// `None` when the project carries no signal *and* can't offer the
+    /// agent-own playbook. Mirrors the structure
     /// `ResourceBundle::build_system_prompt` uses for skills: a short
     /// catalog with `read`-the-file hints, never the full spec bodies.
+    ///
+    /// An initialized-but-empty project (no specs/changes yet — exactly
+    /// what `openspec init` produces) still renders when `agent_own` is
+    /// on: it notes the empty state and folds in the playbook so the agent
+    /// can create its first change. It is *not* reported as uninitialized.
     pub fn build_system_prompt_section(&self) -> Option<String> {
-        if self.is_empty() {
+        if self.is_empty() && !self.agent_own {
             return None;
         }
         let mut buf = String::new();
@@ -131,6 +137,14 @@ impl OpenSpecProject {
              load full requirements, proposals, or task lists before acting.\n\n",
             self.root.display()
         ));
+
+        if self.is_empty() {
+            buf.push_str(
+                "The directory is initialized but has no capability specs or active \
+                 changes yet. It *is* set up — do not re-run `openspec init`. Create \
+                 the first change with the playbook below.\n\n",
+            );
+        }
 
         if let Some(doc) = &self.project_md {
             buf.push_str(&format!(
@@ -227,9 +241,12 @@ fn agent_own_playbook() -> String {
      machine-actionable errors (e.g. a requirement missing a `#### Scenario:`); \
      fix the artifact and re-run instead of stopping.\n\n\
      **Loop** (all non-interactive):\n\
-     1. Bootstrap once per project: `openspec init --tools <agent>` — bare \
-     `openspec init` *prompts* for tools and will hang; always pass `--tools`. \
-     (Existing project: `openspec update`, not re-init.)\n\
+     1. Bootstrap once per project: `openspec init --tools none` — bare \
+     `openspec init` *prompts* for tools and will hang, so always pass \
+     `--tools`. `none` just scaffolds the `openspec/` directory (what you \
+     need here); pass a tool name (`claude`, `codex`, …) only when you also \
+     want that tool's slash/skill surface generated. (Existing project: \
+     `openspec update`, not re-init.)\n\
      2. `openspec new change <kebab-name>` (derive the name from the task).\n\
      3. While any artifact is `ready`: pull its `instructions --json`, read its \
      `dependencies`, write `resolvedOutputPath` from `template`; re-check \
@@ -261,9 +278,11 @@ pub fn bootstrap_prompt_section() -> String {
      single session — you can adopt the \
      [OpenSpec](https://github.com/Fission-AI/OpenSpec) convention yourself, \
      non-interactively, via the `openspec` CLI (through `bash`):\n\n\
-     - `openspec init --tools <agent>` — bootstrap once. Bare `openspec init` \
-     *prompts* for tools and will hang; always pass `--tools` (e.g. `claude`, \
-     or `all`). Creates `openspec/specs/` + `openspec/changes/`.\n\
+     - `openspec init --tools none` — bootstrap once. Bare `openspec init` \
+     *prompts* for tools and will hang, so always pass `--tools`; `none` just \
+     scaffolds `openspec/specs/` + `openspec/changes/` (what you need here). \
+     Pass a tool name (`claude`, `codex`, …) only if you also want that tool's \
+     slash/skill surface generated.\n\
      - Then drive it autonomously: `openspec new change <kebab-name>` → write \
      artifacts off `openspec status`/`instructions --change <name> --json` \
      until `applyRequires` is `done` → implement, flipping `- [ ]`→`- [x]` in \
@@ -706,11 +725,33 @@ More detail after a blank line.
     }
 
     #[test]
-    fn empty_project_yields_no_section() {
+    fn empty_project_renders_playbook_when_agent_own() {
+        // An initialized-but-empty `openspec/` (what `openspec init`
+        // produces) must NOT be reported as uninitialized; with agent_own
+        // on it renders the header + playbook so the agent can create its
+        // first change.
         let tmp = tempfile::tempdir().unwrap();
         let os = tmp.path().join("openspec");
         std::fs::create_dir_all(&os).unwrap();
         let project = load(&os);
+        assert!(project.is_empty());
+        assert!(project.agent_own, "load() defaults agent_own to true");
+        let section = project.build_system_prompt_section().unwrap();
+        assert!(section.contains("# OpenSpec"));
+        assert!(section.contains("initialized but has no"));
+        assert!(section.contains("do not re-run `openspec init`"));
+        assert!(section.contains("agent-own SDD"));
+        // Never the greenfield "not yet initialized" wording.
+        assert!(!section.contains("not yet initialized"));
+    }
+
+    #[test]
+    fn empty_project_yields_no_section_without_agent_own() {
+        let tmp = tempfile::tempdir().unwrap();
+        let os = tmp.path().join("openspec");
+        std::fs::create_dir_all(&os).unwrap();
+        let mut project = load(&os);
+        project.agent_own = false;
         assert!(project.is_empty());
         assert!(project.build_system_prompt_section().is_none());
     }

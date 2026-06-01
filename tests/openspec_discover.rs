@@ -196,3 +196,37 @@ fn bootstrap_hint_suppressed_when_project_present() {
     assert!(prompt.contains("# OpenSpec\n"));
     assert!(!prompt.contains("not yet initialized"));
 }
+
+#[test]
+fn initialized_but_empty_project_not_reported_uninitialized() {
+    // Regression for the cross-review finding: `openspec init` creates an
+    // empty `openspec/specs` + `openspec/changes/archive` with no files.
+    // That is an *initialized* project and must render the playbook, not
+    // the greenfield "not yet initialized" bootstrap hint.
+    let tmp = TempDir::new().unwrap();
+    fs::create_dir_all(tmp.path().join("openspec/specs")).unwrap();
+    fs::create_dir_all(tmp.path().join("openspec/changes/archive")).unwrap();
+
+    let project = openspec::discover(tmp.path()).expect("discovery finds the dir even when empty");
+    assert!(project.is_empty(), "no specs/changes content yet");
+    let bundle = ResourceBundle {
+        openspec: Some(project),
+        ..Default::default()
+    };
+    let prompt = bundle.build_system_prompt().unwrap();
+    assert!(prompt.contains("initialized but has no"));
+    assert!(prompt.contains("agent-own SDD"));
+    assert!(!prompt.contains("not yet initialized"));
+}
+
+#[test]
+fn bootstrap_hint_recommends_tools_none() {
+    // Cross-review: `--tools none` is the safe default for Ra (the tool
+    // list has no `ra`); only name a tool when a surface is wanted.
+    let bundle = ResourceBundle {
+        openspec_bootstrap: true,
+        ..Default::default()
+    };
+    let prompt = bundle.build_system_prompt().unwrap();
+    assert!(prompt.contains("openspec init --tools none"));
+}

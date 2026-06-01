@@ -47,9 +47,14 @@ api_key_env = "ANTHROPIC_API_KEY"
 #   apply_patch — controlled git-apply wrapper for unified diffs
 #   webfetch_fetch — fetch one page as Markdown via webfetch-cli
 #   webfetch_crawl — crawl bounded docs as Markdown via webfetch-cli
+#   tmux_run — run a command in a Ra-owned tmux session/window
+#   tmux_send — send input or key names to a tmux pane
+#   tmux_capture — capture tmux pane content or scrollback
+#   tmux_kill — kill Ra-owned tmux targets
+#   tmux_listen — poll a tmux pane for new output or a pattern
 # An empty list (or omitted section) ships every built-in tool.
 [tools]
-# builtin = ["read", "write", "edit", "bash", "ast_grep", "git", "gh", "jq", "grep", "glob", "ls", "fuzzy", "apply_patch", "webfetch_fetch", "webfetch_crawl"]
+# builtin = ["read", "write", "edit", "bash", "ast_grep", "git", "gh", "jq", "grep", "glob", "ls", "fuzzy", "apply_patch", "webfetch_fetch", "webfetch_crawl", "tmux_run", "tmux_send", "tmux_capture", "tmux_kill", "tmux_listen"]
 builtin = []
 
 # ─── Skills (Claude Code / agentskills.io) ──────────────────────────

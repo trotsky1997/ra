@@ -209,6 +209,11 @@ Resolution order: `--config <path>` → `$RA_CONFIG` → `./ra.toml` →
 | `apply_patch` | Controlled `git apply` wrapper that checks patches before applying and uses file approval when present. |
 | `webfetch_fetch` | Fetches one web page as Markdown through `webfetch-cli`, writes `.md/`, and returns bounded JSON. |
 | `webfetch_crawl` | Crawls a bounded documentation subtree through `webfetch-cli`, mirrors `.md/`, and returns bounded JSON. |
+| `tmux_run` | Starts or reuses a Ra-owned tmux session/window and runs a command, blocking or non-blocking. |
+| `tmux_send` | Sends literal input or tmux key names to a target pane. |
+| `tmux_capture` | Captures visible pane content or scrollback from a target pane. |
+| `tmux_kill` | Kills a Ra-owned tmux session/window/pane, or all `ra__*` sessions. |
+| `tmux_listen` | Polls a pane until output changes or an optional substring/regex appears. |
 | `graphify_ensure` / `graphify_impact` / `graphify_update` / `graphify_query` / `graphify_path` / `graphify_explain` | Added when `[graphify]` is enabled; maintains and uses Graphify as Ra's R2A project graph. |
 
 Toggle the catalog via `[tools] builtin = […]`; an empty allow-list
@@ -229,6 +234,11 @@ structured install guidance instead of an opaque spawn error.
 `npm exec --yes --package=github:trotsky1997/webfetch-cli -- webfetch-cli`
 under the hood; if `npm` is missing, the tools return structured install
 guidance instead of an opaque spawn error.
+
+`tmux_run`, `tmux_send`, `tmux_capture`, `tmux_kill`, and `tmux_listen`
+operate on Ra-owned tmux sessions named `ra__{session}`. If `tmux` is
+missing, they return structured install guidance instead of an opaque
+spawn error.
 
 ## Protocols & specs
 

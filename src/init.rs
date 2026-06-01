@@ -38,7 +38,8 @@ banner = true
 # Native CLI tools: git, gh, jq.
 # Extended tools: grep, glob, ls, fuzzy, apply_patch.
 # Web docs tools: webfetch_fetch, webfetch_crawl.
-# builtin = ["read", "write", "edit", "bash", "ast_grep", "git", "gh", "jq", "grep", "glob", "ls", "fuzzy", "apply_patch", "webfetch_fetch", "webfetch_crawl"]
+# Tmux tools: tmux_run, tmux_send, tmux_capture, tmux_kill, tmux_listen.
+# builtin = ["read", "write", "edit", "bash", "ast_grep", "git", "gh", "jq", "grep", "glob", "ls", "fuzzy", "apply_patch", "webfetch_fetch", "webfetch_crawl", "tmux_run", "tmux_send", "tmux_capture", "tmux_kill", "tmux_listen"]
 builtin = []
 
 [skills]

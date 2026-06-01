@@ -16,6 +16,9 @@ The name has two readings:
 
 The eye watching from the banner is 𓂀 (U+13080).
 
+See [`docs/brand.md`](docs/brand.md) for the visual identity: a
+heavy-armored solar agent carrying requirements to code artifacts.
+
 ## What you get
 
 - **One binary, four personalities.** `ra run` for one-shot prompts,

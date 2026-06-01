@@ -1,0 +1,35 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">Ra solar agent mark</title>
+  <desc id="desc">A solar disk, Eye of Ra, armored helmet, and orbital requirements-to-artifact graph.</desc>
+  <rect width="1024" height="1024" rx="128" fill="#05070A"/>
+  <circle cx="512" cy="390" r="214" fill="#F6B73C"/>
+  <circle cx="512" cy="390" r="164" fill="#05070A"/>
+  <circle cx="512" cy="390" r="128" fill="#F6B73C"/>
+  <path d="M512 188L550 292H474L512 188Z" fill="#F8E6B0"/>
+  <path d="M512 592L474 488H550L512 592Z" fill="#B8872E"/>
+  <path d="M310 390L414 352V428L310 390Z" fill="#B8872E"/>
+  <path d="M714 390L610 428V352L714 390Z" fill="#F8E6B0"/>
+  <path d="M374 252L476 298L422 352L374 252Z" fill="#B8872E"/>
+  <path d="M650 252L602 352L548 298L650 252Z" fill="#F8E6B0"/>
+  <path d="M374 528L422 428L476 482L374 528Z" fill="#F8E6B0"/>
+  <path d="M650 528L548 482L602 428L650 528Z" fill="#B8872E"/>
+
+  <path d="M292 518C340 458 414 424 512 424C610 424 684 458 732 518C684 578 610 612 512 612C414 612 340 578 292 518Z" fill="#05070A" stroke="#F8E6B0" stroke-width="24" stroke-linejoin="round"/>
+  <circle cx="512" cy="518" r="58" fill="#1E4D63" stroke="#F8E6B0" stroke-width="18"/>
+  <circle cx="512" cy="518" r="22" fill="#05070A"/>
+  <path d="M420 612C430 682 462 734 512 768C562 734 594 682 604 612" stroke="#B8872E" stroke-width="34" stroke-linecap="round"/>
+  <path d="M382 640C410 714 454 772 512 814C570 772 614 714 642 640" stroke="#F6B73C" stroke-width="18" stroke-linecap="round"/>
+
+  <path d="M334 710L512 814L690 710L636 884H388L334 710Z" fill="#1E4D63" stroke="#B8872E" stroke-width="22" stroke-linejoin="round"/>
+  <path d="M512 814V884" stroke="#F8E6B0" stroke-width="18" stroke-linecap="round"/>
+  <path d="M430 744H594" stroke="#F8E6B0" stroke-width="16" stroke-linecap="round"/>
+
+  <path d="M176 702C122 566 148 414 244 302" stroke="#1E4D63" stroke-width="16" stroke-linecap="round" stroke-dasharray="2 34"/>
+  <path d="M848 702C902 566 876 414 780 302" stroke="#1E4D63" stroke-width="16" stroke-linecap="round" stroke-dasharray="2 34"/>
+  <circle cx="208" cy="640" r="28" fill="#8E2F1C" stroke="#F8E6B0" stroke-width="10"/>
+  <circle cx="248" cy="360" r="28" fill="#1E4D63" stroke="#F8E6B0" stroke-width="10"/>
+  <circle cx="816" cy="640" r="28" fill="#8E2F1C" stroke="#F8E6B0" stroke-width="10"/>
+  <circle cx="776" cy="360" r="28" fill="#1E4D63" stroke="#F8E6B0" stroke-width="10"/>
+  <path d="M248 360L512 300L776 360" stroke="#F8E6B0" stroke-width="10" stroke-linecap="round" stroke-linejoin="round" opacity="0.7"/>
+  <path d="M208 640L512 884L816 640" stroke="#F8E6B0" stroke-width="10" stroke-linecap="round" stroke-linejoin="round" opacity="0.7"/>
+</svg>

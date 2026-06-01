@@ -218,6 +218,7 @@ Resolution order: `--config <path>` → `$RA_CONFIG` → `./ra.toml` →
 | `tmux_capture` | Captures visible pane content or scrollback from a target pane. |
 | `tmux_kill` | Kills a Ra-owned tmux session/window/pane, or all `ra__*` sessions. |
 | `tmux_listen` | Polls a pane until output changes or an optional substring/regex appears. |
+| `tmux_wait` | Blocks until a tmux event, hook expression, program result, or sleep timeout resolves. |
 | `graphify_ensure` / `graphify_impact` / `graphify_update` / `graphify_query` / `graphify_path` / `graphify_explain` | Added when `[graphify]` is enabled; maintains and uses Graphify as Ra's R2A project graph. |
 
 Toggle the catalog via `[tools] builtin = […]`; an empty allow-list
@@ -252,10 +253,12 @@ interactive prompts), forces `--strict` validation and explicit
 `error.kind:"missing_openspec"` with install guidance when the CLI is
 absent. Ra consumes the OpenSpec convention; it does not reimplement the CLI.
 
-`tmux_run`, `tmux_send`, `tmux_capture`, `tmux_kill`, and `tmux_listen`
-operate on Ra-owned tmux sessions named `ra__{session}`. If `tmux` is
-missing, they return structured install guidance instead of an opaque
-spawn error.
+`tmux_run`, `tmux_send`, `tmux_capture`, `tmux_kill`, `tmux_listen`, and
+`tmux_wait` operate on Ra-owned tmux sessions named `ra__{session}`.
+`tmux_listen` and `tmux_wait` share event expression semantics for
+`event`, `pattern`, `regex`, and `hook`; `tmux_wait` always requires
+`timeout_ms`. If `tmux` is missing, they return structured install
+guidance instead of an opaque spawn error.
 
 ## Protocols & specs
 

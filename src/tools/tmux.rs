@@ -30,6 +30,30 @@ const RA_SESSION_PREFIX: &str = "ra__";
 const EXIT_MARKER_PREFIX: &str = "__RA_TMUX_EXIT:";
 const EXIT_MARKER_SUFFIX: &str = "__";
 
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TmuxEventKind {
+    OutputUpdate,
+    OutputMatch,
+    ProgramExit,
+    ProgramOutput,
+    Hook,
+    Sleep,
+}
+
+impl TmuxEventKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::OutputUpdate => "output_update",
+            Self::OutputMatch => "output_match",
+            Self::ProgramExit => "program_exit",
+            Self::ProgramOutput => "program_output",
+            Self::Hook => "hook",
+            Self::Sleep => "sleep",
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct TmuxRunParams {
     /// Logical session name. Ra maps this to a tmux session named
@@ -131,6 +155,13 @@ pub struct TmuxListenParams {
     /// Interpret `pattern` as a regex.
     #[serde(default)]
     pub regex: bool,
+    /// Event to listen for. Defaults to `output_match` when `pattern` is set,
+    /// otherwise `output_update`.
+    #[serde(default)]
+    pub event: Option<TmuxEventKind>,
+    /// Optional hook label returned when `event` is `hook`.
+    #[serde(default)]
+    pub hook: Option<String>,
     /// Start line for each `tmux capture-pane -S`.
     #[serde(default)]
     pub start_line: Option<i64>,
@@ -148,11 +179,56 @@ pub struct TmuxListenParams {
     pub max_output_bytes: usize,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct TmuxWaitParams {
+    /// Event to wait for.
+    pub event: TmuxEventKind,
+    /// Logical session name. Required unless `event` is `sleep`.
+    #[serde(default)]
+    pub session: Option<String>,
+    /// Shell command used by `program_exit` and `program_output`.
+    #[serde(default)]
+    pub command: Option<String>,
+    /// Window name. Defaults to `main`.
+    #[serde(default)]
+    pub window: Option<String>,
+    /// Optional pane index/id within the window.
+    #[serde(default)]
+    pub pane: Option<String>,
+    /// Optional substring or regex expression for output and hook events.
+    #[serde(default)]
+    pub pattern: Option<String>,
+    /// Interpret `pattern` as a regex.
+    #[serde(default)]
+    pub regex: bool,
+    /// Optional hook label returned when `event` is `hook`.
+    #[serde(default)]
+    pub hook: Option<String>,
+    /// Start line for each `tmux capture-pane -S`.
+    #[serde(default)]
+    pub start_line: Option<i64>,
+    /// End line for each `tmux capture-pane -E`.
+    #[serde(default)]
+    pub end_line: Option<i64>,
+    /// Required wait timeout in milliseconds.
+    pub timeout_ms: u64,
+    /// Sleep duration in milliseconds when `event` is `sleep`.
+    #[serde(default)]
+    pub duration_ms: Option<u64>,
+    /// Poll interval in milliseconds. Defaults to 500.
+    #[serde(default)]
+    pub poll_ms: Option<u64>,
+    /// Maximum bytes returned in captured stdout fields.
+    #[serde(default = "default_max_output_bytes")]
+    pub max_output_bytes: usize,
+}
+
 pub struct TmuxRunTool;
 pub struct TmuxSendTool;
 pub struct TmuxCaptureTool;
 pub struct TmuxKillTool;
 pub struct TmuxListenTool;
+pub struct TmuxWaitTool;
 
 #[async_trait]
 impl Tool for TmuxRunTool {
@@ -295,6 +371,36 @@ impl Tool for TmuxListenTool {
         let params: TmuxListenParams =
             serde_json::from_value(input).context("invalid params for tmux_listen")?;
         execute_tmux_listen(call_id, params, ctx).await
+    }
+}
+
+#[async_trait]
+impl Tool for TmuxWaitTool {
+    fn name(&self) -> &str {
+        "tmux_wait"
+    }
+
+    fn description(&self) -> &str {
+        "Block until a tmux wait event occurs or `timeout_ms` expires. Supports \
+         output_update, output_match, program_exit, program_output, hook, and \
+         sleep using the same substring/regex expression semantics as \
+         tmux_listen."
+    }
+
+    fn schema(&self) -> serde_json::Value {
+        serde_json::to_value(schema_for!(TmuxWaitParams)).unwrap()
+    }
+
+    async fn execute(
+        &self,
+        call_id: &str,
+        input: serde_json::Value,
+        ctx: &ToolCtx,
+    ) -> Result<String> {
+        let _scope = crate::nemo_obs::tool_scope("tmux_wait");
+        let params: TmuxWaitParams =
+            serde_json::from_value(input).context("invalid params for tmux_wait")?;
+        execute_tmux_wait(call_id, params, ctx).await
     }
 }
 
@@ -485,7 +591,7 @@ async fn execute_tmux_listen(
         Some(tmux) => tmux,
         None => return Ok(missing_tmux_json("tmux_listen", &args)),
     };
-    let matcher = OutputMatcher::new(params.pattern.as_deref(), params.regex)?;
+    let event = ListenEvent::from_listen(&params)?;
     let timeout = Duration::from_millis(params.timeout_ms.unwrap_or(DEFAULT_LISTEN_TIMEOUT_MS));
     let poll = Duration::from_millis(params.poll_ms.unwrap_or(DEFAULT_LISTEN_POLL_MS).max(10));
 
@@ -501,14 +607,15 @@ async fn execute_tmux_listen(
         );
     }
 
-    if matcher.matches(&initial.stdout) {
+    let initial_eval = event.evaluate(&initial.stdout, &initial.stdout);
+    if initial_eval.triggered {
         return listen_response(
             &args,
             &target,
+            &event,
             initial.stdout,
             "",
-            false,
-            true,
+            initial_eval,
             false,
             params.max_output_bytes,
         );
@@ -532,17 +639,16 @@ async fn execute_tmux_listen(
             );
         }
         latest = output.stdout;
-        let matched = matcher.matches(&latest);
-        let changed = latest != initial.stdout;
-        if matched || (matcher.is_none() && changed) {
+        let eval = event.evaluate(&initial.stdout, &latest);
+        if eval.triggered {
             let delta = text_delta(&initial.stdout, &latest);
             return listen_response(
                 &args,
                 &target,
+                &event,
                 latest,
                 &delta,
-                changed,
-                matched,
+                eval,
                 false,
                 params.max_output_bytes,
             );
@@ -550,18 +656,251 @@ async fn execute_tmux_listen(
     }
 
     let delta = text_delta(&initial.stdout, &latest);
-    let changed = latest != initial.stdout;
-    let matched = matcher.matches(&latest);
+    let eval = event.evaluate(&initial.stdout, &latest);
     listen_response(
         &args,
         &target,
+        &event,
         latest,
         &delta,
-        changed,
-        matched,
+        eval,
         true,
         params.max_output_bytes,
     )
+}
+
+async fn execute_tmux_wait(call_id: &str, params: TmuxWaitParams, ctx: &ToolCtx) -> Result<String> {
+    match params.event {
+        TmuxEventKind::Sleep => execute_tmux_wait_sleep(params).await,
+        TmuxEventKind::OutputUpdate | TmuxEventKind::OutputMatch | TmuxEventKind::Hook => {
+            execute_tmux_wait_pane(call_id, params, ctx).await
+        }
+        TmuxEventKind::ProgramExit | TmuxEventKind::ProgramOutput => {
+            execute_tmux_wait_program(call_id, params, ctx).await
+        }
+    }
+}
+
+async fn execute_tmux_wait_sleep(params: TmuxWaitParams) -> Result<String> {
+    let duration_ms = params
+        .duration_ms
+        .ok_or_else(|| anyhow!("tmux_wait sleep requires duration_ms"))?;
+    let timeout = Duration::from_millis(params.timeout_ms);
+    let duration = Duration::from_millis(duration_ms);
+    let started = tokio::time::Instant::now();
+    let timed_out = duration > timeout;
+    tokio::time::sleep(duration.min(timeout)).await;
+    wait_response(WaitResponse {
+        args: &[],
+        target: None,
+        event: &WaitEvent::new(TmuxEventKind::Sleep, None, false, None)?,
+        stdout: String::new(),
+        delta: String::new(),
+        eval: EventEvaluation {
+            changed: false,
+            matched: false,
+            triggered: !timed_out,
+        },
+        timed_out,
+        exit_code: 0,
+        command_exit_code: None,
+        capture_exit_code: None,
+        stderr: String::new(),
+        elapsed_ms: elapsed_millis(started.elapsed()),
+        max_output_bytes: params.max_output_bytes,
+    })
+}
+
+async fn execute_tmux_wait_pane(
+    call_id: &str,
+    params: TmuxWaitParams,
+    ctx: &ToolCtx,
+) -> Result<String> {
+    let target = wait_target(&params)?;
+    let args = capture_args(&target, params.start_line, params.end_line);
+    let tmux = match find_tmux_binary() {
+        Some(tmux) => tmux,
+        None => return Ok(missing_tmux_json("tmux_wait", &args)),
+    };
+    let event = WaitEvent::from_wait(&params)?;
+    let timeout = Duration::from_millis(params.timeout_ms);
+    let poll = Duration::from_millis(params.poll_ms.unwrap_or(DEFAULT_LISTEN_POLL_MS).max(10));
+
+    let initial =
+        capture_for_listen(call_id, &tmux, &args, &target, ctx, params.max_output_bytes).await?;
+    if initial.exit_code != 0 {
+        return process_response(
+            "tmux_wait",
+            &args,
+            &target,
+            initial,
+            params.max_output_bytes,
+        );
+    }
+
+    let started = tokio::time::Instant::now();
+    let mut latest = initial.stdout.clone();
+    loop {
+        let eval = event.evaluate(&initial.stdout, &latest);
+        if eval.triggered || started.elapsed() >= timeout {
+            let delta = text_delta(&initial.stdout, &latest);
+            return wait_response(WaitResponse {
+                args: &args,
+                target: Some(&target),
+                event: &event,
+                stdout: latest,
+                delta,
+                eval,
+                timed_out: !eval.triggered,
+                exit_code: 0,
+                command_exit_code: None,
+                capture_exit_code: None,
+                stderr: String::new(),
+                elapsed_ms: elapsed_millis(started.elapsed()),
+                max_output_bytes: params.max_output_bytes,
+            });
+        }
+
+        let remaining = timeout.saturating_sub(started.elapsed());
+        tokio::time::sleep(poll.min(remaining)).await;
+        let output =
+            capture_for_listen(call_id, &tmux, &args, &target, ctx, params.max_output_bytes)
+                .await?;
+        if output.exit_code != 0 {
+            return process_response("tmux_wait", &args, &target, output, params.max_output_bytes);
+        }
+        latest = output.stdout;
+    }
+}
+
+async fn execute_tmux_wait_program(
+    call_id: &str,
+    params: TmuxWaitParams,
+    ctx: &ToolCtx,
+) -> Result<String> {
+    let command = params
+        .command
+        .as_deref()
+        .ok_or_else(|| anyhow!("tmux_wait {:?} requires command", params.event))?;
+    if command.trim().is_empty() {
+        return Err(anyhow!(
+            "tmux_wait {:?} requires a non-empty command",
+            params.event
+        ));
+    }
+    let target = wait_target(&params)?;
+    let tmux = match find_tmux_binary() {
+        Some(tmux) => tmux,
+        None => {
+            return Ok(missing_tmux_json(
+                "tmux_wait",
+                &["respawn-pane".to_string(), "-t".to_string(), target.target],
+            ))
+        }
+    };
+    let event = WaitEvent::from_wait(&params)?;
+
+    if let Some(failure) = ensure_session_window(&tmux, &target, &ctx.cwd).await? {
+        let args = failure.args.clone();
+        return process_response(
+            "tmux_wait",
+            &args,
+            &target,
+            failure,
+            params.max_output_bytes,
+        );
+    }
+
+    let tempdir = tempfile::tempdir().context("create tmux wait script directory")?;
+    let script_path = tempdir.path().join("ra-tmux-wait.sh");
+    let token = format!("ra_tmux_wait_{}", unique_token());
+    let script = wait_script(command, &token);
+    tokio::fs::write(&script_path, script)
+        .await
+        .with_context(|| format!("write {}", script_path.display()))?;
+
+    let shell_command = format!("/bin/sh {}", shell_word(&script_path.to_string_lossy()));
+    let start_args = vec![
+        "respawn-pane".to_string(),
+        "-k".to_string(),
+        "-t".to_string(),
+        target.target.clone(),
+        "-c".to_string(),
+        ctx.cwd.to_string_lossy().to_string(),
+        shell_command,
+    ];
+    emit_invocation(ctx, call_id, &start_args);
+    let start = run_tmux(&tmux, &start_args).await?;
+    emit_exit(ctx, call_id, start.exit_code);
+    if start.exit_code != 0 {
+        return process_response(
+            "tmux_wait",
+            &start_args,
+            &target,
+            start,
+            params.max_output_bytes,
+        );
+    }
+
+    let capture_start = params.start_line.or(Some(RUN_WAIT_CAPTURE_START));
+    let capture_args = capture_args(&target, capture_start, params.end_line);
+    let timeout = Duration::from_millis(params.timeout_ms);
+    let poll = Duration::from_millis(params.poll_ms.unwrap_or(DEFAULT_LISTEN_POLL_MS).max(10));
+    let started = tokio::time::Instant::now();
+
+    loop {
+        let capture = capture_for_listen(
+            call_id,
+            &tmux,
+            &capture_args,
+            &target,
+            ctx,
+            params.max_output_bytes,
+        )
+        .await?;
+        let capture_exit_code = capture.exit_code;
+        if capture.exit_code != 0 {
+            return process_response(
+                "tmux_wait",
+                &capture_args,
+                &target,
+                capture,
+                params.max_output_bytes,
+            );
+        }
+
+        let (stdout, command_exit_code) = strip_exit_marker(&capture.stdout);
+        let eval = event.evaluate_program_output(&stdout, command_exit_code);
+        let terminal =
+            eval.triggered || command_exit_code.is_some() || started.elapsed() >= timeout;
+        if terminal {
+            let timed_out = !eval.triggered && command_exit_code.is_none();
+            let exit_code = if timed_out { -1 } else { 0 };
+            let stderr = if timed_out {
+                format!("timed out after {} ms", timeout.as_millis())
+            } else {
+                capture.stderr
+            };
+            return wait_response(WaitResponse {
+                args: &capture_args,
+                target: Some(&target),
+                event: &event,
+                stdout,
+                delta: String::new(),
+                eval,
+                timed_out,
+                exit_code,
+                command_exit_code,
+                capture_exit_code: Some(capture_exit_code),
+                stderr,
+                elapsed_ms: elapsed_millis(started.elapsed()),
+                max_output_bytes: params.max_output_bytes,
+            });
+        }
+
+        let remaining = timeout.saturating_sub(started.elapsed());
+        tokio::time::sleep(poll.min(remaining)).await;
+    }
 }
 
 async fn run_nonblocking(
@@ -994,10 +1333,10 @@ fn process_response(
 fn listen_response(
     args: &[String],
     target: &TmuxTarget,
+    event: &ListenEvent,
     stdout: String,
     delta: &str,
-    changed: bool,
-    matched: bool,
+    eval: EventEvaluation,
     timed_out: bool,
     max_output_bytes: usize,
 ) -> Result<String> {
@@ -1008,8 +1347,10 @@ fn listen_response(
         "tool": "tmux_listen",
         "target": target,
         "command": command_metadata(args),
-        "changed": changed,
-        "matched": matched,
+        "event": event.metadata(),
+        "changed": eval.changed,
+        "matched": eval.matched,
+        "triggered": eval.triggered,
         "timed_out": timed_out,
         "exit_code": 0,
         "stdout": stdout,
@@ -1018,6 +1359,64 @@ fn listen_response(
         "truncated": stdout_truncated || delta_truncated,
     }))
     .context("serialize tmux_listen output")
+}
+
+struct WaitResponse<'a> {
+    args: &'a [String],
+    target: Option<&'a TmuxTarget>,
+    event: &'a WaitEvent,
+    stdout: String,
+    delta: String,
+    eval: EventEvaluation,
+    timed_out: bool,
+    exit_code: i32,
+    command_exit_code: Option<i32>,
+    capture_exit_code: Option<i32>,
+    stderr: String,
+    elapsed_ms: u128,
+    max_output_bytes: usize,
+}
+
+fn wait_response(response: WaitResponse<'_>) -> Result<String> {
+    let WaitResponse {
+        args,
+        target,
+        event,
+        stdout,
+        delta,
+        eval,
+        timed_out,
+        exit_code,
+        command_exit_code,
+        capture_exit_code,
+        stderr,
+        elapsed_ms,
+        max_output_bytes,
+    } = response;
+    let (stdout, stdout_truncated) = trim_to_byte_budget(stdout, max_output_bytes);
+    let (delta, delta_truncated) = trim_to_byte_budget(delta, max_output_bytes);
+    let (stderr, stderr_truncated) = trim_to_byte_budget(stderr, DEFAULT_MAX_OUTPUT_BYTES);
+
+    serde_json::to_string_pretty(&json!({
+        "ok": eval.triggered && !timed_out,
+        "tool": "tmux_wait",
+        "target": target,
+        "command": command_metadata(args),
+        "event": event.metadata(),
+        "changed": eval.changed,
+        "matched": eval.matched,
+        "triggered": eval.triggered,
+        "timed_out": timed_out,
+        "exit_code": exit_code,
+        "command_exit_code": command_exit_code,
+        "capture_exit_code": capture_exit_code,
+        "elapsed_ms": elapsed_ms,
+        "stdout": stdout,
+        "delta": delta,
+        "stderr": if stderr.is_empty() { serde_json::Value::Null } else { json!(stderr) },
+        "truncated": stdout_truncated || delta_truncated || stderr_truncated,
+    }))
+    .context("serialize tmux_wait output")
 }
 
 fn missing_tmux_json(tool: &str, args: &[String]) -> String {
@@ -1149,6 +1548,177 @@ impl OutputMatcher {
     fn is_none(&self) -> bool {
         matches!(self, Self::None)
     }
+}
+
+struct ListenEvent {
+    inner: WaitEvent,
+}
+
+impl ListenEvent {
+    fn from_listen(params: &TmuxListenParams) -> Result<Self> {
+        let kind = params.event.unwrap_or_else(|| {
+            if params
+                .pattern
+                .as_deref()
+                .is_some_and(|pattern| !pattern.is_empty())
+            {
+                TmuxEventKind::OutputMatch
+            } else {
+                TmuxEventKind::OutputUpdate
+            }
+        });
+        match kind {
+            TmuxEventKind::OutputUpdate | TmuxEventKind::OutputMatch | TmuxEventKind::Hook => {}
+            TmuxEventKind::ProgramExit | TmuxEventKind::ProgramOutput | TmuxEventKind::Sleep => {
+                return Err(anyhow!(
+                    "tmux_listen supports output_update, output_match, and hook events"
+                ));
+            }
+        }
+        Ok(Self {
+            inner: WaitEvent::new(
+                kind,
+                params.pattern.as_deref(),
+                params.regex,
+                params.hook.as_deref(),
+            )?,
+        })
+    }
+
+    fn evaluate(&self, initial: &str, latest: &str) -> EventEvaluation {
+        self.inner.evaluate_pane(initial, latest)
+    }
+
+    fn metadata(&self) -> serde_json::Value {
+        self.inner.metadata()
+    }
+}
+
+struct WaitEvent {
+    kind: TmuxEventKind,
+    matcher: OutputMatcher,
+    hook: Option<String>,
+}
+
+impl WaitEvent {
+    fn from_wait(params: &TmuxWaitParams) -> Result<Self> {
+        Self::new(
+            params.event,
+            params.pattern.as_deref(),
+            params.regex,
+            params.hook.as_deref(),
+        )
+    }
+
+    fn new(
+        kind: TmuxEventKind,
+        pattern: Option<&str>,
+        regex: bool,
+        hook: Option<&str>,
+    ) -> Result<Self> {
+        let matcher = OutputMatcher::new(pattern, regex)?;
+        match kind {
+            TmuxEventKind::OutputMatch | TmuxEventKind::Hook => {
+                if matcher.is_none() {
+                    return Err(anyhow!("tmux {} event requires pattern", kind.as_str()));
+                }
+            }
+            TmuxEventKind::ProgramOutput => {}
+            TmuxEventKind::OutputUpdate | TmuxEventKind::ProgramExit | TmuxEventKind::Sleep => {}
+        }
+        Ok(Self {
+            kind,
+            matcher,
+            hook: hook.map(ToString::to_string),
+        })
+    }
+
+    fn evaluate(&self, initial: &str, latest: &str) -> EventEvaluation {
+        self.evaluate_pane(initial, latest)
+    }
+
+    fn evaluate_pane(&self, initial: &str, latest: &str) -> EventEvaluation {
+        let changed = latest != initial;
+        let matched = self.matcher.matches(latest);
+        let triggered = match self.kind {
+            TmuxEventKind::OutputUpdate => changed,
+            TmuxEventKind::OutputMatch | TmuxEventKind::Hook => matched,
+            TmuxEventKind::ProgramOutput => {
+                if self.matcher.is_none() {
+                    changed && !latest.is_empty()
+                } else {
+                    matched
+                }
+            }
+            TmuxEventKind::ProgramExit | TmuxEventKind::Sleep => false,
+        };
+        EventEvaluation {
+            changed,
+            matched,
+            triggered,
+        }
+    }
+
+    fn evaluate_program_output(
+        &self,
+        stdout: &str,
+        command_exit_code: Option<i32>,
+    ) -> EventEvaluation {
+        let matched = self.matcher.matches(stdout);
+        let triggered = match self.kind {
+            TmuxEventKind::ProgramExit => command_exit_code.is_some(),
+            TmuxEventKind::ProgramOutput => {
+                if self.matcher.is_none() {
+                    !stdout.is_empty()
+                } else {
+                    matched
+                }
+            }
+            _ => self.evaluate_pane("", stdout).triggered,
+        };
+        EventEvaluation {
+            changed: !stdout.is_empty(),
+            matched,
+            triggered,
+        }
+    }
+
+    fn metadata(&self) -> serde_json::Value {
+        json!({
+            "kind": self.kind.as_str(),
+            "hook": self.hook,
+            "matcher": self.matcher.metadata(),
+        })
+    }
+}
+
+#[derive(Clone, Copy)]
+struct EventEvaluation {
+    changed: bool,
+    matched: bool,
+    triggered: bool,
+}
+
+impl OutputMatcher {
+    fn metadata(&self) -> serde_json::Value {
+        match self {
+            Self::None => json!({ "type": "none", "pattern": null }),
+            Self::Substring(pattern) => json!({ "type": "substring", "pattern": pattern }),
+            Self::Regex(regex) => json!({ "type": "regex", "pattern": regex.as_str() }),
+        }
+    }
+}
+
+fn wait_target(params: &TmuxWaitParams) -> Result<TmuxTarget> {
+    let session = params
+        .session
+        .as_deref()
+        .ok_or_else(|| anyhow!("tmux_wait {} requires session", params.event.as_str()))?;
+    TmuxTarget::new(session, params.window.as_deref(), params.pane.as_deref())
+}
+
+fn elapsed_millis(duration: Duration) -> u128 {
+    duration.as_millis()
 }
 
 fn validate_name(field: &str, value: &str, allow_percent: bool) -> Result<String> {

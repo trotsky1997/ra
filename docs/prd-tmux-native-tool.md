@@ -18,6 +18,8 @@ send input across turns, or clean up persistent terminal state.
 - Agents can terminate Ra-owned tmux sessions/windows/panes.
 - Agents can wait for new pane output or a pattern without opening a daemonized
   listener.
+- Agents can actively block on tmux wait events, including program exit,
+  program output, pane output updates, hook expressions, and bounded sleep.
 - Missing `tmux` returns structured install guidance instead of an opaque spawn
   error.
 - Focused tests cover parameter handling, missing-binary behavior, argv shape,
@@ -33,6 +35,9 @@ send input across turns, or clean up persistent terminal state.
   tools cannot accidentally target my personal tmux sessions.
 - As an operator, I want a cleanup tool so that agent-created terminal state can
   be removed deliberately.
+- As an agent coordinating a long-running terminal workflow, I want one bounded
+  wait primitive so that I can wait for completion, output, hooks, or a sleep
+  interval without guessing with unbounded polling.
 
 ## Functional Requirements
 
@@ -44,9 +49,12 @@ send input across turns, or clean up persistent terminal state.
 | Must | Provide a `tmux_send` built-in tool that sends literal input or tmux key names to a target pane. |
 | Must | Provide a `tmux_capture` built-in tool that captures pane content with optional `start_line` / `end_line` bounds. |
 | Must | Provide a `tmux_kill` built-in tool that terminates Ra-owned sessions, windows, panes, or all `ra__*` sessions. |
-| Must | Provide a `tmux_listen` built-in tool that polls until pane output changes or an optional substring/regex appears. |
+| Must | Provide a `tmux_listen` built-in tool that polls until a shared tmux event expression is observed. |
+| Must | Provide a `tmux_wait` built-in tool that blocks until `output_update`, `output_match`, `program_exit`, `program_output`, `hook`, or `sleep` resolves or `timeout_ms` expires. |
+| Must | Require `tmux_wait.timeout_ms` so active waits are always bounded. |
+| Must | Keep `tmux_listen` and `tmux_wait` on the same event expression semantics for `event`, `pattern`, `regex`, and `hook`. |
 | Must | Namespace logical session names as `ra__{session}`. |
-| Must | Register all five tools in `default_builtins` and respect `[tools].builtin` allow-list filtering. |
+| Must | Register all six tools in `default_builtins` and respect `[tools].builtin` allow-list filtering. |
 | Must | Return structured JSON for tool output, tmux failures, truncation state, and missing-`tmux` guidance. |
 | Must | Document JSON schemas and behavior in `spec/tools.md`, README, and sample config. |
 | Should | Keep `tmux_listen` bounded by timeout and polling parameters rather than creating a lifecycle daemon. |
@@ -72,9 +80,18 @@ tmux locally instead of routing through ACP `terminal/*` reverse calls. Logical
 session names are validated and mapped to `ra__{session}` targets so all cleanup
 and capture operations remain scoped to Ra-owned sessions.
 
-`tmux_listen` is a bounded polling primitive, not a background stream. It
-captures the pane repeatedly until output changes, an optional pattern matches,
-or the timeout expires.
+`tmux_listen` is a bounded polling primitive, not a background stream.
+`tmux_wait` is the active blocking companion. Both tools use the same event
+expression model:
+
+- `output_update`: the pane capture changes after the initial snapshot.
+- `output_match`: the pane capture matches `pattern`.
+- `program_exit`: a supplied command exits.
+- `program_output`: a supplied command produces matching output, or any output
+  when no pattern is supplied.
+- `hook`: the pane capture matches the same substring/regex expression with an
+  optional hook label.
+- `sleep`: wait for `duration_ms` bounded by `timeout_ms`.
 
 ## Technical Considerations
 
@@ -99,9 +116,11 @@ capability spec is `openspec/specs/tmux-tools/spec.md`.
 
 - `tmux_run.wait=true` needs deterministic completion. Ra uses a wrapper script
   and `tmux wait-for`; this intentionally respawns the target pane for blocking
-  runs.
+  runs. `tmux_wait` reuses this behavior for program waits.
 - `tmux_listen` uses polling rather than tmux control mode. This keeps the tool
   simple and bounded but is not a live event stream.
+- Hook waits are expression-based labels over pane output, not tmux-native
+  `set-hook` integration.
 - Persistent tmux sessions remain after non-blocking runs until an operator or
   agent calls `tmux_kill`.
 

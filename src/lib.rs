@@ -6,6 +6,7 @@ pub mod atif_codec;
 pub mod config;
 pub mod events;
 pub mod hooks;
+pub mod init;
 pub mod llm_model;
 pub mod mcp;
 pub mod model;

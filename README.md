@@ -71,6 +71,9 @@ The eye watching from the banner is 𓂀 (U+13080).
 ## Quick start
 
 ```bash
+# Create a project-local config and skills directory
+cargo run -- init
+
 # Mock model (no API key — uses the bash:/read:/write:/edit: prefixes)
 cargo run -- "bash:echo hello && uname -sr"
 
@@ -86,6 +89,10 @@ PI_BASE_URL=https://pi-api-us.macaron.xin/v1/ \
 PI_MODEL=gpt-5.5 \
 cargo run -- "Use bash to print the date, then summarize."
 ```
+
+`ra init` writes a minimal `ra.toml` and creates `.ra/skills/`.
+Existing files are left untouched; pass `--force` to replace generated
+files, or `--example-skill` to add `.ra/skills/example/SKILL.md`.
 
 To serve as an editor agent over ACP:
 

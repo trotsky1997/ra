@@ -517,7 +517,11 @@ impl RaConfig {
     pub fn expand_path(s: &str, base: &Path) -> PathBuf {
         let expanded = shellexpand::tilde(s).to_string();
         let p = PathBuf::from(expanded);
-        if p.is_absolute() { p } else { base.join(p) }
+        if p.is_absolute() {
+            p
+        } else {
+            base.join(p)
+        }
     }
 }
 

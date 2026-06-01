@@ -27,6 +27,7 @@ use std::sync::Arc;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolKindHint {
     Read,
+    Search,
     Execute,
     Other,
 }
@@ -113,12 +114,15 @@ fn parse_slash_command(text: &str, extra_names: &[&str]) -> Option<SlashCommand>
         None => (rest, ""),
     };
     let name_lc = name.to_lowercase();
-    let known = SLASH_COMMANDS.contains(&name_lc.as_str())
-        || extra_names.iter().any(|n| *n == name_lc);
+    let known =
+        SLASH_COMMANDS.contains(&name_lc.as_str()) || extra_names.iter().any(|n| *n == name_lc);
     if !known {
         return None;
     }
-    Some(SlashCommand { name: name_lc, args: args.to_string() })
+    Some(SlashCommand {
+        name: name_lc,
+        args: args.to_string(),
+    })
 }
 
 /// The actual runner. Cheap to construct; owns no resources of its own
@@ -179,7 +183,10 @@ impl SessionRunner {
             // Emit terminal events while the observability scope is still
             // alive so they appear inside the agent span.
             let used = self.session.estimate_used_tokens().await;
-            on_event(RunnerEvent::UsageReport { used, size: used_size });
+            on_event(RunnerEvent::UsageReport {
+                used,
+                size: used_size,
+            });
             on_event(RunnerEvent::Finished(result.clone()));
             // AgentEnd hook fires last, so log/cleanup tools see the
             // final state (including any TextDelta drained by the bus
@@ -210,12 +217,16 @@ impl SessionRunner {
                 .user_prompt_submit(Some(&self.session_id), &user_text)
                 .await;
             if let Some(reason) = decision.stop.clone() {
-                on_event(RunnerEvent::TextDelta(format!("[stopped by hook] {reason}")));
+                on_event(RunnerEvent::TextDelta(format!(
+                    "[stopped by hook] {reason}"
+                )));
                 hooks.stop(Some(&self.session_id)).await;
                 return RunOutcome::Failed(reason);
             }
             if let Some(reason) = decision.block.clone() {
-                on_event(RunnerEvent::TextDelta(format!("[blocked by hook] {reason}")));
+                on_event(RunnerEvent::TextDelta(format!(
+                    "[blocked by hook] {reason}"
+                )));
                 hooks.stop(Some(&self.session_id)).await;
                 return RunOutcome::Failed(reason);
             }
@@ -261,11 +272,7 @@ impl SessionRunner {
                         Ok(RaEvent::TextDelta(s)) => on_event(RunnerEvent::TextDelta(s)),
                         Ok(RaEvent::ThinkingDelta(s)) => on_event(RunnerEvent::ThinkingDelta(s)),
                         Ok(RaEvent::ToolCallStart(c)) => {
-                            let kind = match c.name.as_str() {
-                                "read" => ToolKindHint::Read,
-                                "bash" | "git" | "gh" => ToolKindHint::Execute,
-                                _ => ToolKindHint::Other,
-                            };
+                            let kind = tool_kind(&c.name);
                             let title = tool_title(&c.name, &c.input);
                             on_event(RunnerEvent::ToolCallStart {
                                 id: c.id.clone(),
@@ -302,11 +309,7 @@ impl SessionRunner {
                             RaEvent::TextDelta(s) => on_event(RunnerEvent::TextDelta(s)),
                             RaEvent::ThinkingDelta(s) => on_event(RunnerEvent::ThinkingDelta(s)),
                             RaEvent::ToolCallStart(c) => {
-                                let kind = match c.name.as_str() {
-                                    "read" => ToolKindHint::Read,
-                                    "bash" | "git" | "gh" => ToolKindHint::Execute,
-                                    _ => ToolKindHint::Other,
-                                };
+                                let kind = tool_kind(&c.name);
                                 let title = tool_title(&c.name, &c.input);
                                 on_event(RunnerEvent::ToolCallStart {
                                     id: c.id.clone(),
@@ -388,6 +391,15 @@ impl SessionRunner {
     }
 }
 
+fn tool_kind(name: &str) -> ToolKindHint {
+    match name {
+        "read" => ToolKindHint::Read,
+        "ast_grep" => ToolKindHint::Search,
+        "bash" | "git" | "gh" => ToolKindHint::Execute,
+        _ => ToolKindHint::Other,
+    }
+}
+
 /// Human-readable title for a tool call, surfaced in client UI.
 fn tool_title(name: &str, input: &serde_json::Value) -> String {
     match name {
@@ -400,19 +412,23 @@ fn tool_title(name: &str, input: &serde_json::Value) -> String {
             .get("command")
             .and_then(|v| v.as_str())
             .map(|c| {
-                let mut s = c.to_string();
-                if s.len() > 60 {
-                    s.truncate(60);
-                    s.push('…');
-                }
+                let s = truncate_chars(c, 60);
                 format!("$ {s}")
             })
             .unwrap_or_else(|| "Run shell".into()),
+        "ast_grep" => input
+            .get("pattern")
+            .and_then(|v| v.as_str())
+            .map(|q| {
+                let s = truncate_chars(q, 60);
+                format!("ast-grep {s}")
+            })
+            .unwrap_or_else(|| "ast-grep search".into()),
         "git" | "gh" => input
             .get("args")
             .and_then(|v| v.as_array())
             .map(|args| {
-                let mut s = std::iter::once(name.to_string())
+                let raw = std::iter::once(name.to_string())
                     .chain(
                         args.iter()
                             .filter_map(|v| v.as_str())
@@ -420,13 +436,56 @@ fn tool_title(name: &str, input: &serde_json::Value) -> String {
                     )
                     .collect::<Vec<_>>()
                     .join(" ");
-                if s.len() > 60 {
-                    s.truncate(60);
-                    s.push('…');
-                }
+                let s = truncate_chars(&raw, 60);
                 format!("$ {s}")
             })
             .unwrap_or_else(|| format!("Run {name}")),
         other => other.to_string(),
+    }
+}
+
+fn truncate_chars(s: &str, limit: usize) -> String {
+    if s.chars().count() <= limit {
+        s.to_string()
+    } else {
+        let mut out: String = s.chars().take(limit).collect();
+        out.push('…');
+        out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn tool_title_truncates_multibyte_ast_grep_pattern_safely() {
+        let pattern = format!("{}界tail", "a".repeat(59));
+        let title = tool_title("ast_grep", &json!({ "pattern": pattern }));
+
+        assert!(title.starts_with("ast-grep "));
+        assert!(title.ends_with('…'));
+        assert!(title.contains('界'));
+    }
+
+    #[test]
+    fn tool_title_truncates_multibyte_bash_command_safely() {
+        let command = format!("{}界tail", "a".repeat(59));
+        let title = tool_title("bash", &json!({ "command": command }));
+
+        assert!(title.starts_with("$ "));
+        assert!(title.ends_with('…'));
+        assert!(title.contains('界'));
+    }
+
+    #[test]
+    fn tool_title_truncates_multibyte_native_cli_args_safely() {
+        let arg = format!("{}界tail", "a".repeat(55));
+        let title = tool_title("git", &json!({ "args": [arg] }));
+
+        assert!(title.starts_with("$ git "));
+        assert!(title.ends_with('…'));
+        assert!(title.contains('界'));
     }
 }

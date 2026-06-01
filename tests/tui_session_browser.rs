@@ -22,9 +22,11 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use futures::stream::{self, BoxStream, StreamExt};
 use ra::{
-    atif_codec, store::SessionStore, Session,
+    atif_codec,
     model::{Message, Model, ModelChunk, StopReason, ToolSpec},
-    session_runner::{RunnerHost, RunOutcome, SessionRunner},
+    session_runner::{RunOutcome, RunnerHost, SessionRunner},
+    store::SessionStore,
+    Session,
 };
 use tempfile::TempDir;
 
@@ -39,7 +41,13 @@ struct ScriptedModel {
 impl ScriptedModel {
     fn new(turns: Vec<Vec<ModelChunk>>) -> (Self, Arc<Mutex<Vec<Vec<Message>>>>) {
         let seen = Arc::new(Mutex::new(Vec::new()));
-        (Self { turns: Mutex::new(turns), seen: seen.clone() }, seen)
+        (
+            Self {
+                turns: Mutex::new(turns),
+                seen: seen.clone(),
+            },
+            seen,
+        )
     }
 }
 
@@ -54,7 +62,9 @@ impl Model for ScriptedModel {
         let chunks = {
             let mut q = self.turns.lock().unwrap();
             if q.is_empty() {
-                vec![ModelChunk::End { stop_reason: StopReason::EndTurn }]
+                vec![ModelChunk::End {
+                    stop_reason: StopReason::EndTurn,
+                }]
             } else {
                 q.remove(0)
             }
@@ -70,14 +80,20 @@ struct NullHost;
 #[async_trait]
 impl RunnerHost for NullHost {
     async fn save_session(&self, _id: &str) {}
-    fn default_ctx_window(&self) -> u64 { 200_000 }
-    fn list_models_for_display(&self) -> Vec<(String, String)> { vec![] }
+    fn default_ctx_window(&self) -> u64 {
+        200_000
+    }
+    fn list_models_for_display(&self) -> Vec<(String, String)> {
+        vec![]
+    }
 }
 
 // ---- Helpers ---------------------------------------------------------------
 
 fn end_turn() -> Vec<ModelChunk> {
-    vec![ModelChunk::End { stop_reason: StopReason::EndTurn }]
+    vec![ModelChunk::End {
+        stop_reason: StopReason::EndTurn,
+    }]
 }
 
 // ---- Test 1: session browser restore path ---------------------------------
@@ -88,12 +104,17 @@ fn end_turn() -> Vec<ModelChunk> {
 #[tokio::test]
 async fn session_browser_restore_replays_history() {
     let tmp = TempDir::new().unwrap();
-    unsafe { std::env::set_var("RA_HOME", tmp.path()); }
+    unsafe {
+        std::env::set_var("RA_HOME", tmp.path());
+    }
 
     // Phase 1: build a session with one turn of history.
     let (model_a, _) = ScriptedModel::new(vec![end_turn()]);
     let session_a = Arc::new(Session::new(Arc::new(model_a), vec![]));
-    session_a.prompt("original prompt".to_string()).await.unwrap();
+    session_a
+        .prompt("original prompt".to_string())
+        .await
+        .unwrap();
     let messages = session_a.snapshot_messages().await;
     assert!(!messages.is_empty());
 
@@ -121,7 +142,9 @@ async fn session_browser_restore_replays_history() {
     let history = &seen[0];
 
     assert!(
-        history.iter().any(|m| matches!(m, Message::User { content } if content == "original prompt")),
+        history
+            .iter()
+            .any(|m| matches!(m, Message::User { content } if content == "original prompt")),
         "restored history must include the original user message"
     );
     assert!(
@@ -165,7 +188,10 @@ async fn prompt_template_expanded_before_model() {
     let session = Arc::new(Session::new(Arc::new(model), vec![]));
 
     let mut templates = HashMap::new();
-    templates.insert("greet".to_string(), "Say hello to the user warmly.".to_string());
+    templates.insert(
+        "greet".to_string(),
+        "Say hello to the user warmly.".to_string(),
+    );
 
     let host = Arc::new(NullHost);
     let runner = SessionRunner::new(session.clone(), "test-session".into(), host)
@@ -193,7 +219,10 @@ async fn prompt_template_with_args_appended() {
     let session = Arc::new(Session::new(Arc::new(model), vec![]));
 
     let mut templates = HashMap::new();
-    templates.insert("greet".to_string(), "Say hello to the user warmly.".to_string());
+    templates.insert(
+        "greet".to_string(),
+        "Say hello to the user warmly.".to_string(),
+    );
 
     let host = Arc::new(NullHost);
     let runner = SessionRunner::new(session.clone(), "test-session".into(), host)

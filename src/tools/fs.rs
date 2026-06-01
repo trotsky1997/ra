@@ -9,7 +9,7 @@ use crate::tool_ctx::{FileChange, FileChangeDecision, ToolCtx};
 use crate::tools::core::Tool;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use schemars::{JsonSchema, schema_for};
+use schemars::{schema_for, JsonSchema};
 use serde::Deserialize;
 
 // ---------- WriteTool ------------------------------------------------------

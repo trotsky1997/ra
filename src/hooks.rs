@@ -205,7 +205,10 @@ impl HookEngine {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.pre.is_empty() && self.post.is_empty() && self.submit.is_empty() && self.stop.is_empty()
+        self.pre.is_empty()
+            && self.post.is_empty()
+            && self.submit.is_empty()
+            && self.stop.is_empty()
     }
 
     /// Fire every PreToolUse hook whose matcher hits `tool_name`. Returns
@@ -480,7 +483,10 @@ async fn invoke<T: Serialize>(
             // timeout fired
             // We can't kill `child` here because wait_with_output moved it;
             // just return the warning. The OS will still reap when it exits.
-            eprintln!("[ra::hooks] {} timed out after {:?}", hook.command, hook.timeout);
+            eprintln!(
+                "[ra::hooks] {} timed out after {:?}",
+                hook.command, hook.timeout
+            );
             Ok(HookOutput::default())
         }
     }

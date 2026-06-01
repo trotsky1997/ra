@@ -17,17 +17,17 @@
 use std::sync::Arc;
 
 use a2a::{
-    AgentCapabilities, AgentCard, AgentInterface, AgentProvider, AgentSkill, A2AError,
-    HttpAuthSecurityScheme, Message, Part, PartContent, Role, SecurityRequirement,
-    SecurityScheme, StreamResponse, Task, TaskState, TaskStatus, TaskStatusUpdateEvent,
-    TRANSPORT_PROTOCOL_GRPC, TRANSPORT_PROTOCOL_HTTP_JSON, TRANSPORT_PROTOCOL_JSONRPC,
+    A2AError, AgentCapabilities, AgentCard, AgentInterface, AgentProvider, AgentSkill,
+    HttpAuthSecurityScheme, Message, Part, PartContent, Role, SecurityRequirement, SecurityScheme,
+    StreamResponse, Task, TaskState, TaskStatus, TaskStatusUpdateEvent, TRANSPORT_PROTOCOL_GRPC,
+    TRANSPORT_PROTOCOL_HTTP_JSON, TRANSPORT_PROTOCOL_JSONRPC,
 };
 use a2a_grpc::GrpcHandler;
 use a2a_pb::proto::a2a_service_server::A2aServiceServer;
 use a2a_server::{
-    AgentExecutor, DefaultRequestHandler, ExecutorContext, HttpPushSender, InMemoryPushConfigStore,
+    agent_card::agent_card_router, jsonrpc::jsonrpc_router, rest::rest_router, AgentExecutor,
+    DefaultRequestHandler, ExecutorContext, HttpPushSender, InMemoryPushConfigStore,
     InMemoryTaskStore, StaticAgentCard,
-    agent_card::agent_card_router, jsonrpc::jsonrpc_router, rest::rest_router,
 };
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -51,8 +51,8 @@ use crate::tools::Tool;
 
 /// Top-level A2A server state. Mirrors `acp_server::SharedState` but
 /// trimmed to only what the A2A path needs (no AcpClientHandle wiring,
-/// no per-session cwd map — A2A clients don't have a host filesystem
-/// to delegate back to).
+/// no per-session cwd map). A2A sessions share the server launch cwd for
+/// local tools and trajectory storage.
 pub struct A2aState {
     model: Arc<dyn Model>,
     model_factory: Arc<dyn ModelFactory>,
@@ -101,6 +101,7 @@ impl A2aState {
             return s.clone();
         }
         let mut s = Session::new(self.model.clone(), self.tools.clone())
+            .with_cwd(self.cwd.clone())
             .with_rtk(self.rtk.clone());
         if let Some(h) = &self.hooks {
             s = s.with_hooks(h.clone());
@@ -164,7 +165,12 @@ impl RunnerHost for A2aState {
     fn default_ctx_window(&self) -> u64 {
         // 200k is a safe-ish midpoint; A2A doesn't surface UsageUpdate
         // anyway, and our tiktoken estimate is approximate.
-        match self.model_factory.default_model_id().to_lowercase().as_str() {
+        match self
+            .model_factory
+            .default_model_id()
+            .to_lowercase()
+            .as_str()
+        {
             id if id.contains("gpt-5") => 1_000_000,
             id if id.contains("gemini") => 1_000_000,
             id if id.contains("claude") => 200_000,
@@ -271,10 +277,7 @@ impl AgentExecutor for RaExecutor {
         Box::pin(ReceiverStream::new(rx))
     }
 
-    fn cancel(
-        &self,
-        ctx: ExecutorContext,
-    ) -> BoxStream<'static, Result<StreamResponse, A2AError>> {
+    fn cancel(&self, ctx: ExecutorContext) -> BoxStream<'static, Result<StreamResponse, A2AError>> {
         let task_id = ctx.task_id.clone();
         let context_id = ctx.context_id.clone();
         let state = self.state.clone();
@@ -366,7 +369,7 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 fn build_card(http_port: u16, grpc_port: u16, require_bearer: bool) -> AgentCard {
     AgentCard {
         name: "Ra".to_string(),
-        description: "Rust-native agent. ACP-native, A2A-compatible. Speaks bash and read tools.".to_string(),
+        description: "Rust-native agent. ACP-native, A2A-compatible. Speaks read, bash, and ast-grep tools.".to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
         provider: Some(AgentProvider {
             organization: "Ra".to_string(),
@@ -405,6 +408,16 @@ fn build_card(http_port: u16, grpc_port: u16, require_bearer: bool) -> AgentCard
                 description: "Tool: ask Ra to read a file from the filesystem.".to_string(),
                 tags: vec!["fs".into(), "read".into()],
                 examples: Some(vec!["Read Cargo.toml".into()]),
+                input_modes: None,
+                output_modes: None,
+                security_requirements: None,
+            },
+            AgentSkill {
+                id: "ast_grep".to_string(),
+                name: "Structural code search".to_string(),
+                description: "Tool: ask Ra to search code structurally with ast-grep.".to_string(),
+                tags: vec!["search".into(), "code".into()],
+                examples: Some(vec!["Use ast_grep to find Rust if blocks".into()]),
                 input_modes: None,
                 output_modes: None,
                 security_requirements: None,
@@ -481,7 +494,9 @@ pub async fn run(
         hooks,
         rtk,
     ));
-    let executor = RaExecutor { state: state.clone() };
+    let executor = RaExecutor {
+        state: state.clone(),
+    };
     let handler = Arc::new(
         DefaultRequestHandler::new(executor, InMemoryTaskStore::new())
             .with_push_notifications(InMemoryPushConfigStore::new(), HttpPushSender::new(None)),
@@ -522,9 +537,11 @@ pub async fn run(
 
     let http_addr = format!("0.0.0.0:{http_port}");
     let grpc_addr = format!("0.0.0.0:{grpc_port}");
-    let http_listener = TcpListener::bind(&http_addr).await
+    let http_listener = TcpListener::bind(&http_addr)
+        .await
         .with_context(|| format!("bind {http_addr}"))?;
-    let grpc_listener = TcpListener::bind(&grpc_addr).await
+    let grpc_listener = TcpListener::bind(&grpc_addr)
+        .await
         .with_context(|| format!("bind {grpc_addr}"))?;
 
     eprintln!("[ra::a2a] agent card:  http://localhost:{http_port}/.well-known/agent-card.json");

@@ -150,6 +150,60 @@ Run native GitHub CLI (`gh`).
 |-------|------------------|----------|---------|-------|
 | args  | array of strings | no       | `[]`    | arguments only; omit the `gh` binary |
 
+## Structural search tools
+
+### `ast_grep`
+
+Search code with [ast-grep](https://ast-grep.github.io/) and return
+JSON. This tool shells out directly to `ast-grep run --json=stream`
+(or an `sg` alias whose `--version` output identifies it as ast-grep),
+parses the JSON stream, and returns a stable object. Relative paths are
+resolved against the session cwd. Exit status `1` with empty stderr
+means “no matches” and is returned as an empty result rather than an
+error; status `1` with stderr is treated as an ast-grep error.
+
+```json
+{
+  "pattern": "if ($COND) { $BODY }",
+  "lang": "rust",
+  "paths": ["src"],
+  "globs": ["src/**/*.rs", "!target/**"]
+}
+```
+
+| Field            | Type     | Required | Default | Notes |
+|------------------|----------|----------|---------|-------|
+| pattern          | string   | yes      |         | AST pattern to match |
+| paths            | string[] | no       | `["."]` | Files or directories to search |
+| lang             | string   | no       | inferred | `rust`, `python`, `typescript`, `tsx`, … |
+| selector         | string   | no       |         | AST kind inside `pattern` used as matcher |
+| strictness       | string   | no       | ast-grep default | `cst`, `smart`, `ast`, `relaxed`, `signature`, `template` |
+| globs            | string[] | no       | `[]`    | Include/exclude globs; prefix with `!` to exclude |
+| follow           | boolean  | no       | `false` | Follow symlinks during traversal |
+| context          | integer  | no       |         | Context lines around matches; conflicts with `before`/`after` |
+| before           | integer  | no       |         | Lines before matches |
+| after            | integer  | no       |         | Lines after matches |
+| max_matches      | integer  | no       | `50`    | Set `0` for no match-count cap; search stops after the budget is reached |
+| max_output_bytes | integer  | no       | `100000` | Search stops before adding a match that would exceed the JSON budget |
+
+Returned shape:
+
+```json
+{
+  "matches": [],
+  "total_matches": 0,
+  "truncated": false,
+  "exit_code": 1,
+  "stderr": null
+}
+```
+
+Errors:
+- `ast_grep requires a non-empty pattern`
+- `context conflicts with before/after`
+- `ast-grep not found on PATH; install ast-grep or an ast-grep sg alias to use ast_grep`
+- `ast-grep exited with status N: <output>`
+
 ## Graphify tools
 
 When `[graphify]` is enabled, Ra registers an agent-owned R2A graph

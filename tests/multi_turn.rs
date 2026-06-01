@@ -17,10 +17,9 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use futures::stream::{self, BoxStream, StreamExt};
 use ra::{
-    Event, Session, ToolCall, ToolResult,
     model::{Message, Model, ModelChunk, StopReason, ToolSpec},
     tool_ctx::ToolCtx,
-    Tool,
+    Event, Session, Tool, ToolCall, ToolResult,
 };
 use schemars::{schema_for, JsonSchema};
 use serde::Deserialize;
@@ -37,7 +36,9 @@ struct ScriptedModel {
 
 impl ScriptedModel {
     fn new(turns: Vec<Vec<ModelChunk>>) -> Self {
-        Self { turns: Mutex::new(turns) }
+        Self {
+            turns: Mutex::new(turns),
+        }
     }
 }
 
@@ -106,8 +107,12 @@ struct EchoTool {
 
 #[async_trait]
 impl Tool for EchoTool {
-    fn name(&self) -> &str { "echo" }
-    fn description(&self) -> &str { "echo back the input, recording it in the test log" }
+    fn name(&self) -> &str {
+        "echo"
+    }
+    fn description(&self) -> &str {
+        "echo back the input, recording it in the test log"
+    }
     fn schema(&self) -> serde_json::Value {
         serde_json::to_value(schema_for!(EchoParams)).unwrap()
     }
@@ -118,7 +123,11 @@ impl Tool for EchoTool {
         _ctx: &ToolCtx,
     ) -> anyhow::Result<String> {
         let p: EchoParams = serde_json::from_value(input)?;
-        self.log.0.lock().unwrap().push((call_id.to_string(), p.text.clone()));
+        self.log
+            .0
+            .lock()
+            .unwrap()
+            .push((call_id.to_string(), p.text.clone()));
         Ok(format!("echoed: {}", p.text))
     }
 }
@@ -149,12 +158,16 @@ async fn streaming_text_parallel_tools_multi_turn() {
     //         in the same turn (parallel-tools branch), end with ToolUse.
     let turn1: Vec<ModelChunk> = text_chunks("planning... ")
         .into_iter()
-        .chain(std::iter::once(ModelChunk::TextDelta("ok now run all three tools.".into())))
+        .chain(std::iter::once(ModelChunk::TextDelta(
+            "ok now run all three tools.".into(),
+        )))
         .chain([
             tool_call("c-alpha", "echo", serde_json::json!({ "text": "alpha" })),
-            tool_call("c-beta",  "echo", serde_json::json!({ "text": "beta" })),
+            tool_call("c-beta", "echo", serde_json::json!({ "text": "beta" })),
             tool_call("c-gamma", "echo", serde_json::json!({ "text": "gamma" })),
-            ModelChunk::End { stop_reason: StopReason::ToolUse },
+            ModelChunk::End {
+                stop_reason: StopReason::ToolUse,
+            },
         ])
         .collect();
 
@@ -163,14 +176,18 @@ async fn streaming_text_parallel_tools_multi_turn() {
         .into_iter()
         .chain([
             tool_call("c-delta", "echo", serde_json::json!({ "text": "delta" })),
-            ModelChunk::End { stop_reason: StopReason::ToolUse },
+            ModelChunk::End {
+                stop_reason: StopReason::ToolUse,
+            },
         ])
         .collect();
 
     // Turn 3: natural end.
     let turn3: Vec<ModelChunk> = text_chunks("done.")
         .into_iter()
-        .chain(std::iter::once(ModelChunk::End { stop_reason: StopReason::EndTurn }))
+        .chain(std::iter::once(ModelChunk::End {
+            stop_reason: StopReason::EndTurn,
+        }))
         .collect();
 
     let log = CallLog::new();
@@ -193,7 +210,10 @@ async fn streaming_text_parallel_tools_multi_turn() {
         events
     });
 
-    let outcome = session.prompt("kick off".to_string()).await.expect("prompt ok");
+    let outcome = session
+        .prompt("kick off".to_string())
+        .await
+        .expect("prompt ok");
     assert_eq!(format!("{outcome:?}"), "Completed");
     let events = collected.await.expect("event collector finished");
 
@@ -202,7 +222,13 @@ async fn streaming_text_parallel_tools_multi_turn() {
     // concatenation should reproduce what we scripted.
     let text_deltas: Vec<&str> = events
         .iter()
-        .filter_map(|e| if let Event::TextDelta(s) = e { Some(s.as_str()) } else { None })
+        .filter_map(|e| {
+            if let Event::TextDelta(s) = e {
+                Some(s.as_str())
+            } else {
+                None
+            }
+        })
         .collect();
     assert!(
         text_deltas.len() >= 6,
@@ -212,8 +238,14 @@ async fn streaming_text_parallel_tools_multi_turn() {
     );
     let joined: String = text_deltas.concat();
     assert!(joined.starts_with("planning..."), "joined={joined:?}");
-    assert!(joined.contains("ok now run all three tools."), "joined={joined:?}");
-    assert!(joined.contains("two of three look right;"), "joined={joined:?}");
+    assert!(
+        joined.contains("ok now run all three tools."),
+        "joined={joined:?}"
+    );
+    assert!(
+        joined.contains("two of three look right;"),
+        "joined={joined:?}"
+    );
     assert!(joined.ends_with("done."), "joined={joined:?}");
 
     // ----- 2. Parallel tool calls within turn 1 -----
@@ -222,11 +254,23 @@ async fn streaming_text_parallel_tools_multi_turn() {
     // then runs the calls in order).
     let starts: Vec<&str> = events
         .iter()
-        .filter_map(|e| if let Event::ToolCallStart(c) = e { Some(c.id.as_str()) } else { None })
+        .filter_map(|e| {
+            if let Event::ToolCallStart(c) = e {
+                Some(c.id.as_str())
+            } else {
+                None
+            }
+        })
         .collect();
     let ends: Vec<&ToolResult> = events
         .iter()
-        .filter_map(|e| if let Event::ToolCallEnd(r) = e { Some(r) } else { None })
+        .filter_map(|e| {
+            if let Event::ToolCallEnd(r) = e {
+                Some(r)
+            } else {
+                None
+            }
+        })
         .collect();
 
     assert_eq!(
@@ -262,7 +306,7 @@ async fn streaming_text_parallel_tools_multi_turn() {
         log,
         vec![
             ("c-alpha".into(), "alpha".into()),
-            ("c-beta".into(),  "beta".into()),
+            ("c-beta".into(), "beta".into()),
             ("c-gamma".into(), "gamma".into()),
             ("c-delta".into(), "delta".into()),
         ],
@@ -271,8 +315,14 @@ async fn streaming_text_parallel_tools_multi_turn() {
 
     // ----- 3. Multi-turn tool loop -----
     // Three TurnStart / TurnEnd pairs (one per scripted turn).
-    let turn_starts = events.iter().filter(|e| matches!(e, Event::TurnStart)).count();
-    let turn_ends = events.iter().filter(|e| matches!(e, Event::TurnEnd)).count();
+    let turn_starts = events
+        .iter()
+        .filter(|e| matches!(e, Event::TurnStart))
+        .count();
+    let turn_ends = events
+        .iter()
+        .filter(|e| matches!(e, Event::TurnEnd))
+        .count();
     assert_eq!(turn_starts, 3, "expected exactly three turns");
     assert_eq!(turn_ends, 3, "expected exactly three turn ends");
 

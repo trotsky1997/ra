@@ -33,6 +33,6 @@ pub use tool_ctx::{
 pub use tools::{
     default_builtins, default_builtins_with_cfg, ApplyPatchTool, AstGrepTool, BashTool, EditTool,
     FuzzyTool, GhTool, GitTool, GlobTool, GrepTool, JqTool, LsTool, LspTool, ReadTool, RtkRewriter,
-    TmuxCaptureTool, TmuxKillTool, TmuxListenTool, TmuxRunTool, TmuxSendTool, Tool,
+    TmuxCaptureTool, TmuxKillTool, TmuxListenTool, TmuxRunTool, TmuxSendTool, TmuxWaitTool, Tool,
     WebfetchCrawlTool, WebfetchFetchTool, WriteTool,
 };

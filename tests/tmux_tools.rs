@@ -1,7 +1,10 @@
 //! Integration tests for native tmux tools.
 
 use ra::{
-    tools::{TmuxCaptureTool, TmuxKillTool, TmuxListenTool, TmuxRunTool, TmuxSendTool, Tool},
+    tools::{
+        TmuxCaptureTool, TmuxKillTool, TmuxListenTool, TmuxRunTool, TmuxSendTool, TmuxWaitTool,
+        Tool,
+    },
     Event, ToolCtx,
 };
 use serde_json::Value;
@@ -74,6 +77,7 @@ fn default_catalog_contains_tmux_tools_and_allowlist_is_exact() {
         "tmux_capture",
         "tmux_kill",
         "tmux_listen",
+        "tmux_wait",
     ] {
         assert!(
             names.contains(&name.to_string()),
@@ -86,6 +90,23 @@ fn default_catalog_contains_tmux_tools_and_allowlist_is_exact() {
         .map(|tool| tool.name().to_string())
         .collect::<Vec<_>>();
     assert_eq!(filtered, vec!["tmux_capture"]);
+}
+
+#[tokio::test]
+async fn wait_requires_timeout_in_schema_params() {
+    let err = TmuxWaitTool
+        .execute(
+            "tw",
+            serde_json::json!({
+                "event": "sleep",
+                "duration_ms": 1
+            }),
+            &make_ctx(),
+        )
+        .await
+        .unwrap_err();
+
+    assert!(err.to_string().contains("invalid params for tmux_wait"));
 }
 
 #[tokio::test]
@@ -111,6 +132,29 @@ async fn capture_returns_structured_missing_tmux_guidance() {
         .as_str()
         .unwrap()
         .contains("Install tmux"));
+}
+
+#[tokio::test]
+async fn wait_sleep_respects_timeout() {
+    let output = TmuxWaitTool
+        .execute(
+            "tw",
+            serde_json::json!({
+                "event": "sleep",
+                "duration_ms": 50,
+                "timeout_ms": 5
+            }),
+            &make_ctx(),
+        )
+        .await
+        .unwrap();
+
+    let output = json_output(&output);
+    assert_eq!(output["ok"], false);
+    assert_eq!(output["tool"], "tmux_wait");
+    assert_eq!(output["event"]["kind"], "sleep");
+    assert_eq!(output["timed_out"], true);
+    assert_eq!(output["triggered"], false);
 }
 
 #[tokio::test]
@@ -254,6 +298,119 @@ async fn listen_detects_pattern_from_fake_tmux() {
 }
 
 #[tokio::test]
+async fn listen_and_wait_share_hook_expression_semantics() {
+    let _guard = env_lock().lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let args_file = dir.path().join("args.txt");
+    let counter_file = dir.path().join("counter.txt");
+    write_fake_tmux(
+        dir.path(),
+        &format!(
+            "if [ -f {} ]; then IFS= read -r n < {}; else n=0; fi\n\
+             n=$((n + 1))\n\
+             printf '%s' \"$n\" > {}\n\
+             if [ \"$n\" -ge 2 ]; then printf 'HOOK_READY job=42\\n'; else printf 'idle\\n'; fi\n\
+             exit 0",
+            counter_file.display(),
+            counter_file.display(),
+            counter_file.display()
+        ),
+    );
+    let _path = EnvRestore::set("PATH", dir.path().as_os_str());
+    let _args_file = EnvRestore::set("TMUX_ARGS_FILE", args_file.as_os_str());
+
+    let listen = TmuxListenTool
+        .execute(
+            "tl",
+            serde_json::json!({
+                "session": "dev",
+                "event": "hook",
+                "hook": "ready",
+                "pattern": "HOOK_READY job=\\d+",
+                "regex": true,
+                "timeout_ms": 1000,
+                "poll_ms": 10
+            }),
+            &make_ctx(),
+        )
+        .await
+        .unwrap();
+    let listen = json_output(&listen);
+    assert_eq!(listen["ok"], true);
+    assert_eq!(listen["event"]["kind"], "hook");
+    assert_eq!(listen["event"]["hook"], "ready");
+    assert_eq!(listen["matched"], true);
+
+    fs::write(&counter_file, "0").unwrap();
+    let wait = TmuxWaitTool
+        .execute(
+            "tw",
+            serde_json::json!({
+                "session": "dev",
+                "event": "hook",
+                "hook": "ready",
+                "pattern": "HOOK_READY job=\\d+",
+                "regex": true,
+                "timeout_ms": 1000,
+                "poll_ms": 10
+            }),
+            &make_ctx(),
+        )
+        .await
+        .unwrap();
+    let wait = json_output(&wait);
+    assert_eq!(wait["ok"], true);
+    assert_eq!(wait["event"]["kind"], "hook");
+    assert_eq!(wait["event"]["hook"], "ready");
+    assert_eq!(wait["matched"], true);
+}
+
+#[tokio::test]
+async fn wait_detects_output_update_from_fake_tmux() {
+    let _guard = env_lock().lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let args_file = dir.path().join("args.txt");
+    let counter_file = dir.path().join("counter.txt");
+    write_fake_tmux(
+        dir.path(),
+        &format!(
+            "if [ -f {} ]; then IFS= read -r n < {}; else n=0; fi\n\
+             n=$((n + 1))\n\
+             printf '%s' \"$n\" > {}\n\
+             if [ \"$n\" -ge 2 ]; then printf 'new output\\n'; else printf 'old output\\n'; fi\n\
+             exit 0",
+            counter_file.display(),
+            counter_file.display(),
+            counter_file.display()
+        ),
+    );
+    let _path = EnvRestore::set("PATH", dir.path().as_os_str());
+    let _args_file = EnvRestore::set("TMUX_ARGS_FILE", args_file.as_os_str());
+
+    let output = TmuxWaitTool
+        .execute(
+            "tw",
+            serde_json::json!({
+                "session": "dev",
+                "event": "output_update",
+                "timeout_ms": 1000,
+                "poll_ms": 10
+            }),
+            &make_ctx(),
+        )
+        .await
+        .unwrap();
+
+    let output = json_output(&output);
+    assert_eq!(output["ok"], true);
+    assert_eq!(output["tool"], "tmux_wait");
+    assert_eq!(output["event"]["kind"], "output_update");
+    assert_eq!(output["changed"], true);
+    assert_eq!(output["timed_out"], false);
+    assert!(output["stdout"].as_str().unwrap().contains("new output"));
+}
+
+#[tokio::test]
 async fn real_tmux_round_trip_run_capture_send_listen_and_kill() {
     let _guard = env_lock().lock().await;
     if which::which("tmux").is_err() {
@@ -337,6 +494,52 @@ async fn real_tmux_round_trip_run_capture_send_listen_and_kill() {
     let listen = json_output(&listen);
     assert_eq!(listen["ok"], true, "listen={listen}");
     assert_eq!(listen["matched"], true, "listen={listen}");
+
+    let wait = TmuxWaitTool
+        .execute(
+            "tw",
+            serde_json::json!({
+                "session": session,
+                "window": "main",
+                "event": "program_output",
+                "command": "printf 'gamma\\n'",
+                "pattern": "gamma",
+                "timeout_ms": 5000,
+                "poll_ms": 100,
+                "max_output_bytes": 10000
+            }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+    let wait = json_output(&wait);
+    assert_eq!(wait["ok"], true, "wait={wait}");
+    assert_eq!(wait["event"]["kind"], "program_output", "wait={wait}");
+    assert_eq!(wait["matched"], true, "wait={wait}");
+    assert!(
+        wait["stdout"].as_str().unwrap().contains("gamma"),
+        "wait={wait}"
+    );
+
+    let wait_exit = TmuxWaitTool
+        .execute(
+            "twx",
+            serde_json::json!({
+                "session": session,
+                "window": "main",
+                "event": "program_exit",
+                "command": "exit 3",
+                "timeout_ms": 5000,
+                "poll_ms": 100,
+                "max_output_bytes": 10000
+            }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+    let wait_exit = json_output(&wait_exit);
+    assert_eq!(wait_exit["ok"], true, "wait_exit={wait_exit}");
+    assert_eq!(wait_exit["command_exit_code"], 3, "wait_exit={wait_exit}");
 
     let kill = TmuxKillTool
         .execute("tk", serde_json::json!({ "session": session }), &ctx)

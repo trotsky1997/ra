@@ -646,7 +646,9 @@ fn tool_kind(name: &str) -> ToolKindHint {
         "read" | "jq" | "grep" | "glob" | "ls" | "fuzzy" | "webfetch_fetch" | "webfetch_crawl"
         | "tmux_capture" | "tmux_listen" => ToolKindHint::Read,
         "ast_grep" => ToolKindHint::Search,
-        "bash" | "git" | "gh" | "tmux_run" | "tmux_send" | "tmux_kill" => ToolKindHint::Execute,
+        "bash" | "git" | "gh" | "tmux_run" | "tmux_send" | "tmux_kill" | "tmux_wait" => {
+            ToolKindHint::Execute
+        }
         _ => ToolKindHint::Other,
     }
 }
@@ -766,6 +768,11 @@ fn tool_title(name: &str, input: &serde_json::Value) -> String {
             .and_then(|v| v.as_str())
             .map(|session| format!("Listen tmux {session}"))
             .unwrap_or_else(|| "Listen tmux pane".into()),
+        "tmux_wait" => input
+            .get("event")
+            .and_then(|v| v.as_str())
+            .map(|event| format!("Wait tmux {event}"))
+            .unwrap_or_else(|| "Wait tmux event".into()),
         "apply_patch" => {
             if input
                 .get("check_only")

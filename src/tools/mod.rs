@@ -25,6 +25,7 @@
 //! - `tmux_capture` — capture tmux pane output
 //! - `tmux_kill` — kill Ra-owned tmux targets
 //! - `tmux_listen` — poll tmux panes for new output
+//! - `tmux_wait` — block until a tmux event or timeout
 
 mod cli;
 mod core;
@@ -45,7 +46,9 @@ pub use jq::JqTool;
 pub use lsp::{resolve_openlsp_binary, LspTool};
 pub use rtk::RtkRewriter;
 pub use search::AstGrepTool;
-pub use tmux::{TmuxCaptureTool, TmuxKillTool, TmuxListenTool, TmuxRunTool, TmuxSendTool};
+pub use tmux::{
+    TmuxCaptureTool, TmuxKillTool, TmuxListenTool, TmuxRunTool, TmuxSendTool, TmuxWaitTool,
+};
 pub use webfetch::{WebfetchCrawlTool, WebfetchFetchTool};
 
 use crate::config::OpenlspSection;
@@ -130,6 +133,9 @@ pub fn default_builtins_with_cfg(
     }
     if want("tmux_listen") {
         out.push(Arc::new(TmuxListenTool));
+    }
+    if want("tmux_wait") {
+        out.push(Arc::new(TmuxWaitTool));
     }
     if want("lsp") {
         if let Some(binary) = resolve_openlsp_binary(openlsp_cfg) {
@@ -216,6 +222,7 @@ mod tests {
             "tmux_capture",
             "tmux_kill",
             "tmux_listen",
+            "tmux_wait",
         ] {
             assert!(
                 names.contains(&name.to_string()),

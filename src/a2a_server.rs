@@ -25,7 +25,8 @@ use a2a::{
 use a2a_grpc::GrpcHandler;
 use a2a_pb::proto::a2a_service_server::A2aServiceServer;
 use a2a_server::{
-    AgentExecutor, DefaultRequestHandler, ExecutorContext, InMemoryTaskStore, StaticAgentCard,
+    AgentExecutor, DefaultRequestHandler, ExecutorContext, HttpPushSender, InMemoryPushConfigStore,
+    InMemoryTaskStore, StaticAgentCard,
     agent_card::agent_card_router, jsonrpc::jsonrpc_router, rest::rest_router,
 };
 use anyhow::{Context, Result};
@@ -373,7 +374,7 @@ fn build_card(http_port: u16, grpc_port: u16, require_bearer: bool) -> AgentCard
         }),
         capabilities: AgentCapabilities {
             streaming: Some(true),
-            push_notifications: Some(false),
+            push_notifications: Some(true),
             extensions: None,
             extended_agent_card: None,
         },
@@ -481,7 +482,10 @@ pub async fn run(
         rtk,
     ));
     let executor = RaExecutor { state: state.clone() };
-    let handler = Arc::new(DefaultRequestHandler::new(executor, InMemoryTaskStore::new()));
+    let handler = Arc::new(
+        DefaultRequestHandler::new(executor, InMemoryTaskStore::new())
+            .with_push_notifications(InMemoryPushConfigStore::new(), HttpPushSender::new(None)),
+    );
 
     let require_bearer = bearer_token.is_some();
     let card = build_card(http_port, grpc_port, require_bearer);

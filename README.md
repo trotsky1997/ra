@@ -166,7 +166,8 @@ Resolution order: `--config <path>` → `$RA_CONFIG` → `./ra.toml` →
 Toggle the catalog via `[tools] builtin = […]`; an empty allow-list
 ships every built-in tool. `grep`, `find`, `ls`, and similar shell
 commands intentionally go through `bash` rather than separate built-in
-tool definitions.
+tool definitions. Unknown names in the allow-list are ignored with a
+startup warning.
 
 ## Protocols & specs
 

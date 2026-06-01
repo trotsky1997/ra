@@ -38,7 +38,8 @@ api_key_env = "ANTHROPIC_API_KEY"
 #   bash   — run a shell command (ACP terminal reverse-call when available)
 # Shell-native commands such as grep/find/ls go through bash rather
 # than separate built-in tool wrappers.
-# An empty list (or omitted section) ships every built-in tool.
+# An empty list (or omitted section) ships every built-in tool. Unknown
+# names are ignored with a startup warning.
 [tools]
 # builtin = ["read", "write", "edit", "bash"]
 builtin = []

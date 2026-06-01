@@ -105,7 +105,8 @@ The four principles are one system:
 Ra is named for the sun god and for "Rust-native agent." Both readings
 point at the same ambition: every turn should illuminate the current
 context, carry a requirement forward, and leave behind an artifact whose
-origin and verification are clear.
+origin and verification are clear. Where the sun shines, ambiguity
+recedes.
 
 Write the spec first. Walk the requirement all the way to the artifact.
 Own the result.

@@ -643,11 +643,12 @@ async fn run_shell_context(command: &str, runtime: &SkillRuntimeOptions, cwd: &P
 
 fn tool_kind(name: &str) -> ToolKindHint {
     match name {
-        "read" | "jq" | "grep" | "glob" | "ls" | "fuzzy" | "webfetch_fetch" | "webfetch_crawl" => {
-            ToolKindHint::Read
-        }
+        "read" | "jq" | "grep" | "glob" | "ls" | "fuzzy" | "webfetch_fetch" | "webfetch_crawl"
+        | "tmux_capture" | "tmux_listen" => ToolKindHint::Read,
         "ast_grep" => ToolKindHint::Search,
-        "bash" | "git" | "gh" => ToolKindHint::Execute,
+        "bash" | "git" | "gh" | "tmux_run" | "tmux_send" | "tmux_kill" | "tmux_wait" => {
+            ToolKindHint::Execute
+        }
         _ => ToolKindHint::Other,
     }
 }
@@ -736,6 +737,42 @@ fn tool_title(name: &str, input: &serde_json::Value) -> String {
                 format!("Crawl {s}")
             })
             .unwrap_or_else(|| "Crawl docs".into()),
+        "tmux_run" => input
+            .get("command")
+            .and_then(|v| v.as_str())
+            .map(|command| {
+                let s = truncate_chars(command, 60);
+                format!("tmux run {s}")
+            })
+            .unwrap_or_else(|| "Run tmux command".into()),
+        "tmux_send" => input
+            .get("keys")
+            .and_then(|v| v.as_str())
+            .map(|keys| {
+                let s = truncate_chars(keys, 60);
+                format!("tmux send {s}")
+            })
+            .unwrap_or_else(|| "Send tmux keys".into()),
+        "tmux_capture" => input
+            .get("session")
+            .and_then(|v| v.as_str())
+            .map(|session| format!("Capture tmux {session}"))
+            .unwrap_or_else(|| "Capture tmux pane".into()),
+        "tmux_kill" => input
+            .get("session")
+            .and_then(|v| v.as_str())
+            .map(|session| format!("Kill tmux {session}"))
+            .unwrap_or_else(|| "Kill tmux target".into()),
+        "tmux_listen" => input
+            .get("session")
+            .and_then(|v| v.as_str())
+            .map(|session| format!("Listen tmux {session}"))
+            .unwrap_or_else(|| "Listen tmux pane".into()),
+        "tmux_wait" => input
+            .get("event")
+            .and_then(|v| v.as_str())
+            .map(|event| format!("Wait tmux {event}"))
+            .unwrap_or_else(|| "Wait tmux event".into()),
         "apply_patch" => {
             if input
                 .get("check_only")
@@ -812,6 +849,16 @@ mod tests {
         let title = tool_title("webfetch_fetch", &json!({ "url": url }));
 
         assert!(title.starts_with("Fetch https://example.com/"));
+        assert!(title.ends_with('…'));
+        assert!(title.contains('界'));
+    }
+
+    #[test]
+    fn tool_title_truncates_multibyte_tmux_command_safely() {
+        let command = format!("{}界tail", "a".repeat(59));
+        let title = tool_title("tmux_run", &json!({ "command": command }));
+
+        assert!(title.starts_with("tmux run "));
         assert!(title.ends_with('…'));
         assert!(title.contains('界'));
     }

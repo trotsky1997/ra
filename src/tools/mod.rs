@@ -24,6 +24,12 @@
 //! - `webfetch_fetch` — fetch one web page as Markdown via webfetch-cli
 //! - `webfetch_crawl` — crawl bounded documentation via webfetch-cli
 //! - `openspec` — drive the agent-own OpenSpec SDD loop via the openspec CLI
+//! - `tmux_run` — run commands in persistent tmux sessions
+//! - `tmux_send` — send input to tmux panes
+//! - `tmux_capture` — capture tmux pane output
+//! - `tmux_kill` — kill Ra-owned tmux targets
+//! - `tmux_listen` — poll tmux panes for new output
+//! - `tmux_wait` — block until a tmux event or timeout
 
 mod cli;
 mod core;
@@ -35,6 +41,7 @@ mod openspec;
 mod rtk;
 mod search;
 mod task_workflow;
+mod tmux;
 mod webfetch;
 
 pub use cli::{GhTool, GitTool};
@@ -47,6 +54,9 @@ pub use openspec::OpenSpecTool;
 pub use rtk::RtkRewriter;
 pub use search::AstGrepTool;
 pub use task_workflow::{JustTool, MiseTool, WrkflwTool};
+pub use tmux::{
+    TmuxCaptureTool, TmuxKillTool, TmuxListenTool, TmuxRunTool, TmuxSendTool, TmuxWaitTool,
+};
 pub use webfetch::{WebfetchCrawlTool, WebfetchFetchTool};
 
 use crate::config::OpenlspSection;
@@ -128,6 +138,24 @@ pub fn default_builtins_with_cfg(
     }
     if want("openspec") {
         out.push(Arc::new(OpenSpecTool));
+    }
+    if want("tmux_run") {
+        out.push(Arc::new(TmuxRunTool));
+    }
+    if want("tmux_send") {
+        out.push(Arc::new(TmuxSendTool));
+    }
+    if want("tmux_capture") {
+        out.push(Arc::new(TmuxCaptureTool));
+    }
+    if want("tmux_kill") {
+        out.push(Arc::new(TmuxKillTool));
+    }
+    if want("tmux_listen") {
+        out.push(Arc::new(TmuxListenTool));
+    }
+    if want("tmux_wait") {
+        out.push(Arc::new(TmuxWaitTool));
     }
     if want("lsp") {
         if let Some(binary) = resolve_openlsp_binary(openlsp_cfg) {
@@ -232,6 +260,29 @@ mod tests {
     #[test]
     fn allowlist_can_select_openspec_exactly() {
         assert_eq!(builtin_names(&["openspec"]), vec!["openspec"]);
+    }
+
+    #[test]
+    fn default_catalog_includes_tmux_tools() {
+        let names = builtin_names(&[]);
+        for name in [
+            "tmux_run",
+            "tmux_send",
+            "tmux_capture",
+            "tmux_kill",
+            "tmux_listen",
+            "tmux_wait",
+        ] {
+            assert!(
+                names.contains(&name.to_string()),
+                "missing {name}: {names:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn allowlist_can_select_tmux_tools_exactly() {
+        assert_eq!(builtin_names(&["tmux_capture"]), vec!["tmux_capture"]);
     }
 
     #[test]

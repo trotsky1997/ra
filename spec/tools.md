@@ -117,6 +117,13 @@ Prefer `jq` over `bash` pipelines for JSON filtering. It preserves argv
 boundaries, feeds input through stdin, returns bounded JSON, and surfaces
 missing-`jq` installation guidance in a structured response.
 
+Prefer `tmux_run`, `tmux_send`, `tmux_capture`, `tmux_kill`,
+`tmux_listen`, and `tmux_wait` over `bash` when the task needs
+persistent terminal state, interactive input, later output inspection,
+or bounded waits for tmux events. They operate only on Ra-owned tmux
+sessions named `ra__{session}` and surface missing-`tmux` installation
+guidance in a structured response.
+
 ## Native CLI tools
 
 These wrappers execute common developer CLIs without asking the model to
@@ -295,6 +302,200 @@ Timeouts use `error.kind:"timeout"`. Missing binaries use
 best-effort envelope budget; Ra always preserves valid JSON, so very small
 budgets may still return a minimal envelope larger than the requested byte
 count.
+
+## Tmux tools
+
+These wrappers operate on Ra-owned tmux sessions. User-facing session
+names are logical names such as `dev`; Ra maps them to tmux sessions
+named `ra__dev`. Session/window/pane identifiers are restricted to
+simple ASCII target names so tool calls cannot accidentally address
+operator-owned tmux sessions.
+
+Every tool returns a JSON envelope:
+
+```json
+{
+  "ok": true,
+  "tool": "tmux_capture",
+  "target": {
+    "logical_session": "dev",
+    "session": "ra__dev",
+    "window": "main",
+    "pane": null,
+    "target": "ra__dev:main"
+  },
+  "command": { "program": "tmux", "args": [], "display": "tmux ..." },
+  "exit_code": 0,
+  "stdout": "...",
+  "stderr": null,
+  "truncated": false
+}
+```
+
+If `tmux` is missing, the envelope has `ok:false` and
+`error.kind:"missing_tmux"` with installation guidance.
+
+### Shared tmux wait/listen events
+
+`tmux_listen` and `tmux_wait` use the same event expression model:
+
+| Event | Meaning |
+|-------|---------|
+| `output_update` | current pane capture differs from the initial snapshot |
+| `output_match` | current pane capture matches `pattern` |
+| `program_exit` | `tmux_wait.command` exits before timeout |
+| `program_output` | `tmux_wait.command` produces matching output, or any output when `pattern` is omitted |
+| `hook` | pane capture matches `pattern`; `hook` labels the event in the response |
+| `sleep` | `tmux_wait` sleeps for `duration_ms`, bounded by `timeout_ms` |
+
+Expression fields are shared: `pattern` is a substring by default, and
+`regex:true` interprets it as a Rust regular expression. Hook events use
+the same expression fields; they are tool-level labels over pane output,
+not tmux-native `set-hook` integration.
+
+### `tmux_run`
+
+Create or reuse a named session/window and run a command. Use
+`wait:false` for long-running processes; the tool returns after tmux
+accepts the command. Use `wait:true` for a deterministic blocking run;
+Ra respawns the target pane with a wrapper script, waits for completion,
+captures the pane, and returns `command_exit_code`.
+
+```json
+{
+  "session": "dev",
+  "window": "tests",
+  "command": "cargo watch -x test",
+  "wait": false
+}
+```
+
+| Field | Type | Required | Default | Notes |
+|-------|------|----------|---------|-------|
+| session | string | yes | | logical name; mapped to `ra__{session}` |
+| command | string | yes | | shell command executed inside tmux |
+| window | string | no | `main` | target window |
+| pane | string | no | | optional pane id/index |
+| wait | boolean | no | `false` | wait for command exit and capture output |
+| timeout_ms | number | no | `30000` | only applies when `wait:true` |
+| max_output_bytes | number | no | `100000` | bounds returned captured output |
+
+### `tmux_send`
+
+Send literal input or tmux key names to a target pane.
+
+```json
+{ "session": "dev", "window": "tests", "keys": "q", "enter": true }
+```
+
+| Field | Type | Required | Default | Notes |
+|-------|------|----------|---------|-------|
+| session | string | yes | | logical name; mapped to `ra__{session}` |
+| window | string | no | `main` | target window |
+| pane | string | no | | optional pane id/index |
+| keys | string | yes | | literal text or whitespace-separated tmux key names |
+| enter | boolean | no | `false` | send Enter after `keys` |
+| literal | boolean | no | `true` | set `false` for tmux key names such as `C-c` |
+
+### `tmux_capture`
+
+Capture visible pane content or scrollback with optional line bounds.
+
+```json
+{ "session": "dev", "window": "tests", "start_line": -50 }
+```
+
+| Field | Type | Required | Default | Notes |
+|-------|------|----------|---------|-------|
+| session | string | yes | | logical name; mapped to `ra__{session}` |
+| window | string | no | `main` | target window |
+| pane | string | no | | optional pane id/index |
+| start_line | number | no | | passed to `tmux capture-pane -S` |
+| end_line | number | no | | passed to `tmux capture-pane -E` |
+| max_output_bytes | number | no | `100000` | bounds returned capture |
+
+### `tmux_kill`
+
+Kill a Ra-owned tmux session/window/pane, or all `ra__*` sessions.
+
+```json
+{ "session": "dev", "window": "tests" }
+```
+
+| Field | Type | Required | Default | Notes |
+|-------|------|----------|---------|-------|
+| all | boolean | no | `false` | kill every `ra__*` session |
+| session | string | unless `all` | | logical name; mapped to `ra__{session}` |
+| window | string | no | | kill the window when set without `pane` |
+| pane | string | no | | kill the target pane |
+
+### `tmux_listen`
+
+Poll a pane until a shared tmux event expression is observed. This is a
+bounded tool call, not a background stream. Without an explicit `event`,
+the tool keeps compatibility with older calls: it waits for
+`output_match` when `pattern` is set and `output_update` otherwise.
+
+```json
+{
+  "session": "dev",
+  "window": "tests",
+  "event": "output_match",
+  "pattern": "Finished",
+  "timeout_ms": 10000
+}
+```
+
+| Field | Type | Required | Default | Notes |
+|-------|------|----------|---------|-------|
+| session | string | yes | | logical name; mapped to `ra__{session}` |
+| window | string | no | `main` | target window |
+| pane | string | no | | optional pane id/index |
+| event | string | no | inferred | `output_update`, `output_match`, or `hook` |
+| pattern | string | no | | substring or regex to wait for |
+| regex | boolean | no | `false` | interpret `pattern` as regex |
+| hook | string | no | | label returned when `event:"hook"` |
+| start_line | number | no | | passed to `tmux capture-pane -S` each poll |
+| end_line | number | no | | passed to `tmux capture-pane -E` each poll |
+| timeout_ms | number | no | `30000` | maximum listen duration |
+| poll_ms | number | no | `500` | minimum is clamped to 10ms |
+| max_output_bytes | number | no | `100000` | bounds returned capture/delta |
+
+### `tmux_wait`
+
+Block until a selected tmux event occurs or the required `timeout_ms`
+expires. Use it as the active blocking companion to `tmux_listen`.
+Program waits respawn the target pane with a wrapper script, matching
+`tmux_run.wait:true` behavior, so the command exit status is captured
+deterministically.
+
+```json
+{
+  "session": "dev",
+  "window": "tests",
+  "event": "program_output",
+  "command": "cargo test",
+  "pattern": "test result:",
+  "timeout_ms": 120000
+}
+```
+
+| Field | Type | Required | Default | Notes |
+|-------|------|----------|---------|-------|
+| event | string | yes | | `output_update`, `output_match`, `program_exit`, `program_output`, `hook`, or `sleep` |
+| session | string | unless `sleep` | | logical name; mapped to `ra__{session}` |
+| command | string | for program events | | shell command executed inside tmux |
+| window | string | no | `main` | target window |
+| pane | string | no | | optional pane id/index |
+| pattern | string | for `output_match`/`hook` | | substring or regex expression |
+| regex | boolean | no | `false` | interpret `pattern` as regex |
+| hook | string | no | | label returned when `event:"hook"` |
+| start_line | number | no | | passed to `tmux capture-pane -S` each poll |
+| end_line | number | no | | passed to `tmux capture-pane -E` each poll |
+| timeout_ms | number | yes | | maximum wait duration |
+| duration_ms | number | for `sleep` | | sleep duration, bounded by `timeout_ms` |
+| poll_ms | number | no | `500` | minimum is clamped to 10ms |
+| max_output_bytes | number | no | `100000` | bounds returned capture/delta |
 
 ## Structural search tools
 

@@ -48,9 +48,15 @@ api_key_env = "ANTHROPIC_API_KEY"
 #   webfetch_fetch — fetch one page as Markdown via webfetch-cli
 #   webfetch_crawl — crawl bounded docs as Markdown via webfetch-cli
 #   openspec — drive the agent-own OpenSpec SDD loop via the openspec CLI
+#   tmux_run — run a command in a Ra-owned tmux session/window
+#   tmux_send — send input or key names to a tmux pane
+#   tmux_capture — capture tmux pane content or scrollback
+#   tmux_kill — kill Ra-owned tmux targets
+#   tmux_listen — poll a tmux pane for new output or a pattern
+#   tmux_wait — block until a tmux event, hook expression, program result, or sleep timeout resolves
 # An empty list (or omitted section) ships every built-in tool.
 [tools]
-# builtin = ["read", "write", "edit", "bash", "ast_grep", "git", "gh", "jq", "grep", "glob", "ls", "fuzzy", "apply_patch", "webfetch_fetch", "webfetch_crawl", "openspec"]
+# builtin = ["read", "write", "edit", "bash", "ast_grep", "git", "gh", "jq", "grep", "glob", "ls", "fuzzy", "apply_patch", "webfetch_fetch", "webfetch_crawl", "openspec", "tmux_run", "tmux_send", "tmux_capture", "tmux_kill", "tmux_listen", "tmux_wait"]
 builtin = []
 
 # ─── Skills (Claude Code / agentskills.io) ──────────────────────────

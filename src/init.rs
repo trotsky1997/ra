@@ -39,7 +39,8 @@ banner = true
 # Extended tools: grep, glob, ls, fuzzy, apply_patch.
 # Web docs tools: webfetch_fetch, webfetch_crawl.
 # OpenSpec tool: openspec.
-# builtin = ["read", "write", "edit", "bash", "ast_grep", "git", "gh", "jq", "grep", "glob", "ls", "fuzzy", "apply_patch", "webfetch_fetch", "webfetch_crawl", "openspec"]
+# Tmux tools: tmux_run, tmux_send, tmux_capture, tmux_kill, tmux_listen, tmux_wait.
+# builtin = ["read", "write", "edit", "bash", "ast_grep", "git", "gh", "jq", "grep", "glob", "ls", "fuzzy", "apply_patch", "webfetch_fetch", "webfetch_crawl", "openspec", "tmux_run", "tmux_send", "tmux_capture", "tmux_kill", "tmux_listen", "tmux_wait"]
 builtin = []
 
 [skills]

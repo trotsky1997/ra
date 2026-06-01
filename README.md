@@ -212,6 +212,7 @@ Resolution order: `--config <path>` → `$RA_CONFIG` → `./ra.toml` →
 | `apply_patch` | Controlled `git apply` wrapper that checks patches before applying and uses file approval when present. |
 | `webfetch_fetch` | Fetches one web page as Markdown through `webfetch-cli`, writes `.md/`, and returns bounded JSON. |
 | `webfetch_crawl` | Crawls a bounded documentation subtree through `webfetch-cli`, mirrors `.md/`, and returns bounded JSON. |
+| `openspec` | Drives the agent-own OpenSpec SDD loop through the `openspec` CLI as structured actions (`status`, `list`, `show`, `instructions`, `validate`, `init`, `update`, `new_change`, `archive`, `workflow_state`); non-interactive, with bounded JSON output. |
 | `graphify_ensure` / `graphify_impact` / `graphify_update` / `graphify_query` / `graphify_path` / `graphify_explain` | Added when `[graphify]` is enabled; maintains and uses Graphify as Ra's R2A project graph. |
 
 Toggle the catalog via `[tools] builtin = […]`; an empty allow-list
@@ -239,6 +240,12 @@ attached, so ACP terminal permission prompts do not wrap them; use
 `npm exec --yes --package=github:trotsky1997/webfetch-cli -- webfetch-cli`
 under the hood; if `npm` is missing, the tools return structured install
 guidance instead of an opaque spawn error.
+The `openspec` tool wraps the upstream `openspec` CLI as structured
+lifecycle actions; it always runs non-interactively (closed stdin, no
+interactive prompts), forces `--strict` validation and explicit
+`confirm_archive` for the destructive archive path, and returns
+`error.kind:"missing_openspec"` with install guidance when the CLI is
+absent. Ra consumes the OpenSpec convention; it does not reimplement the CLI.
 
 ## Protocols & specs
 

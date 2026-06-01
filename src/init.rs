@@ -38,7 +38,8 @@ banner = true
 # Native CLI tools: git, gh, jq.
 # Extended tools: grep, glob, ls, fuzzy, apply_patch.
 # Web docs tools: webfetch_fetch, webfetch_crawl.
-# builtin = ["read", "write", "edit", "bash", "ast_grep", "git", "gh", "jq", "grep", "glob", "ls", "fuzzy", "apply_patch", "webfetch_fetch", "webfetch_crawl"]
+# OpenSpec tool: openspec.
+# builtin = ["read", "write", "edit", "bash", "ast_grep", "git", "gh", "jq", "grep", "glob", "ls", "fuzzy", "apply_patch", "webfetch_fetch", "webfetch_crawl", "openspec"]
 builtin = []
 
 [skills]

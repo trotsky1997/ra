@@ -47,9 +47,10 @@ api_key_env = "ANTHROPIC_API_KEY"
 #   apply_patch — controlled git-apply wrapper for unified diffs
 #   webfetch_fetch — fetch one page as Markdown via webfetch-cli
 #   webfetch_crawl — crawl bounded docs as Markdown via webfetch-cli
+#   openspec — drive the agent-own OpenSpec SDD loop via the openspec CLI
 # An empty list (or omitted section) ships every built-in tool.
 [tools]
-# builtin = ["read", "write", "edit", "bash", "ast_grep", "git", "gh", "jq", "grep", "glob", "ls", "fuzzy", "apply_patch", "webfetch_fetch", "webfetch_crawl"]
+# builtin = ["read", "write", "edit", "bash", "ast_grep", "git", "gh", "jq", "grep", "glob", "ls", "fuzzy", "apply_patch", "webfetch_fetch", "webfetch_crawl", "openspec"]
 builtin = []
 
 # ─── Skills (Claude Code / agentskills.io) ──────────────────────────

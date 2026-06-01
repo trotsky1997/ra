@@ -652,6 +652,95 @@ Crawl a bounded documentation subtree and mirror pages under `.md/`.
 | verbose | boolean | no | `false` | Include crawl progress from stderr |
 | max_output_bytes | number | no | `200000` | Bounds Ra's returned JSON envelope |
 
+## OpenSpec tool
+
+`openspec` drives the agent-own [OpenSpec](https://github.com/Fission-AI/OpenSpec)
+spec-driven-development loop through the upstream `openspec` CLI as a single
+structured tool. It complements the system-prompt catalog/playbook (see
+`src/openspec.rs`): the playbook tells the agent *how* to run the loop, this
+tool gives it a narrow, argv-safe control surface to run it without composing
+shell strings. Ra stays a *consumer* of the convention — the tool wraps the
+upstream CLI and never reimplements OpenSpec schemas or lifecycle semantics.
+
+Every invocation spawns `openspec` with `Command::arg` (no shell), requests
+`--json` where the subcommand supports it, appends `--no-color`, and runs with
+`stdin` closed so an unattended agent can never block on an interactive prompt.
+The destructive `archive` action additionally requires `confirm_archive: true`
+before it will run (the `-y` flag is then supplied internally). If `openspec`
+is not on `PATH`, the tool returns `ok:false` with
+`error.kind:"missing_openspec"` and installation guidance.
+
+Returned envelope:
+
+```json
+{
+  "ok": true,
+  "tool": "openspec",
+  "action": "status",
+  "command": { "program": "openspec", "args": [], "display": "openspec ..." },
+  "exit_code": 0,
+  "stdout": "{... openspec JSON ...}",
+  "stderr": null,
+  "truncated": false
+}
+```
+
+On a non-zero exit the envelope sets `ok:false` and adds
+`error.kind:"openspec_error"`. Invalid requests (missing `change`, unconfirmed
+`archive`, or a value that would be parsed as a flag — a leading-dash or
+path-separator `change`/`item`/`artifact`, a leading-dash `path`/`tools`) fail
+before spawning with `error.kind:"invalid_request"`. The upstream CLI is
+Commander.js-based and does not honor a `--` end-of-options separator, so these
+positionals are validated rather than escaped. `stdout` is bounded by
+`max_output_bytes`, preserving valid JSON and setting `truncated:true` when
+trimmed.
+
+### Parameters
+
+```json
+{
+  "action": "status",
+  "change": "add-dark-mode"
+}
+```
+
+| Field | Type | Required | Default | Notes |
+|-------|------|----------|---------|-------|
+| action | string | yes | | One of `status`, `list`, `show`, `instructions`, `validate`, `init`, `update`, `new_change`, `archive`, `workflow_state` |
+| change | string | for `status`/`instructions`/`new_change`/`archive`/`workflow_state` | | Change name (kebab-case) |
+| item | string | for `show` | | Change name or spec id; `validate` falls back to `change` |
+| artifact | string | no | `apply` | `instructions` artifact: `proposal`, `design`, `specs`, `tasks`, or `apply` |
+| specs | boolean | no | `false` | `list`/`validate`/`show` target specs instead of changes |
+| tools | string | no | `none` | `init` tool surfaces: `all`, `none`, or a comma-separated list |
+| path | string | no | working dir | `init`/`update` target directory |
+| description | string | no | | `new_change` README description |
+| confirm_archive | boolean | no | `false` | Required `true` for `archive` (destructive) |
+| skip_specs | boolean | no | `false` | `archive` `--skip-specs` for tooling/doc-only changes |
+| cwd | string | no | session cwd | Working directory for the spawned process |
+| timeout_ms | number | no | none | Optional process timeout |
+| max_output_bytes | number | no | `120000` | Bounds Ra's returned JSON envelope |
+
+### Actions
+
+| Action | Underlying command | Notes |
+|--------|--------------------|-------|
+| `status` | `openspec status --change <change> --json` | Apply-readiness state machine |
+| `list` | `openspec list [--specs] --json` | Active changes (or specs) |
+| `show` | `openspec show <item> --json --type change\|spec` | One change or spec |
+| `instructions` | `openspec instructions <artifact> --change <change> --json` | Per-step template + deps |
+| `validate` | `openspec validate [<item> --type …\|--changes\|--specs] --strict --json` | Strict mode forced on |
+| `init` | `openspec init --tools <tools> [path]` | Non-interactive scaffold |
+| `update` | `openspec update [path]` | Refresh instruction files |
+| `new_change` | `openspec new change <change> [--description …]` | Create a change directory |
+| `archive` | `openspec archive <change> -y [--skip-specs]` | Requires `confirm_archive:true` |
+| `workflow_state` | `openspec status --change <change> --json` | Derives an apply-readiness summary |
+
+`workflow_state` is a convenience action: it runs `status --json` and folds a
+`workflow_state` object into the envelope summarizing which artifacts are
+`ready`/`blocked`/`done`, whether `applyRequires` is satisfied (`applyReady`),
+and a `nextActions` hint list. If the status JSON does not match the expected
+shape, the summary is simply omitted rather than erroring.
+
 ## Adding new tools
 
 Implement the `Tool` trait (`src/tools/core.rs`). The minimal shape:

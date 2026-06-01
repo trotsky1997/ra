@@ -393,7 +393,7 @@ impl SessionRunner {
 
 fn tool_kind(name: &str) -> ToolKindHint {
     match name {
-        "read" => ToolKindHint::Read,
+        "read" | "grep" | "glob" | "ls" | "fuzzy" => ToolKindHint::Read,
         "ast_grep" => ToolKindHint::Search,
         "bash" | "git" | "gh" => ToolKindHint::Execute,
         _ => ToolKindHint::Other,
@@ -440,6 +440,37 @@ fn tool_title(name: &str, input: &serde_json::Value) -> String {
                 format!("$ {s}")
             })
             .unwrap_or_else(|| format!("Run {name}")),
+        "grep" => input
+            .get("pattern")
+            .and_then(|v| v.as_str())
+            .map(|p| format!("Search {p}"))
+            .unwrap_or_else(|| "Search".into()),
+        "glob" => input
+            .get("pattern")
+            .and_then(|v| v.as_str())
+            .map(|p| format!("Find {p}"))
+            .unwrap_or_else(|| "Find files".into()),
+        "ls" => input
+            .get("path")
+            .and_then(|v| v.as_str())
+            .map(|p| format!("List {p}"))
+            .unwrap_or_else(|| "List files".into()),
+        "fuzzy" => input
+            .get("query")
+            .and_then(|v| v.as_str())
+            .map(|q| format!("Fuzzy {q}"))
+            .unwrap_or_else(|| "Fuzzy filter".into()),
+        "apply_patch" => {
+            if input
+                .get("check_only")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+            {
+                "Check patch".into()
+            } else {
+                "Apply patch".into()
+            }
+        }
         other => other.to_string(),
     }
 }

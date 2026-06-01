@@ -59,6 +59,8 @@ pub struct RaConfig {
     #[serde(default)]
     pub resources: ResourcesSection,
     #[serde(default)]
+    pub memory: MemorySection,
+    #[serde(default)]
     pub rtk: RtkSection,
     #[serde(default)]
     pub openlsp: OpenlspSection,
@@ -414,6 +416,84 @@ pub struct ResourcesSection {
     pub append_system_prompt_paths: Vec<String>,
 }
 
+/// `[memory]` — Codex-style local generated memories. The feature is globally
+/// disabled by default; enabling it lets Ra load durable memories into prompt
+/// context and generate new local artifacts after eligible sessions.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MemorySection {
+    /// Global master switch. Default false.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Config-level default for using existing memories. Thread/session
+    /// controls can further suppress use without mutating this setting.
+    #[serde(default = "default_true", alias = "use")]
+    pub use_memories: bool,
+    /// Config-level default for contributing future memories. Thread/session
+    /// controls can further suppress generation without mutating this setting.
+    #[serde(default = "default_true", alias = "generate")]
+    pub generate_memories: bool,
+    /// Region availability gate. Exposed for parity with Codex-style policy;
+    /// default true for local Ra.
+    #[serde(default = "default_true")]
+    pub region_available: bool,
+    /// Disable memory use/generation when external context is present. Accepted
+    /// aliases cover common wording in upstream and older Ra config drafts.
+    #[serde(
+        default,
+        alias = "suppress_on_external_context",
+        alias = "disable_when_external_context",
+        alias = "suppress_when_external_context"
+    )]
+    pub disable_on_external_context: bool,
+    /// Idle delay before background generation, in seconds.
+    #[serde(default = "default_memory_idle_secs", alias = "min_idle_secs")]
+    pub min_idle_before_generation_secs: u64,
+    /// Minimum session duration before generation, in seconds.
+    #[serde(default = "default_memory_session_secs", alias = "min_duration_secs")]
+    pub min_session_duration_secs: u64,
+    /// Skip generation when remaining context/rate-limit headroom is below
+    /// this percentage.
+    #[serde(default)]
+    pub min_rate_limit_remaining_percent: u8,
+    /// Optional root for generated memory state. Defaults to
+    /// `<RA_HOME>/memories`.
+    #[serde(default, alias = "path")]
+    pub dir: Option<String>,
+    /// Max number of memory artifacts rendered into prompt context.
+    #[serde(default = "default_memory_prompt_limit")]
+    pub max_prompt_memories: usize,
+}
+
+impl Default for MemorySection {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            use_memories: true,
+            generate_memories: true,
+            region_available: true,
+            disable_on_external_context: false,
+            min_idle_before_generation_secs: default_memory_idle_secs(),
+            min_session_duration_secs: default_memory_session_secs(),
+            min_rate_limit_remaining_percent: 0,
+            dir: None,
+            max_prompt_memories: default_memory_prompt_limit(),
+        }
+    }
+}
+
+fn default_memory_idle_secs() -> u64 {
+    10 * 60
+}
+
+fn default_memory_session_secs() -> u64 {
+    60
+}
+
+fn default_memory_prompt_limit() -> usize {
+    20
+}
+
 /// `[rtk]` — native [RTK (Rust Token Killer)](https://github.com/rtk-ai/rtk)
 /// integration. When enabled, the BashTool runs every command through
 /// `rtk rewrite` before executing it. RTK rewrites well-known dev
@@ -687,6 +767,41 @@ timeout = 2.0
         assert_eq!(cfg.mcp.servers.len(), 1);
         assert_eq!(cfg.hooks.pre_tool_use.len(), 1);
         assert_eq!(cfg.hooks.pre_tool_use[0].matcher, "bash");
+    }
+
+    #[test]
+    fn memory_defaults_disabled_and_parses_aliases() {
+        let cfg: RaConfig = toml::from_str("version = 1\n").unwrap();
+        assert!(!cfg.memory.enabled);
+        assert!(cfg.memory.use_memories);
+        assert!(cfg.memory.generate_memories);
+        assert_eq!(cfg.memory.min_idle_before_generation_secs, 600);
+        assert_eq!(cfg.memory.min_session_duration_secs, 60);
+
+        let toml_doc = r#"
+version = 1
+
+[memory]
+enabled = true
+use = false
+generate = true
+suppress_on_external_context = true
+min_idle_secs = 5
+min_duration_secs = 2
+min_rate_limit_remaining_percent = 25
+path = "./.ra/memory"
+max_prompt_memories = 3
+"#;
+        let cfg: RaConfig = toml::from_str(toml_doc).unwrap();
+        assert!(cfg.memory.enabled);
+        assert!(!cfg.memory.use_memories);
+        assert!(cfg.memory.generate_memories);
+        assert!(cfg.memory.disable_on_external_context);
+        assert_eq!(cfg.memory.min_idle_before_generation_secs, 5);
+        assert_eq!(cfg.memory.min_session_duration_secs, 2);
+        assert_eq!(cfg.memory.min_rate_limit_remaining_percent, 25);
+        assert_eq!(cfg.memory.dir.as_deref(), Some("./.ra/memory"));
+        assert_eq!(cfg.memory.max_prompt_memories, 3);
     }
 
     #[test]

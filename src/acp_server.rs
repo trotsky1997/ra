@@ -155,6 +155,18 @@ fn ra_config_options() -> Vec<SessionConfigOption> {
             ],
         )
         .description("Whether tool outputs are inlined verbatim or trimmed."),
+        SessionConfigOption::boolean(
+            SessionConfigId::from("memory_use".to_string()),
+            "Use memories".to_string(),
+            true,
+        )
+        .description("Allow this session to use existing local memories."),
+        SessionConfigOption::boolean(
+            SessionConfigId::from("memory_generate".to_string()),
+            "Generate memories".to_string(),
+            true,
+        )
+        .description("Allow this session to contribute future local memories."),
     ]
 }
 
@@ -183,6 +195,8 @@ struct SharedState {
     hooks: Option<Arc<crate::hooks::HookEngine>>,
     /// RTK rewriter applied to every Session built from this state.
     rtk: crate::tools::RtkRewriter,
+    /// Codex-style local memory runtime loaded from config.
+    memory: Arc<crate::memory::MemorySystem>,
 }
 
 /// Resolve a model id (sent by the client over `session/set_model`) to a `Model`
@@ -204,6 +218,7 @@ impl SharedState {
         prompt_templates: Arc<std::collections::HashMap<String, SlashTemplate>>,
         hooks: Option<Arc<crate::hooks::HookEngine>>,
         rtk: crate::tools::RtkRewriter,
+        memory: Arc<crate::memory::MemorySystem>,
     ) -> Self {
         let available_models = model_factory.available();
         let default_cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
@@ -223,6 +238,7 @@ impl SharedState {
             prompt_templates,
             hooks,
             rtk,
+            memory,
         }
     }
 
@@ -242,6 +258,9 @@ impl SharedState {
         let s = Arc::new(s);
         if let Some(sp) = &self.system_prompt {
             s.set_system_prompt(sp.clone()).await;
+        }
+        if let Some(prompt) = crate::memory::load_prompt_for_cwd(Some(&self.memory), &cwd).await {
+            s.set_memory_prompt(Some(prompt)).await;
         }
         self.sessions.insert(id.to_string(), s.clone());
         self.session_cwds.insert(id.to_string(), cwd);
@@ -281,6 +300,14 @@ impl SharedState {
         if let Err(e) = store.save(&traj).await {
             eprintln!("[ra::acp] save trajectory {id}: {e:#}");
         }
+        crate::memory::generate_for_session(
+            Some(&self.memory),
+            self.cwd_for(id),
+            id,
+            session.clone(),
+            None,
+        )
+        .await;
     }
 }
 
@@ -491,6 +518,7 @@ pub async fn run(
     prompt_templates: Arc<std::collections::HashMap<String, SlashTemplate>>,
     hooks: Option<Arc<crate::hooks::HookEngine>>,
     rtk: crate::tools::RtkRewriter,
+    memory: Arc<crate::memory::MemorySystem>,
 ) -> AcpResult<()> {
     crate::nemo_obs::init();
     let state = Arc::new(SharedState::new(
@@ -501,6 +529,7 @@ pub async fn run(
         prompt_templates,
         hooks,
         rtk,
+        memory,
     ));
 
     // Each handler closure is FnMut, so we clone the Arc into each one.
@@ -575,6 +604,9 @@ pub async fn run(
                         "unknown session id: {session_id}"
                     )));
                 };
+                session
+                    .set_memory_external_context(has_external_context(&req.prompt))
+                    .await;
 
                 // Build a SessionRunner with the shared host. The runner
                 // owns the spawn body, slash dispatch, observability scope,
@@ -904,6 +936,19 @@ pub async fn run(
                     _ => serde_json::Value::Null,
                 };
                 session.set_config(&config_id, stored).await;
+                match config_id.as_str() {
+                    "memory_use" => {
+                        if let SessionConfigOptionValue::Boolean { value } = req.value {
+                            session.set_memory_use_enabled(value).await;
+                        }
+                    }
+                    "memory_generate" => {
+                        if let SessionConfigOptionValue::Boolean { value } = req.value {
+                            session.set_memory_generation_enabled(value).await;
+                        }
+                    }
+                    _ => {}
+                }
 
                 // Echo the full advertised catalogue back. This is what ACP
                 // clients consume to rebuild their config UI; for now the
@@ -940,6 +985,12 @@ fn collect_text(blocks: &[ContentBlock]) -> String {
         }
     }
     out
+}
+
+fn has_external_context(blocks: &[ContentBlock]) -> bool {
+    blocks
+        .iter()
+        .any(|block| !matches!(block, ContentBlock::Text(_)))
 }
 
 /// Translate one `RunnerEvent` into ACP `SessionUpdate` notifications.

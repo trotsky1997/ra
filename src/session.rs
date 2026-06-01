@@ -6,6 +6,7 @@ use anyhow::{anyhow, Result};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, Mutex, RwLock};
 use tokio_stream::StreamExt;
 use tokio_util::sync::CancellationToken;
@@ -43,6 +44,12 @@ pub struct Session {
     /// Optional system-style preamble prepended to every turn's history.
     /// Populated from skill bodies; not part of the persisted message log.
     system_prompt: RwLock<Option<String>>,
+    /// Optional generated local memory context. Rendered per turn so
+    /// thread-level controls and external-context suppression can apply.
+    memory_prompt: RwLock<Option<crate::memory::MemoryPrompt>>,
+    /// Per-session memory controls. ACP config options can change these
+    /// without mutating global config.
+    memory_controls: RwLock<crate::memory::MemoryThreadControls>,
     /// Optional hook engine that fires PreToolUse / PostToolUse around
     /// every tool execution. None = no hooks configured.
     hooks: Option<Arc<crate::hooks::HookEngine>>,
@@ -58,6 +65,10 @@ pub struct Session {
     runtime_scope: Arc<Mutex<Option<SessionRuntimeScope>>>,
     /// Serializes prompt invocations so scoped overrides cannot overlap.
     prompt_lock: Arc<Mutex<()>>,
+    /// Monotonic timing used by memory generation gates.
+    created_at: Instant,
+    last_activity_at: Mutex<Instant>,
+    active: Mutex<bool>,
 }
 
 /// Temporary runtime controls used for a single `prompt()` invocation.
@@ -67,6 +78,13 @@ pub struct SessionRuntimeScope {
     pub allowed_tools: Vec<String>,
     pub disallowed_tools: Vec<String>,
     pub hooks: Option<Arc<crate::hooks::HookEngine>>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct MemoryTiming {
+    pub session_duration: Duration,
+    pub idle_for: Duration,
+    pub is_active: bool,
 }
 
 /// Result of one `prompt()` call.
@@ -97,11 +115,16 @@ impl Session {
             mode: RwLock::new("default".into()),
             config: RwLock::new(HashMap::new()),
             system_prompt: RwLock::new(None),
+            memory_prompt: RwLock::new(None),
+            memory_controls: RwLock::new(crate::memory::MemoryThreadControls::default()),
             hooks: None,
             file_approver: None,
             rtk: crate::tools::RtkRewriter::default(),
             runtime_scope: Arc::new(Mutex::new(None)),
             prompt_lock: Arc::new(Mutex::new(())),
+            created_at: Instant::now(),
+            last_activity_at: Mutex::new(Instant::now()),
+            active: Mutex::new(false),
         }
     }
 
@@ -162,6 +185,30 @@ impl Session {
 
     pub async fn system_prompt(&self) -> Option<String> {
         self.system_prompt.read().await.clone()
+    }
+
+    pub async fn set_memory_prompt(&self, prompt: Option<crate::memory::MemoryPrompt>) {
+        *self.memory_prompt.write().await = prompt;
+    }
+
+    pub async fn set_memory_controls(&self, controls: crate::memory::MemoryThreadControls) {
+        *self.memory_controls.write().await = controls;
+    }
+
+    pub async fn memory_controls(&self) -> crate::memory::MemoryThreadControls {
+        self.memory_controls.read().await.clone()
+    }
+
+    pub async fn set_memory_use_enabled(&self, enabled: bool) {
+        self.memory_controls.write().await.use_memories = enabled;
+    }
+
+    pub async fn set_memory_generation_enabled(&self, enabled: bool) {
+        self.memory_controls.write().await.generate_memories = enabled;
+    }
+
+    pub async fn set_memory_external_context(&self, has_external_context: bool) {
+        self.memory_controls.write().await.has_external_context = has_external_context;
     }
 
     /// Hot-swap the active model. Used by `session/set_model` (ACP unstable).
@@ -273,6 +320,17 @@ impl Session {
         self.messages.lock().await.clone()
     }
 
+    pub async fn memory_timing(&self) -> MemoryTiming {
+        let now = Instant::now();
+        let last_activity_at = *self.last_activity_at.lock().await;
+        let is_active = *self.active.lock().await;
+        MemoryTiming {
+            session_duration: now.saturating_duration_since(self.created_at),
+            idle_for: now.saturating_duration_since(last_activity_at),
+            is_active,
+        }
+    }
+
     /// Signal the active prompt to abort. Idempotent; safe to call from any task.
     pub async fn cancel(&self) {
         self.cancel.lock().await.cancel();
@@ -337,6 +395,10 @@ impl Session {
             *guard = CancellationToken::new();
             guard.clone()
         };
+        {
+            *self.active.lock().await = true;
+            *self.last_activity_at.lock().await = Instant::now();
+        }
 
         self.messages
             .lock()
@@ -353,6 +415,10 @@ impl Session {
             }
         };
 
+        {
+            *self.active.lock().await = false;
+            *self.last_activity_at.lock().await = Instant::now();
+        }
         let _ = self.tx.send(Event::AgentEnd);
         Ok(outcome)
     }
@@ -377,7 +443,14 @@ impl Session {
         // message tagged with [SYSTEM]. graniet/llm's ChatRole only has
         // User/Assistant, so we route system content through user with a
         // marker; most providers cooperate.
-        let history = if let Some(sp) = self.system_prompt.read().await.clone() {
+        let system_prompt = self.system_prompt.read().await.clone();
+        let memory_section = {
+            let prompt = self.memory_prompt.read().await.clone();
+            let controls = self.memory_controls.read().await.clone();
+            prompt.and_then(|p| p.render(&controls))
+        };
+        let combined_prompt = combine_system_prompt(system_prompt, memory_section);
+        let history = if let Some(sp) = combined_prompt {
             let mut h = Vec::with_capacity(history.len() + 1);
             h.push(Message::User {
                 content: format!("[SYSTEM]\n{sp}"),
@@ -574,6 +647,18 @@ fn tool_decl_matches(decl: &str, name: &str) -> bool {
         return false;
     }
     decl.eq_ignore_ascii_case(name)
+}
+
+fn combine_system_prompt(base: Option<String>, memory: Option<String>) -> Option<String> {
+    match (base, memory) {
+        (Some(base), Some(memory)) if !base.trim().is_empty() => {
+            Some(format!("{}\n\n{}", base.trim_end(), memory.trim()))
+        }
+        (Some(base), None) if !base.trim().is_empty() => Some(base),
+        (None, Some(memory)) if !memory.trim().is_empty() => Some(memory),
+        (Some(_), Some(memory)) if !memory.trim().is_empty() => Some(memory),
+        _ => None,
+    }
 }
 
 fn final_assistant_text(messages: &[Message]) -> Option<String> {

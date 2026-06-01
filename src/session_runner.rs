@@ -643,7 +643,7 @@ async fn run_shell_context(command: &str, runtime: &SkillRuntimeOptions, cwd: &P
 
 fn tool_kind(name: &str) -> ToolKindHint {
     match name {
-        "read" | "grep" | "glob" | "ls" | "fuzzy" | "webfetch_fetch" | "webfetch_crawl" => {
+        "read" | "jq" | "grep" | "glob" | "ls" | "fuzzy" | "webfetch_fetch" | "webfetch_crawl" => {
             ToolKindHint::Read
         }
         "ast_grep" => ToolKindHint::Search,
@@ -692,6 +692,14 @@ fn tool_title(name: &str, input: &serde_json::Value) -> String {
                 format!("$ {s}")
             })
             .unwrap_or_else(|| format!("Run {name}")),
+        "jq" => input
+            .get("filter")
+            .and_then(|v| v.as_str())
+            .map(|filter| {
+                let s = truncate_chars(filter, 60);
+                format!("jq {s}")
+            })
+            .unwrap_or_else(|| "jq filter".into()),
         "grep" => input
             .get("pattern")
             .and_then(|v| v.as_str())
@@ -784,6 +792,16 @@ mod tests {
         let title = tool_title("git", &json!({ "args": [arg] }));
 
         assert!(title.starts_with("$ git "));
+        assert!(title.ends_with('…'));
+        assert!(title.contains('界'));
+    }
+
+    #[test]
+    fn tool_title_truncates_multibyte_jq_filter_safely() {
+        let filter = format!(".items[] | .{}界tail", "a".repeat(45));
+        let title = tool_title("jq", &json!({ "filter": filter }));
+
+        assert!(title.starts_with("jq .items[]"));
         assert!(title.ends_with('…'));
         assert!(title.contains('界'));
     }

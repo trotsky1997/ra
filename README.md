@@ -25,11 +25,12 @@ The eye watching from the banner is 𓂀 (U+13080).
   terminal chat (requires `--features tui`, which pulls in
   [opentui_rust](https://github.com/Dicklesworthstone/opentui_rust)
   and needs nightly Rust).
-- **Built-in tool set.** `read`, `write`, `edit`, and `bash`. Use
-  `bash` for shell-native commands such as `grep`, `find`, and `ls`
-  instead of separate function-call wrappers. ACP hosts also get
-  `fs/read_text_file`, `fs/write_text_file`, and `terminal/*`
-  reverse-call routing automatically.
+- **Built-in tool set.** `read`, `write`, `edit`, `bash`, native CLI
+  helpers, structured search, `jq`, and web documentation tools. Use
+  `bash` for project scripts and one-off pipelines; prefer narrower
+  tools when structured parameters and bounded JSON output are useful.
+  ACP hosts also get `fs/read_text_file`, `fs/write_text_file`, and
+  `terminal/*` reverse-call routing automatically.
 - **Multi-backend LLM layer.** Anthropic, OpenAI, Google, DeepSeek,
   Ollama, Groq, xAI — and any OpenAI-compatible Responses-API endpoint
   — via the [graniet/llm](https://github.com/graniet/llm) crate.
@@ -197,6 +198,7 @@ Resolution order: `--config <path>` → `$RA_CONFIG` → `./ra.toml` →
 | `ast_grep` | Read-only structural code search via ast-grep / `sg`; returns JSON matches. |
 | `git`   | Runs native `git` with argv-safe arguments; ACP hosts use the terminal reverse-call with shell quoting. This path does not use RTK. |
 | `gh`    | Runs native GitHub CLI (`gh`) with argv-safe arguments; ACP hosts use the terminal reverse-call with shell quoting. This path does not use RTK. |
+| `jq`    | Runs jq filters against inline JSON or a JSON file with argv-safe stdin and a bounded JSON envelope. |
 | `grep`  | Structured text search; skips hidden/gitignored/build directories by default and returns JSON matches. |
 | `glob`  | Structured file discovery with glob semantics and bounded JSON output. |
 | `ls`    | Structured directory listing; non-recursive by default, recursive with depth/limit controls. |
@@ -208,16 +210,18 @@ Resolution order: `--config <path>` → `$RA_CONFIG` → `./ra.toml` →
 
 Toggle the catalog via `[tools] builtin = […]`; an empty allow-list
 ships every built-in tool. Basic tools (`read`, `write`, `edit`,
-`bash`) provide the minimal local-work loop; extended tools cover
+`bash`) provide the minimal local-work loop; native and extended tools cover
 high-frequency structured operations where narrower parameters and
 bounded output are better than composing shell strings. `ast_grep` is
 native because it is structured code search rather than a plain shell
 command. `bash` remains the fallback for project scripts, tests, and
 one-off command pipelines.
 
-Native `git` / `gh` prioritize argv safety over RTK rewriting. If a
-high-volume `git` or `gh` command needs RTK output compression, run it
+Native `git` / `gh` / `jq` prioritize argv safety over RTK rewriting. If a
+high-volume native CLI command needs RTK output compression, run it
 through `bash` instead so the existing RTK rewrite path can apply.
+`jq` requires the system `jq` binary on `PATH`; missing jq returns
+structured install guidance instead of an opaque spawn error.
 `webfetch_fetch` and `webfetch_crawl` run
 `npm exec --yes --package=github:trotsky1997/webfetch-cli -- webfetch-cli`
 under the hood; if `npm` is missing, the tools return structured install

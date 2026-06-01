@@ -113,6 +113,10 @@ documentation retrieval. They preserve argv boundaries, return bounded
 JSON, and surface missing-`npm` installation guidance in a structured
 response.
 
+Prefer `jq` over `bash` pipelines for JSON filtering. It preserves argv
+boundaries, feeds input through stdin, returns bounded JSON, and surfaces
+missing-`jq` installation guidance in a structured response.
+
 ## Native CLI tools
 
 These wrappers execute common developer CLIs without asking the model to
@@ -154,6 +158,66 @@ Run native GitHub CLI (`gh`).
 | Field | Type             | Required | Default | Notes |
 |-------|------------------|----------|---------|-------|
 | args  | array of strings | no       | `[]`    | arguments only; omit the `gh` binary |
+
+### `jq`
+
+Run a jq filter against exactly one JSON input source. Ra reads inline
+`input` or the file at `path`, passes the bytes to jq on stdin, and
+spawns jq with an argv array. The tool does not expose arbitrary jq args
+in v1; the supported output flags map to separate argv entries:
+`raw_output -> -r`, `compact_output -> -c`, and `sort_keys -> -S`.
+
+```json
+{
+  "filter": ".items[] | .name",
+  "input": "{\"items\":[{\"name\":\"Ada\"}]}",
+  "raw_output": true,
+  "max_output_bytes": 100000
+}
+```
+
+```json
+{
+  "filter": ".dependencies | keys[]",
+  "path": "package.json",
+  "cwd": ".",
+  "raw_output": true
+}
+```
+
+| Field | Type | Required | Default | Notes |
+|-------|------|----------|---------|-------|
+| filter | string | yes | | jq filter |
+| input | string | one of `input`/`path` | | Inline JSON text passed to jq stdin |
+| path | string | one of `input`/`path` | | JSON file read by Ra and passed to jq stdin |
+| cwd | string | no | session cwd | Resolves relative `path` and sets jq's working directory |
+| raw_output | boolean | no | `false` | Maps to `-r` |
+| compact_output | boolean | no | `false` | Maps to `-c` |
+| sort_keys | boolean | no | `false` | Maps to `-S` |
+| timeout_ms | number | no | none | Optional jq process timeout |
+| max_output_bytes | number | no | `100000` | Bounds Ra's returned JSON envelope |
+
+Returned envelope:
+
+```json
+{
+  "ok": true,
+  "tool": "jq",
+  "filter": ".name",
+  "command": { "program": "jq", "args": ["-r", ".name"] },
+  "exit_code": 0,
+  "stdout": "Ada\n",
+  "stderr": null,
+  "truncated": false
+}
+```
+
+Error cases are returned as the same valid JSON envelope with
+`ok:false`. Request validation failures use `error.kind:"invalid_request"`
+and happen before jq is spawned. Non-zero jq exits use
+`error.kind:"jq_error"` with jq stderr and exit code. Missing jq uses
+`error.kind:"missing_jq"` with installation guidance. Output exceeding
+`max_output_bytes` is clipped with `truncated:true`.
 
 ## Structural search tools
 

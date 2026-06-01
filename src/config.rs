@@ -776,7 +776,10 @@ timeout = 60.0
 "#;
         let cfg: RaConfig = toml::from_str(toml_doc).unwrap();
         assert!(!cfg.openlsp.enabled);
-        assert_eq!(cfg.openlsp.binary.as_deref(), Some("/usr/local/bin/openlsp"));
+        assert_eq!(
+            cfg.openlsp.binary.as_deref(),
+            Some("/usr/local/bin/openlsp")
+        );
         assert_eq!(
             cfg.openlsp.workspace_root.as_deref(),
             Some("/home/user/project")

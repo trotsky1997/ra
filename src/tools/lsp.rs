@@ -123,8 +123,7 @@ impl Tool for LspTool {
         ctx: &ToolCtx,
     ) -> Result<String> {
         let _scope = crate::nemo_obs::tool_scope("lsp");
-        let params: LspParams =
-            serde_json::from_value(input).context("invalid params for lsp")?;
+        let params: LspParams = serde_json::from_value(input).context("invalid params for lsp")?;
 
         // Build the openlsp JSON envelope.
         let mut envelope = serde_json::Map::new();

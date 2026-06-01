@@ -3,8 +3,8 @@ use std::sync::Arc;
 use clap::{Parser, Subcommand};
 use llm::builder::LLMBackend;
 use ra::{
-    Event, LlmModel, LlmModelConfig, MockModel, Model, Session, acp_server::ModelFactory,
-    default_builtins_with_cfg,
+    acp_server::ModelFactory, default_builtins_with_cfg, Event, LlmModel, LlmModelConfig,
+    MockModel, Model, Session,
 };
 use tokio::io::{self, AsyncWriteExt};
 

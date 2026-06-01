@@ -156,6 +156,7 @@ fn ra_config_options() -> Vec<SessionConfigOption> {
         .description("Whether tool outputs are inlined verbatim or trimmed."),
     ]
 }
+
 /// Holds the active default model, the model registry (for `session/set_model`
 /// + `NewSessionResponse.models`), the on-disk trajectory store, and the
 ///   live ACP session map.

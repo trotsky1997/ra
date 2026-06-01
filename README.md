@@ -202,6 +202,9 @@ Resolution order: `--config <path>` → `$RA_CONFIG` → `./ra.toml` →
 | `git`   | Runs native `git` with argv-safe arguments; ACP hosts use the terminal reverse-call with shell quoting. This path does not use RTK. |
 | `gh`    | Runs native GitHub CLI (`gh`) with argv-safe arguments; ACP hosts use the terminal reverse-call with shell quoting. This path does not use RTK. |
 | `jq`    | Runs jq filters against inline JSON or a JSON file with argv-safe stdin and a bounded JSON envelope. |
+| `mise`  | Runs mise tasks/tests with argv-safe arguments and bounded JSON output. |
+| `just`  | Runs just recipes with argv-safe arguments and bounded JSON output. |
+| `wrkflw` | Runs wrkflw local GitHub Actions validation/execution with argv-safe arguments and bounded JSON output. |
 | `grep`  | Structured text search; skips hidden/gitignored/build directories by default and returns JSON matches. |
 | `glob`  | Structured file discovery with glob semantics and bounded JSON output. |
 | `ls`    | Structured directory listing; non-recursive by default, recursive with depth/limit controls. |
@@ -225,6 +228,11 @@ high-volume native CLI command needs RTK output compression, run it
 through `bash` instead so the existing RTK rewrite path can apply.
 `jq` requires the system `jq` binary on `PATH`; missing jq returns
 structured install guidance instead of an opaque spawn error.
+Native `mise` / `just` / `wrkflw` are intended for test-first task and
+workflow loops such as `mise run test`, `just test`, and local GitHub
+Actions validation. They run local binaries with argv-safe arguments,
+optional `cwd`/timeout controls, bounded JSON output, and structured
+missing-binary guidance.
 `webfetch_fetch` and `webfetch_crawl` run
 `npm exec --yes --package=github:trotsky1997/webfetch-cli -- webfetch-cli`
 under the hood; if `npm` is missing, the tools return structured install

@@ -12,6 +12,9 @@
 //! - `git`   — run native git with argv-safe arguments
 //! - `gh`    — run native GitHub CLI with argv-safe arguments
 //! - `jq`    — run jq filters with argv-safe stdin
+//! - `mise`  — run mise tasks and tests with argv-safe arguments
+//! - `just`  — run just recipes with argv-safe arguments
+//! - `wrkflw` — validate/run GitHub Actions workflows locally
 //! - `grep`  — structured text search
 //! - `glob`  — structured file discovery
 //! - `ls`    — structured directory listing
@@ -29,6 +32,7 @@ mod jq;
 mod lsp;
 mod rtk;
 mod search;
+mod task_workflow;
 mod webfetch;
 
 pub use cli::{GhTool, GitTool};
@@ -39,6 +43,7 @@ pub use jq::JqTool;
 pub use lsp::{resolve_openlsp_binary, LspTool};
 pub use rtk::RtkRewriter;
 pub use search::AstGrepTool;
+pub use task_workflow::{JustTool, MiseTool, WrkflwTool};
 pub use webfetch::{WebfetchCrawlTool, WebfetchFetchTool};
 
 use crate::config::OpenlspSection;
@@ -87,6 +92,15 @@ pub fn default_builtins_with_cfg(
     }
     if want("jq") {
         out.push(Arc::new(JqTool));
+    }
+    if want("mise") {
+        out.push(Arc::new(MiseTool));
+    }
+    if want("just") {
+        out.push(Arc::new(JustTool));
+    }
+    if want("wrkflw") {
+        out.push(Arc::new(WrkflwTool));
     }
     if want("grep") {
         out.push(Arc::new(GrepTool));
@@ -166,6 +180,24 @@ mod tests {
     #[test]
     fn allowlist_can_select_jq_exactly() {
         assert_eq!(builtin_names(&["jq"]), vec!["jq"]);
+    }
+
+    #[test]
+    fn default_catalog_includes_task_workflow_tools() {
+        let names = builtin_names(&[]);
+        for name in ["mise", "just", "wrkflw"] {
+            assert!(
+                names.contains(&name.to_string()),
+                "missing {name}: {names:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn allowlist_can_select_task_workflow_tools_exactly() {
+        assert_eq!(builtin_names(&["mise"]), vec!["mise"]);
+        assert_eq!(builtin_names(&["just"]), vec!["just"]);
+        assert_eq!(builtin_names(&["wrkflw"]), vec!["wrkflw"]);
     }
 
     #[test]

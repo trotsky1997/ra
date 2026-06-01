@@ -180,6 +180,44 @@ async fn archive_without_confirmation_never_spawns_openspec() {
 }
 
 #[tokio::test]
+async fn archive_rejects_leading_dash_change_without_spawning() {
+    let _guard = env_lock().lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let args_file = dir.path().join("args.txt");
+    write_fake_openspec(dir.path(), "printf 'should-not-run\\n'\n");
+    let _path = EnvRestore::set("PATH", dir.path().as_os_str());
+    let _args = EnvRestore::set("OPENSPEC_ARGS_FILE", args_file.as_os_str());
+
+    // The reviewer's exploit: a "change" of `--skip-specs` would otherwise be
+    // parsed as a flag on the destructive archive command. It must be rejected
+    // before the binary is ever spawned, even with confirm_archive set.
+    let output = OpenSpecTool
+        .execute(
+            "openspec",
+            serde_json::json!({
+                "action": "archive",
+                "change": "--skip-specs",
+                "confirm_archive": true
+            }),
+            &make_ctx(),
+        )
+        .await
+        .unwrap();
+
+    assert!(
+        !args_file.exists(),
+        "openspec must not be spawned for an unsafe change name"
+    );
+    let output = json_output(&output);
+    assert_eq!(output["ok"], false);
+    assert_eq!(output["error"]["kind"], "invalid_request");
+    assert!(output["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("must not start with `-`"));
+}
+
+#[tokio::test]
 async fn archive_with_confirmation_passes_yes() {
     let _guard = env_lock().lock().await;
     let dir = tempfile::tempdir().unwrap();

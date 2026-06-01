@@ -233,6 +233,7 @@ impl OpenSpecInvocation {
             OpenSpecAction::Instructions => {
                 let change = require_change(&params.change, action)?;
                 let artifact = non_empty(params.artifact).unwrap_or_else(|| "apply".to_string());
+                validate_identifier(&artifact, "artifact")?;
                 vec![
                     "instructions".to_string(),
                     artifact,
@@ -243,7 +244,14 @@ impl OpenSpecInvocation {
             }
             OpenSpecAction::Validate => {
                 let mut args = vec!["validate".to_string()];
-                if let Ok(item) = require_item(&params.item, &params.change, action) {
+                // An item (or change) is optional: when present we validate
+                // that one item, when absent we validate all changes/specs.
+                // A *provided* item must still be a safe identifier, so don't
+                // silently fall through on a bad value.
+                let supplied =
+                    non_empty(params.item.clone()).or_else(|| non_empty(params.change.clone()));
+                if let Some(item) = supplied {
+                    validate_identifier(&item, "item")?;
                     args.push(item);
                     args.push("--type".to_string());
                     args.push(if params.specs { "spec" } else { "change" }.to_string());
@@ -258,8 +266,10 @@ impl OpenSpecInvocation {
             }
             OpenSpecAction::Init => {
                 let tools = non_empty(params.tools).unwrap_or_else(|| "none".to_string());
+                validate_tools_arg(&tools)?;
                 let mut args = vec!["init".to_string(), "--tools".to_string(), tools];
                 if let Some(path) = non_empty(params.path) {
+                    validate_path_arg(&path)?;
                     args.push(path);
                 }
                 args
@@ -267,13 +277,13 @@ impl OpenSpecInvocation {
             OpenSpecAction::Update => {
                 let mut args = vec!["update".to_string()];
                 if let Some(path) = non_empty(params.path) {
+                    validate_path_arg(&path)?;
                     args.push(path);
                 }
                 args
             }
             OpenSpecAction::NewChange => {
                 let change = require_change(&params.change, action)?;
-                validate_change_name(&change)?;
                 let mut args = vec!["new".to_string(), "change".to_string(), change];
                 if let Some(description) = non_empty(params.description) {
                     args.push("--description".to_string());
@@ -318,8 +328,10 @@ impl OpenSpecInvocation {
 }
 
 fn require_change(change: &Option<String>, action: OpenSpecAction) -> Result<String> {
-    non_empty(change.clone())
-        .ok_or_else(|| anyhow!("openspec action `{}` requires `change`", action.as_str()))
+    let change = non_empty(change.clone())
+        .ok_or_else(|| anyhow!("openspec action `{}` requires `change`", action.as_str()))?;
+    validate_identifier(&change, "change name")?;
+    Ok(change)
 }
 
 fn require_item(
@@ -327,35 +339,64 @@ fn require_item(
     change: &Option<String>,
     action: OpenSpecAction,
 ) -> Result<String> {
-    non_empty(item.clone())
+    let item = non_empty(item.clone())
         .or_else(|| non_empty(change.clone()))
         .ok_or_else(|| {
             anyhow!(
                 "openspec action `{}` requires `item` (or `change`)",
                 action.as_str()
             )
-        })
+        })?;
+    validate_identifier(&item, "item")?;
+    Ok(item)
 }
 
-/// Reject names that are not safe kebab-case change ids before they reach the
-/// CLI. The CLI itself is argv-safe, but a stray leading dash would be parsed
-/// as a flag, and path separators would escape the changes directory.
-fn validate_change_name(name: &str) -> Result<()> {
-    if name.starts_with('-') {
-        return Err(anyhow!("change name must not start with `-`: {name:?}"));
+/// Reject values that are not safe kebab-case OpenSpec identifiers (change
+/// names, spec ids, artifact ids) before they reach the CLI. The argv itself
+/// is safe, but the upstream `openspec` CLI is Commander.js-based: it does
+/// **not** honor a `--` end-of-options separator (it treats `--` as a literal
+/// positional), so a value with a leading dash would be parsed as a flag —
+/// e.g. `archive --skip-specs` drops the change name and falls into an
+/// interactive selector. Path separators are likewise rejected so an
+/// identifier can't escape its directory.
+fn validate_identifier(value: &str, label: &str) -> Result<()> {
+    if value.starts_with('-') {
+        return Err(anyhow!("{label} must not start with `-`: {value:?}"));
     }
-    if name.contains('/') || name.contains('\\') {
+    if value.contains('/') || value.contains('\\') {
         return Err(anyhow!(
-            "change name must not contain path separators: {name:?}"
+            "{label} must not contain path separators: {value:?}"
         ));
     }
-    if !name
+    if !value
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
     {
         return Err(anyhow!(
-            "change name must be kebab-case (letters, digits, `-`, `_`, `.`): {name:?}"
+            "{label} must be kebab-case (letters, digits, `-`, `_`, `.`): {value:?}"
         ));
+    }
+    Ok(())
+}
+
+/// Validate a user-supplied path positional (`init`/`update`). Paths
+/// legitimately contain separators, so only a leading dash is rejected — that
+/// is the part the Commander.js-based CLI would otherwise parse as a flag
+/// (e.g. a path of `--force`). A relative or absolute path with no leading
+/// dash is passed through unchanged.
+fn validate_path_arg(path: &str) -> Result<()> {
+    if path.starts_with('-') {
+        return Err(anyhow!("path must not start with `-`: {path:?}"));
+    }
+    Ok(())
+}
+
+/// Validate the `--tools` value for `init`. It is a flag argument rather than
+/// a positional, but a leading-dash value would still confuse the
+/// Commander.js parser, so reject it for the same reason.
+fn validate_tools_arg(tools: &str) -> Result<()> {
+    if tools.starts_with('-') {
+        return Err(anyhow!("tools must not start with `-`: {tools:?}"));
     }
     Ok(())
 }
@@ -967,6 +1008,91 @@ mod tests {
                 "expected {bad:?} to be rejected"
             );
         }
+    }
+
+    #[test]
+    fn archive_rejects_leading_dash_change() {
+        // Regression: `change: "--skip-specs"` must not become a flag on the
+        // destructive archive command (it would drop the change name and the
+        // CLI would fall into an interactive selector).
+        let mut p = params(OpenSpecAction::Archive);
+        p.change = Some("--skip-specs".into());
+        p.confirm_archive = true;
+        let err = OpenSpecInvocation::from_params(p, Path::new("/w")).unwrap_err();
+        assert!(
+            err.to_string().contains("must not start with `-`"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn status_and_instructions_reject_unsafe_change() {
+        for action in [
+            OpenSpecAction::Status,
+            OpenSpecAction::WorkflowState,
+            OpenSpecAction::Instructions,
+        ] {
+            let mut p = params(action);
+            p.change = Some("--json".into());
+            assert!(
+                OpenSpecInvocation::from_params(p, Path::new("/w")).is_err(),
+                "expected {action:?} to reject a leading-dash change"
+            );
+        }
+    }
+
+    #[test]
+    fn show_and_validate_reject_unsafe_item() {
+        for action in [OpenSpecAction::Show, OpenSpecAction::Validate] {
+            let mut p = params(action);
+            p.item = Some("--all".into());
+            assert!(
+                OpenSpecInvocation::from_params(p, Path::new("/w")).is_err(),
+                "expected {action:?} to reject a leading-dash item"
+            );
+        }
+    }
+
+    #[test]
+    fn instructions_rejects_unsafe_artifact() {
+        let mut p = params(OpenSpecAction::Instructions);
+        p.change = Some("c".into());
+        p.artifact = Some("--json".into());
+        let err = OpenSpecInvocation::from_params(p, Path::new("/w")).unwrap_err();
+        assert!(err.to_string().contains("artifact"), "got: {err}");
+    }
+
+    #[test]
+    fn init_and_update_reject_leading_dash_path() {
+        for action in [OpenSpecAction::Init, OpenSpecAction::Update] {
+            let mut p = params(action);
+            p.path = Some("--force".into());
+            let err = OpenSpecInvocation::from_params(p, Path::new("/w")).unwrap_err();
+            assert!(
+                err.to_string().contains("path must not start with `-`"),
+                "{action:?} got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn init_and_update_accept_normal_paths() {
+        // Paths legitimately contain separators; only leading-dash is unsafe.
+        let mut init = params(OpenSpecAction::Init);
+        init.path = Some("sub/dir".into());
+        assert_eq!(build(init).args, vec!["init", "--tools", "none", "sub/dir"]);
+
+        let mut update = params(OpenSpecAction::Update);
+        update.path = Some("/abs/path".into());
+        assert_eq!(build(update).args, vec!["update", "/abs/path"]);
+    }
+
+    #[test]
+    fn init_rejects_leading_dash_tools() {
+        let mut p = params(OpenSpecAction::Init);
+        p.tools = Some("--force".into());
+        let err = OpenSpecInvocation::from_params(p, Path::new("/w")).unwrap_err();
+        assert!(err.to_string().contains("tools must not start with `-`"));
     }
 
     #[test]

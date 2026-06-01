@@ -610,9 +610,13 @@ Returned envelope:
 
 On a non-zero exit the envelope sets `ok:false` and adds
 `error.kind:"openspec_error"`. Invalid requests (missing `change`, unconfirmed
-`archive`, unsafe change name) fail before spawning with
-`error.kind:"invalid_request"`. `stdout` is bounded by `max_output_bytes`,
-preserving valid JSON and setting `truncated:true` when trimmed.
+`archive`, or a value that would be parsed as a flag — a leading-dash or
+path-separator `change`/`item`/`artifact`, a leading-dash `path`/`tools`) fail
+before spawning with `error.kind:"invalid_request"`. The upstream CLI is
+Commander.js-based and does not honor a `--` end-of-options separator, so these
+positionals are validated rather than escaped. `stdout` is bounded by
+`max_output_bytes`, preserving valid JSON and setting `truncated:true` when
+trimmed.
 
 ### Parameters
 

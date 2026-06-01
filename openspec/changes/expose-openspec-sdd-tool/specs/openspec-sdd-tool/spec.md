@@ -74,6 +74,12 @@ confirmation before destructive operations.
 - **WHEN** the tool builds its invocation
 - **THEN** it invokes `openspec archive <change> -y`
 
+#### Scenario: Positional values cannot be parsed as flags
+
+- **GIVEN** a caller provides a leading-dash value for a field that becomes a CLI positional (for example `change: "--skip-specs"` on `archive`, `item` on `show`/`validate`, `artifact` on `instructions`, or `path` on `init`/`update`)
+- **WHEN** the tool validates the request
+- **THEN** the call fails before invoking the openspec binary instead of letting the value be parsed as an option
+
 ### Requirement: OpenSpec Output Envelope
 
 Ra SHALL return a bounded, valid JSON envelope for openspec execution results,

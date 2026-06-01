@@ -10,6 +10,7 @@ pub mod hooks;
 pub mod init;
 pub mod llm_model;
 pub mod mcp;
+pub mod memory_entry;
 pub mod model;
 pub mod nemo_obs;
 pub mod openspec;

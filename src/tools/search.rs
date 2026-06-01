@@ -183,6 +183,7 @@ impl AstGrepInvocation {
             .into_iter()
             .filter(|p| !p.trim().is_empty())
             .collect();
+        args.push("--".into());
         if paths.is_empty() {
             args.push(".".into());
         } else {
@@ -283,10 +284,12 @@ fn format_ast_grep_output(
     invocation: &AstGrepInvocation,
 ) -> Result<String> {
     let code = output.exit_code;
+    let stderr = output.stderr.trim();
 
-    if !(code == 0 || code == 1 || output.truncated) {
+    let status_is_ok = code == 0 || code == 1 || output.truncated;
+    if (code == 1 && !stderr.is_empty()) || !status_is_ok {
         let mut combined = String::new();
-        if !output.stderr.trim().is_empty() {
+        if !stderr.is_empty() {
             combined.push_str(output.stderr.trim_end());
         }
         return Err(anyhow!(
@@ -303,7 +306,7 @@ fn format_ast_grep_output(
         output.matches.clone(),
         output.observed_matches,
         code,
-        output.stderr.trim(),
+        stderr,
         invocation.max_output_bytes,
         output.truncated,
     )
@@ -524,6 +527,7 @@ mod tests {
                 "!target/**",
                 "--context",
                 "2",
+                "--",
                 "src",
             ]
         );
@@ -532,7 +536,22 @@ mod tests {
     #[test]
     fn defaults_to_current_directory() {
         let invocation = AstGrepInvocation::from_params(params("foo($A)")).unwrap();
+        assert_eq!(invocation.args[invocation.args.len() - 2], "--");
         assert_eq!(invocation.args.last().unwrap(), ".");
+    }
+
+    #[test]
+    fn separates_paths_from_flags() {
+        let mut params = params("foo($A)");
+        params.paths = vec!["--looks-like-flag".into(), "-x".into()];
+
+        let invocation = AstGrepInvocation::from_params(params).unwrap();
+
+        let sentinel = invocation.args.iter().position(|arg| arg == "--").unwrap();
+        assert_eq!(
+            &invocation.args[sentinel + 1..],
+            &["--looks-like-flag".to_string(), "-x".to_string()]
+        );
     }
 
     #[test]
@@ -564,6 +583,21 @@ mod tests {
         assert_eq!(value["matches"], json!([]));
         assert_eq!(value["total_matches"], json!(0));
         assert_eq!(value["truncated"], json!(false));
+    }
+
+    #[test]
+    fn exit_one_with_stderr_is_an_error() {
+        let invocation = AstGrepInvocation::from_params(params("foo($A)")).unwrap();
+        let output = AstGrepOutput {
+            exit_code: 1,
+            matches: Vec::new(),
+            observed_matches: 0,
+            truncated: false,
+            stderr: "ERROR: path not found".into(),
+        };
+
+        let err = format_ast_grep_output(&output, &invocation).unwrap_err();
+        assert!(err.to_string().contains("ERROR: path not found"));
     }
 
     #[test]

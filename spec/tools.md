@@ -113,8 +113,9 @@ Search code with [ast-grep](https://ast-grep.github.io/) and return
 JSON. This tool shells out directly to `ast-grep run --json=stream`
 (or `sg` when `ast-grep` is not on PATH), parses the JSON stream, and
 returns a stable object. Relative paths are resolved against the
-session cwd. Exit status `1` means “no matches” and is returned as an
-empty result rather than an error.
+session cwd. Exit status `1` with empty stderr means “no matches” and
+is returned as an empty result rather than an error; status `1` with
+stderr is treated as an ast-grep error.
 
 ```json
 {

@@ -402,11 +402,7 @@ fn tool_title(name: &str, input: &serde_json::Value) -> String {
             .get("command")
             .and_then(|v| v.as_str())
             .map(|c| {
-                let mut s = c.to_string();
-                if s.len() > 60 {
-                    s.truncate(60);
-                    s.push('…');
-                }
+                let s = truncate_chars(c, 60);
                 format!("$ {s}")
             })
             .unwrap_or_else(|| "Run shell".into()),
@@ -414,14 +410,46 @@ fn tool_title(name: &str, input: &serde_json::Value) -> String {
             .get("pattern")
             .and_then(|v| v.as_str())
             .map(|q| {
-                let mut s = q.to_string();
-                if s.len() > 60 {
-                    s.truncate(60);
-                    s.push('…');
-                }
+                let s = truncate_chars(q, 60);
                 format!("ast-grep {s}")
             })
             .unwrap_or_else(|| "ast-grep search".into()),
         other => other.to_string(),
+    }
+}
+
+fn truncate_chars(s: &str, limit: usize) -> String {
+    if s.chars().count() <= limit {
+        s.to_string()
+    } else {
+        let mut out: String = s.chars().take(limit).collect();
+        out.push('…');
+        out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn tool_title_truncates_multibyte_ast_grep_pattern_safely() {
+        let pattern = format!("{}界tail", "a".repeat(59));
+        let title = tool_title("ast_grep", &json!({ "pattern": pattern }));
+
+        assert!(title.starts_with("ast-grep "));
+        assert!(title.ends_with('…'));
+        assert!(title.contains('界'));
+    }
+
+    #[test]
+    fn tool_title_truncates_multibyte_bash_command_safely() {
+        let command = format!("{}界tail", "a".repeat(59));
+        let title = tool_title("bash", &json!({ "command": command }));
+
+        assert!(title.starts_with("$ "));
+        assert!(title.ends_with('…'));
+        assert!(title.contains('界'));
     }
 }

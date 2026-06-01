@@ -53,9 +53,12 @@ enabled = true
 # Native OpenSpec (https://github.com/Fission-AI/OpenSpec) discovery.
 # Ra finds the nearest `openspec/` directory and folds its capability
 # specs + active changes into the system prompt (progressive disclosure).
+# `agent_own` (default true) also folds in the non-interactive,
+# no-human-in-the-loop playbook for driving the `openspec` CLI.
 [openspec]
 enabled = true
 # path = "./docs/openspec"   # override the auto-discovered location
+# agent_own = true           # set false to surface the catalog only
 "#;
 
 const EXAMPLE_SKILL_TEMPLATE: &str = r#"---

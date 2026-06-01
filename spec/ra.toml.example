@@ -85,6 +85,11 @@ enabled = true
 [openspec]
 enabled = true
 # path = "./docs/openspec"   # override the auto-discovered location
+# agent_own = true           # fold the non-interactive, no-human-in-the-loop
+                             # spec-driven playbook (drive the `openspec` CLI:
+                             # init --tools / new change / status+instructions
+                             # --json / validate --strict / archive -y) into
+                             # the prompt. Set false for catalog only.
 
 # ─── A2A (server + remote agents) ───────────────────────────────────
 [a2a.serve]

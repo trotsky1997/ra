@@ -25,10 +25,9 @@ The eye watching from the banner is 𓂀 (U+13080).
   terminal chat (requires `--features tui`, which pulls in
   [opentui_rust](https://github.com/Dicklesworthstone/opentui_rust)
   and needs nightly Rust).
-- **Built-in tool set.** `read`, `write`, `edit`, `bash`, plus
-  `grep` (ripgrep), `find` (fd), `ls` (eza/exa). External-binary tools
-  detect themselves at startup; missing dependencies are logged once
-  and the tool drops out of the registry. ACP hosts also get
+- **Built-in tool set.** `read`, `write`, `edit`, and `bash`. Use
+  `bash` for shell-native commands such as `grep`, `find`, and `ls`
+  instead of separate function-call wrappers. ACP hosts also get
   `fs/read_text_file`, `fs/write_text_file`, and `terminal/*`
   reverse-call routing automatically.
 - **Multi-backend LLM layer.** Anthropic, OpenAI, Google, DeepSeek,
@@ -56,10 +55,10 @@ The eye watching from the banner is 𓂀 (U+13080).
   with stdio + Streamable HTTP transports; remote tools surface as
   Ra tools the LLM can call.
 - **Native RTK ([Rust Token Killer](https://github.com/rtk-ai/rtk)) support.**
-  When `rtk` is on PATH, every shell-flavoured tool call (`bash`,
-  `grep`, `find`, `ls`) is routed through `rtk rewrite` before
-  execution, swapping verbose `git status` / `cargo test` / `kubectl`
-  output for RTK's token-compressed equivalents (60–90% savings).
+  When `rtk` is on PATH, `bash` commands are routed through
+  `rtk rewrite` before execution, swapping verbose `git status` /
+  `cargo test` / `kubectl` output for RTK's token-compressed
+  equivalents (60–90% savings).
   Configurable via `[rtk] mode = "auto" | "on" | "off"`.
 - **A2A everywhere.** Serve as an A2A agent (with optional Bearer auth
   on JSON-RPC/REST/gRPC) and consume remote A2A agents as local tools.
@@ -72,11 +71,11 @@ The eye watching from the banner is 𓂀 (U+13080).
 ## Quick start
 
 ```bash
-# Mock model (no API key — uses the bash:/read:/grep:/find:/edit:… prefixes)
+# Mock model (no API key — uses the bash:/read:/write:/edit: prefixes)
 cargo run -- "bash:echo hello && uname -sr"
 
 # Real model — Anthropic
-ANTHROPIC_API_KEY=sk-ant-... cargo run -- "Use grep to find every TODO."
+ANTHROPIC_API_KEY=sk-ant-... cargo run -- "Use bash to grep for every TODO."
 
 # Real model — OpenAI
 OPENAI_API_KEY=sk-... cargo run -- "Read Cargo.toml and explain it."
@@ -163,13 +162,12 @@ Resolution order: `--config <path>` → `$RA_CONFIG` → `./ra.toml` →
 | `write` | Writes a file in full; ACP `fs/write_text_file` when available. Auto-creates parent dirs locally. |
 | `edit`  | Claude-Code-shaped: `{path, old_string, new_string, replace_all}`. Refuses ambiguous matches by default. |
 | `bash`  | Runs a shell command; ACP `terminal/*` (with permission gating) when available, else `/bin/sh -c`. |
-| `grep`  | Wraps `rg` (ripgrep). pattern + path + glob/type/case/context filters. Skipped if `rg` is missing. |
-| `find`  | Wraps `fd` (or `fdfind`). pattern + path + type/extension/hidden filters. Skipped if absent. |
-| `ls`    | Wraps `eza` (or `exa`). path + all/long/tree/level. Skipped if absent. |
 
-Output from external-binary tools is capped at 64 KiB per call.
 Toggle the catalog via `[tools] builtin = […]`; an empty allow-list
-ships every tool whose dependencies resolve.
+ships every built-in tool. `grep`, `find`, `ls`, and similar shell
+commands intentionally go through `bash` rather than separate built-in
+tool definitions. Unknown names in the allow-list are ignored with a
+startup warning.
 
 ## Protocols & specs
 
@@ -202,8 +200,7 @@ src/
 ├── events.rs        Event / ToolCall / ToolResult
 ├── tools/           built-in tool catalog
 │   ├── core.rs      Tool trait, Read, Bash
-│   ├── fs.rs        Write, Edit
-│   └── search.rs    Grep (rg), Find (fd), Ls (eza)
+│   └── fs.rs        Write, Edit
 ├── tool_ctx.rs      ToolCtx + ClientHandle (ACP reverse calls)
 ├── acp_server.rs    serve as ACP agent over stdio
 ├── a2a_server.rs    serve as A2A agent (HTTP + gRPC, optional Bearer)

@@ -80,8 +80,7 @@ impl A2aState {
         rtk: crate::tools::RtkRewriter,
     ) -> Self {
         // Full tool catalog supplied by the caller (main.rs); see
-        // `tools::default_builtins` for the allow-list filter and missing
-        // external-binary detection.
+        // `tools::default_builtins` for the allow-list filter.
         let tools = extra_tools;
         Self {
             model,

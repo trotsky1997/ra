@@ -5,24 +5,18 @@ JSON schema below is also embedded in the agent's tool catalog at
 runtime — the LLM sees identical wire shapes.
 
 The set is filtered by the `[tools] builtin = [...]` allow-list in
-`ra.toml`. An empty allow-list ships every tool whose external
-dependencies resolve at startup. Missing external binaries
-(`rg`, `fd`/`fdfind`, `eza`/`exa`) cause the corresponding tool to be
-silently dropped from the catalog with a single `[ra::tools] skipping
-'X': … not on PATH` log line; the LLM never sees a tool it can't run.
+`ra.toml`. An empty allow-list ships every built-in tool. Unknown names
+in the allow-list are ignored with a startup warning.
 
 ## RTK (Rust Token Killer) integration
 
-Every shell-flavoured tool — `bash`, `grep`, `find`, `ls` — consults
-[RTK](https://github.com/rtk-ai/rtk) before executing. With
-`[rtk] mode = "auto"` (default) and `rtk` on PATH, the tool builds
-the canonical shell form of the command it would run (binary basename
-+ args; `fdfind` is normalised to `fd`), passes it to `rtk rewrite`,
-and if RTK has a recipe, exec's the rewritten command via
-`/bin/sh -c` instead. The model sees RTK's compressed output, often
-60–90% smaller than the original. The transformation is logged on
-the broadcast bus as a `ToolCallUpdate` chunk so it's visible to
-the operator.
+`bash` consults [RTK](https://github.com/rtk-ai/rtk) before executing.
+With `[rtk] mode = "auto"` (default) and `rtk` on PATH, Ra passes the
+command to `rtk rewrite`, and if RTK has a recipe, executes the
+rewritten command via `/bin/sh -c` instead. The model sees RTK's
+compressed output, often 60–90% smaller than the original. The
+transformation is logged on the broadcast bus as a `ToolCallUpdate`
+chunk so it's visible to the operator.
 
 `mode = "off"` disables the integration even when rtk is installed;
 `mode = "on"` requires rtk and warns at startup if it's missing.
@@ -108,98 +102,9 @@ Run a shell command. With an ACP host attached, this routes through
 Output is the command's combined stdout+stderr; the local-fallback
 path also emits a `[exit=N]` event chunk on the broadcast bus.
 
-## Search tools
-
-These wrap external binaries chosen for being the de-facto fast,
-sane, ignore-aware replacements for `grep` / `find` / `ls`. Each
-tool's `detect()` runs at startup; absence drops the tool from the
-catalog. All search-tool output is capped at 64 KiB per call (a stray
-`find /` won't blow up the model context).
-
-### `grep` — wraps ripgrep (`rg`)
-
-Recursive content search, respects `.gitignore` by default.
-
-```json
-{
-  "pattern": "TODO\\(\\w+\\)",
-  "path": "src",
-  "case_insensitive": false,
-  "fixed_string": false,
-  "glob": "*.rs",
-  "type": "rust",
-  "max_count": 5,
-  "context": 2,
-  "files_with_matches": false
-}
-```
-
-| Field                | Type    | Required | rg flag |
-|----------------------|---------|----------|---------|
-| pattern              | string  | yes      | (positional) |
-| path                 | string  | no       | (positional) |
-| case_insensitive     | boolean | no       | `-i` |
-| fixed_string         | boolean | no       | `-F` |
-| glob                 | string  | no       | `--glob` |
-| type                 | string  | no       | `--type` |
-| max_count            | u32     | no       | `--max-count` |
-| context              | u32     | no       | `--context` |
-| files_with_matches   | boolean | no       | `-l` |
-
-`--color=never` and `--line-number` are always set.
-
-### `find` — wraps fd (`fd` / `fdfind` on Debian)
-
-File discovery by name. Honours `.gitignore` by default.
-
-```json
-{
-  "pattern": "test_.*\\.rs",
-  "path": "src",
-  "glob": false,
-  "type": "f",
-  "extension": "rs",
-  "hidden": false,
-  "no_ignore": false,
-  "max_results": 100
-}
-```
-
-| Field        | Type    | Required | fd flag |
-|--------------|---------|----------|---------|
-| pattern      | string  | no       | (positional; empty = list all) |
-| path         | string  | no       | (positional) |
-| glob         | boolean | no       | `--glob` |
-| type         | string  | no       | `--type` (`f`/`d`/`l`/`x`) |
-| extension    | string  | no       | `--extension` |
-| hidden       | boolean | no       | `--hidden` |
-| no_ignore    | boolean | no       | `--no-ignore` |
-| max_results  | u32     | no       | `--max-results` |
-
-### `ls` — wraps eza (`eza` / `exa`)
-
-Directory listing. Single-level by default; `tree=true` plus an
-optional `level` recurses.
-
-```json
-{
-  "path": "src",
-  "all": false,
-  "long": true,
-  "tree": false,
-  "level": null,
-  "sort_modified": false
-}
-```
-
-| Field          | Type    | Required | eza flag |
-|----------------|---------|----------|----------|
-| path           | string  | no       | (positional) |
-| all            | boolean | no       | `-a` |
-| long           | boolean | no       | `-l` |
-| tree           | boolean | no       | `--tree` |
-| level          | u32     | no       | `--level` |
-| sort_modified  | boolean | no       | `--sort=modified` |
+Shell-native commands such as `grep`, `find`, and `ls` intentionally
+go through `bash`; Ra does not expose separate built-in wrappers for
+them.
 
 ## Adding new tools
 
@@ -230,12 +135,3 @@ impl Tool for MyTool {
 
 Then register it from `tools::default_builtins` (or pass it in via
 the `extra_tools` slot at the call site).
-
-## Future work
-
-The three external-binary tools (`grep` / `find` / `ls`) are stand-ins
-until we wire their underlying Rust crates directly: ripgrep ships as
-`grep` + `ignore` on crates.io, fd's walking is the same `ignore`
-crate, and eza's listing is straightforward `tokio::fs` + tabular
-formatting. Going internal removes the runtime PATH probe and means
-`ra` works in scratch containers with nothing but the binary.

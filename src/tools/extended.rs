@@ -144,26 +144,26 @@ impl PathGlob {
     }
 }
 
-fn type_to_glob(file_type: &str) -> Result<&'static str> {
+fn type_to_globs(file_type: &str) -> Result<&'static [&'static str]> {
     match file_type {
-        "rust" | "rs" => Ok("*.rs"),
-        "py" | "python" => Ok("*.py"),
-        "js" | "javascript" => Ok("*.js"),
-        "jsx" => Ok("*.jsx"),
-        "ts" | "typescript" => Ok("*.ts"),
-        "tsx" => Ok("*.tsx"),
-        "go" => Ok("*.go"),
-        "c" => Ok("*.c"),
-        "cpp" | "cxx" => Ok("*.cpp"),
-        "java" => Ok("*.java"),
-        "rb" | "ruby" => Ok("*.rb"),
-        "sh" | "bash" => Ok("*.sh"),
-        "toml" => Ok("*.toml"),
-        "yaml" | "yml" => Ok("*.yml"),
-        "json" => Ok("*.json"),
-        "md" | "markdown" => Ok("*.md"),
-        "html" => Ok("*.html"),
-        "css" => Ok("*.css"),
+        "rust" | "rs" => Ok(&["*.rs"]),
+        "py" | "python" => Ok(&["*.py"]),
+        "js" | "javascript" => Ok(&["*.js"]),
+        "jsx" => Ok(&["*.jsx"]),
+        "ts" | "typescript" => Ok(&["*.ts"]),
+        "tsx" => Ok(&["*.tsx"]),
+        "go" => Ok(&["*.go"]),
+        "c" => Ok(&["*.c"]),
+        "cpp" | "cxx" => Ok(&["*.cpp"]),
+        "java" => Ok(&["*.java"]),
+        "rb" | "ruby" => Ok(&["*.rb"]),
+        "sh" | "bash" => Ok(&["*.sh"]),
+        "toml" => Ok(&["*.toml"]),
+        "yaml" | "yml" => Ok(&["*.{yaml,yml}"]),
+        "json" => Ok(&["*.json"]),
+        "md" | "markdown" => Ok(&["*.md"]),
+        "html" => Ok(&["*.html"]),
+        "css" => Ok(&["*.css"]),
         other => anyhow::bail!("unknown file type filter: {other}"),
     }
 }
@@ -336,7 +336,9 @@ fn grep_globs(params: &GrepParams) -> Result<Vec<PathGlob>> {
         globs.push(PathGlob::new(glob)?);
     }
     if let Some(file_type) = &params.file_type {
-        globs.push(PathGlob::new(type_to_glob(file_type)?)?);
+        for glob in type_to_globs(file_type)? {
+            globs.push(PathGlob::new(*glob)?);
+        }
     }
     Ok(globs)
 }

@@ -138,6 +138,36 @@ async fn grep_single_file_uses_relative_path_for_type_filtering() {
 }
 
 #[tokio::test]
+async fn grep_yaml_type_matches_yaml_and_yml_extensions() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("config.yaml"), "needle: yaml\n").unwrap();
+    fs::write(dir.path().join("config.yml"), "needle: yml\n").unwrap();
+
+    let output = GrepTool
+        .execute(
+            "grep",
+            serde_json::json!({
+                "pattern": "needle",
+                "path": dir.path(),
+                "type": "yaml"
+            }),
+            &make_ctx(),
+        )
+        .await
+        .unwrap();
+    let output = json_output(&output);
+    let mut paths = output["matches"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| entry["path"].as_str().unwrap().to_string())
+        .collect::<Vec<_>>();
+    paths.sort();
+
+    assert_eq!(paths, vec!["config.yaml", "config.yml"]);
+}
+
+#[tokio::test]
 async fn glob_skips_gitignored_and_build_directories_by_default() {
     let dir = setup_tree();
     let output = GlobTool

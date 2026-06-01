@@ -121,10 +121,13 @@ missing-`jq` installation guidance in a structured response.
 
 These wrappers execute common developer CLIs without asking the model to
 compose a shell string. In local CLI / A2A / TUI mode Ra spawns the
-binary directly with `Command::args`, preserving argv boundaries. With
-an ACP host attached, Ra reuses the same permission-gated
-`terminal/*` reverse-call path as `bash`, rendering the argv array as a
-shell-quoted command line for the host terminal.
+binary directly with `Command::args`, preserving argv boundaries. With an ACP
+host attached, `git` and `gh` reuse the same permission-gated `terminal/*`
+reverse-call path as `bash`, rendering the argv array as a shell-quoted command
+line for the host terminal. `jq`, `mise`, `just`, and `wrkflw` spawn local
+binaries directly so they can preserve stdin/output-envelope behavior; ACP
+terminal permission prompts do not wrap those local spawns. The central
+`[tools].builtin` allow-list and PreToolUse/PostToolUse hooks still apply.
 
 These native wrappers do not route through RTK. That tradeoff preserves
 argv semantics in the local process path instead of converting the call
@@ -266,7 +269,7 @@ The task/workflow tools share the same schema:
 | args | array of strings | no | `[]` | arguments only; omit the binary name |
 | cwd | string | no | session cwd | Working directory; relative paths resolve against the session cwd |
 | timeout_ms | number | no | none | Optional process timeout |
-| max_output_bytes | number | no | `120000` | Bounds Ra's returned JSON envelope |
+| max_output_bytes | number | no | `120000` | Bounds Ra's returned JSON envelope; `0` means unbounded |
 
 Returned envelope:
 
@@ -288,7 +291,10 @@ requests use `error.kind:"invalid_request"`. Non-zero exits use
 Timeouts use `error.kind:"timeout"`. Missing binaries use
 `error.kind:"missing_mise"`, `error.kind:"missing_just"`, or
 `error.kind:"missing_wrkflw"` with installation guidance. Output exceeding
-`max_output_bytes` is clipped with `truncated:true`.
+`max_output_bytes` is clipped with `truncated:true`. `max_output_bytes` is a
+best-effort envelope budget; Ra always preserves valid JSON, so very small
+budgets may still return a minimal envelope larger than the requested byte
+count.
 
 ## Structural search tools
 

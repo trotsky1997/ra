@@ -46,6 +46,13 @@ host binary with structured argv parameters and no local shell interpolation.
 - **WHEN** a caller provides `cwd`
 - **THEN** Ra runs the requested task workflow binary from that directory
 
+#### Scenario: ACP host does not wrap task workflow spawns
+
+- **WHEN** an ACP host is attached
+- **THEN** `mise`, `just`, and `wrkflw` still spawn local binaries directly
+- **AND** ACP terminal permission prompts do not wrap those local spawns
+- **AND** the built-in allow-list and tool hooks remain available controls
+
 ### Requirement: Native Task Workflow Result Envelope
 
 Ra SHALL return a bounded, valid JSON envelope for `mise`, `just`, and `wrkflw`
@@ -76,7 +83,18 @@ execution results, including failures.
 - **THEN** Ra returns JSON with `ok: false`, no exit code, and
   `error.kind: "timeout"`
 
+#### Scenario: Invalid cwd is structured
+
+- **WHEN** a task workflow tool receives a `cwd` that cannot be used
+- **THEN** Ra returns JSON with `ok: false`, no exit code, and
+  `error.kind: "invalid_request"`
+
 #### Scenario: Output is bounded
 
 - **WHEN** stdout or stderr exceeds `max_output_bytes`
 - **THEN** Ra returns valid JSON with `truncated: true`
+
+#### Scenario: Zero output budget disables truncation
+
+- **WHEN** `max_output_bytes` is `0`
+- **THEN** Ra treats the result envelope as unbounded

@@ -49,9 +49,12 @@ support cwd, timeout, missing-binary guidance, or bounded JSON envelopes.
 ### Local process spawning in v1
 
 The local path uses `tokio::process::Command::args` and sets `current_dir` after
-validating `cwd`. This is the most direct way to preserve argv boundaries and
-return structured stdout/stderr. ACP-host terminal parity can be added later if
-it can preserve the same envelope.
+validating `cwd`. `mise`, `just`, and `wrkflw` use this local spawn path even
+when an ACP host is attached. That is the most direct way to preserve argv
+boundaries and return structured stdout/stderr, but it also means ACP terminal
+permission prompts do not wrap these tools. Operators should use the built-in
+allow-list and PreToolUse/PostToolUse hooks to govern availability. ACP-host
+terminal parity can be added later if it can preserve the same envelope.
 
 Alternative considered: route through `bash` or host terminal for every call.
 Rejected because it would reintroduce shell-string construction and weaken the

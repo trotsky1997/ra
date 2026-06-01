@@ -215,6 +215,37 @@ async fn missing_binary_returns_structured_guidance() {
 }
 
 #[tokio::test]
+async fn invalid_cwd_returns_structured_error() {
+    let work_dir = tempfile::tempdir().unwrap();
+    let mut ctx = make_ctx();
+    ctx.cwd = work_dir.path().to_path_buf();
+
+    let output = JustTool
+        .execute(
+            "just",
+            serde_json::json!({ "args": ["test"], "cwd": "missing-dir" }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+    let output = json_output(&output);
+
+    assert_eq!(output["ok"], false);
+    assert_eq!(output["tool"], "just");
+    assert_eq!(output["command"]["program"], "just");
+    assert_eq!(output["command"]["cwd"], Value::Null);
+    assert_eq!(output["exit_code"], Value::Null);
+    assert_eq!(output["stdout"], "");
+    assert_eq!(output["stderr"], Value::Null);
+    assert_eq!(output["truncated"], false);
+    assert_eq!(output["error"]["kind"], "invalid_request");
+    assert!(output["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("read cwd"));
+}
+
+#[tokio::test]
 async fn timeout_returns_structured_error() {
     let _guard = env_lock().lock().await;
     let bin_dir = tempfile::tempdir().unwrap();

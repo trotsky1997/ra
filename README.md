@@ -232,7 +232,9 @@ Native `mise` / `just` / `wrkflw` are intended for test-first task and
 workflow loops such as `mise run test`, `just test`, and local GitHub
 Actions validation. They run local binaries with argv-safe arguments,
 optional `cwd`/timeout controls, bounded JSON output, and structured
-missing-binary guidance.
+missing-binary guidance. These tools spawn locally even when an ACP host is
+attached, so ACP terminal permission prompts do not wrap them; use
+`[tools].builtin` and PreToolUse/PostToolUse hooks to govern availability.
 `webfetch_fetch` and `webfetch_crawl` run
 `npm exec --yes --package=github:trotsky1997/webfetch-cli -- webfetch-cli`
 under the hood; if `npm` is missing, the tools return structured install

@@ -23,7 +23,7 @@ fn lsp_absent_when_openlsp_disabled() {
 
 #[test]
 fn lsp_present_when_binary_override_resolves() {
-    // Use `true` (always on PATH) as a stand-in for the openlsp binary.
+    // Use `true` (always on PATH) as a stand-in for openlsp-cli.
     let cfg = OpenlspSection {
         enabled: true,
         binary: Some("true".to_string()),

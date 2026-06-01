@@ -34,6 +34,7 @@ use crate::events::Event;
 use crate::session::Session;
 use crate::session_runner::{RunnerHost, SessionRunner};
 use crate::store::{SessionMeta, SessionStore};
+use crate::tool_ctx::{FileChange, FileChangeApprover, FileChangeDecision};
 use crate::tools::default_builtins;
 
 /// One rendered line in the scrollback. Kept minimal; everything else
@@ -60,20 +61,56 @@ struct PartialTool {
     chunks: String,
 }
 
+#[derive(Debug)]
+struct FileDecisionRequest {
+    change: FileChange,
+    respond_to: tokio::sync::oneshot::Sender<FileChangeDecision>,
+}
+
+#[derive(Debug, Clone)]
+struct TuiFileApprover {
+    tx: mpsc::UnboundedSender<FileDecisionRequest>,
+}
+
+#[async_trait]
+impl FileChangeApprover for TuiFileApprover {
+    async fn approve_file_change(&self, change: FileChange) -> Result<FileChangeDecision> {
+        let (respond_to, rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(FileDecisionRequest { change, respond_to })
+            .map_err(|_| anyhow::anyhow!("TUI file approval channel closed"))?;
+        rx.await
+            .map_err(|_| anyhow::anyhow!("TUI file approval cancelled"))
+    }
+}
+
+struct PendingFileDecision {
+    change: FileChange,
+    respond_to: Option<tokio::sync::oneshot::Sender<FileChangeDecision>>,
+    scroll: usize,
+}
+
 /// Public entry point — wired into `main.rs` behind `#[cfg(feature = "tui")]`.
 pub async fn run(config: &RaConfig) -> Result<()> {
     if !is_a_tty() {
-        anyhow::bail!(
-            "ra tui requires an interactive terminal (stdin/stdout must be a TTY)"
-        );
+        anyhow::bail!("ra tui requires an interactive terminal (stdin/stdout must be a TTY)");
     }
     // Initialise ATOF / NeMo Relay once per process — same call ACP
     // and A2A make. Idempotent inside nemo_obs.
     crate::nemo_obs::init();
 
-    let (session, prompt_templates) = build_session(config).await?;
+    let (decision_tx, decision_rx) = mpsc::unbounded_channel::<FileDecisionRequest>();
+    let (session, prompt_templates) =
+        build_session(config, Some(TuiFileApprover { tx: decision_tx })).await?;
     let session_id = ulid::Ulid::new().to_string();
-    let mut app = TuiApp::new(session.clone(), session_id, prompt_templates, config).await?;
+    let mut app = TuiApp::new(
+        session.clone(),
+        session_id,
+        prompt_templates,
+        config,
+        decision_rx,
+    )
+    .await?;
 
     // Wrap the entire interactive loop in one Agent-typed scope so
     // every nested LLM/tool/hook scope nests under it in the trace.
@@ -106,6 +143,7 @@ fn is_a_tty() -> bool {
 /// `/skill-name args...` the same way ACP/A2A do.
 async fn build_session(
     config: &RaConfig,
+    file_approver: Option<TuiFileApprover>,
 ) -> Result<(Arc<Session>, Arc<HashMap<String, String>>)> {
     use crate::skills::ResourceBundle;
     let factory = build_model_factory(config);
@@ -142,6 +180,9 @@ async fn build_session(
     let prompt_templates = Arc::new(bundle.prompt_map());
 
     let mut sess = Session::new(model, default_builtins(&config.tools.builtin)).with_rtk(rtk);
+    if let Some(approver) = file_approver {
+        sess = sess.with_file_approver(Arc::new(approver));
+    }
     if let Some(h) = hooks {
         sess = sess.with_hooks(h);
     }
@@ -173,8 +214,12 @@ impl FirstModel for EnvFirstModel {
                 let model = std::env::var("RA_MODEL").unwrap_or_else(|_| "claude-opus-4-5".into());
                 return crate::llm_model::LlmModel::build(crate::llm_model::LlmModelConfig {
                     backend: llm::builder::LLMBackend::Anthropic,
-                    api_key: k, model, base_url: None,
-                }).ok().map(|m| Arc::new(m) as Arc<dyn crate::model::Model>);
+                    api_key: k,
+                    model,
+                    base_url: None,
+                })
+                .ok()
+                .map(|m| Arc::new(m) as Arc<dyn crate::model::Model>);
             }
         }
         // OpenAI
@@ -184,8 +229,12 @@ impl FirstModel for EnvFirstModel {
                 let base_url = std::env::var("OPENAI_BASE_URL").ok();
                 return crate::llm_model::LlmModel::build(crate::llm_model::LlmModelConfig {
                     backend: llm::builder::LLMBackend::OpenAI,
-                    api_key: k, model, base_url,
-                }).ok().map(|m| Arc::new(m) as Arc<dyn crate::model::Model>);
+                    api_key: k,
+                    model,
+                    base_url,
+                })
+                .ok()
+                .map(|m| Arc::new(m) as Arc<dyn crate::model::Model>);
             }
         }
         // pi (Responses API endpoint)
@@ -198,8 +247,12 @@ impl FirstModel for EnvFirstModel {
                     .unwrap_or_else(|_| "gpt-5.5".into());
                 return crate::llm_model::LlmModel::build(crate::llm_model::LlmModelConfig {
                     backend: llm::builder::LLMBackend::OpenAI,
-                    api_key: k, model, base_url: Some(base),
-                }).ok().map(|m| Arc::new(m) as Arc<dyn crate::model::Model>);
+                    api_key: k,
+                    model,
+                    base_url: Some(base),
+                })
+                .ok()
+                .map(|m| Arc::new(m) as Arc<dyn crate::model::Model>);
             }
         }
         // Fall back to MockModel so the TUI is still demoable without keys.
@@ -239,11 +292,8 @@ impl RunnerHost for TuiRunnerHost {
         if messages.is_empty() {
             return;
         }
-        let traj = crate::atif_codec::encode(
-            &self.session_id,
-            self.config_model_name.clone(),
-            &messages,
-        );
+        let traj =
+            crate::atif_codec::encode(&self.session_id, self.config_model_name.clone(), &messages);
         if let Err(e) = store.save(&traj).await {
             eprintln!("[ra::tui] failed to save session: {e:#}");
         }
@@ -273,7 +323,10 @@ struct SessionBrowser {
 
 impl SessionBrowser {
     fn new(sessions: Vec<SessionMeta>) -> Self {
-        Self { sessions, selected: 0 }
+        Self {
+            sessions,
+            selected: 0,
+        }
     }
 
     fn move_up(&mut self) {
@@ -320,6 +373,7 @@ struct TuiApp {
     parser: InputParser,
     stdin_rx: mpsc::UnboundedReceiver<u8>,
     event_rx: broadcast::Receiver<Event>,
+    file_decision_rx: mpsc::UnboundedReceiver<FileDecisionRequest>,
 
     /// UI-layer event bus. The TUI publishes here whenever something
     /// observable happens; the default consumer (spawned in `new`)
@@ -341,6 +395,8 @@ struct TuiApp {
 
     /// When Some, the session browser overlay is open.
     browser: Option<SessionBrowser>,
+    /// When Some, a write/edit tool is paused waiting for user approval.
+    pending_file: Option<PendingFileDecision>,
 }
 
 impl TuiApp {
@@ -349,6 +405,7 @@ impl TuiApp {
         session_id: String,
         prompt_templates: Arc<HashMap<String, String>>,
         config: &RaConfig,
+        file_decision_rx: mpsc::UnboundedReceiver<FileDecisionRequest>,
     ) -> Result<Self> {
         let (tw, th) = terminal_size().unwrap_or((100, 32));
         let width = u32::from(tw);
@@ -362,7 +419,10 @@ impl TuiApp {
         let renderer = Renderer::new_with_options(width, height, opts)?;
         let raw_guard = enable_raw_mode()?;
 
-        let config_model_name = config.model.default.clone()
+        let config_model_name = config
+            .model
+            .default
+            .clone()
             .or_else(|| config.models.first().map(|m| m.name.clone()));
         let host = Arc::new(TuiRunnerHost {
             session: session.clone(),
@@ -412,9 +472,10 @@ impl TuiApp {
             parser: InputParser::new(),
             stdin_rx: rx,
             event_rx,
+            file_decision_rx,
             ui_tx,
             chat: vec![ChatEntry::System(
-                "Ra TUI — type a prompt and press Enter. Ctrl-C cancels, Ctrl-R browses sessions, Ctrl-D quits.".into(),
+                "Ra TUI — type a prompt and press Enter. Ctrl-C cancels, Ctrl-R browses sessions, Ctrl-D quits. File edits show a diff: a accepts, r rejects.".into(),
             )],
             current_text: String::new(),
             current_tools: HashMap::new(),
@@ -426,6 +487,7 @@ impl TuiApp {
             width,
             height,
             browser: None,
+            pending_file: None,
         };
         let _ = app.ui_tx.send(TuiEvent::Started);
         app.draw()?;
@@ -455,6 +517,9 @@ impl TuiApp {
                         }
                     }
                 },
+                Some(req) = self.file_decision_rx.recv() => {
+                    self.on_file_decision_request(req);
+                },
                 _ = tick.tick() => {}
             }
             // Settle the in-flight handle.
@@ -478,7 +543,8 @@ impl TuiApp {
             Event::AgentEnd => {
                 // Flush any in-flight assistant text into the scrollback.
                 if !self.current_text.is_empty() {
-                    self.chat.push(ChatEntry::Agent(std::mem::take(&mut self.current_text)));
+                    self.chat
+                        .push(ChatEntry::Agent(std::mem::take(&mut self.current_text)));
                 }
             }
             Event::TextDelta(s) | Event::ThinkingDelta(s) => {
@@ -486,11 +552,14 @@ impl TuiApp {
             }
             Event::ToolCallStart(c) => {
                 self.flush_current_text();
-                self.current_tools.insert(c.id.clone(), PartialTool {
-                    name: c.name.clone(),
-                    input: c.input.clone(),
-                    chunks: String::new(),
-                });
+                self.current_tools.insert(
+                    c.id.clone(),
+                    PartialTool {
+                        name: c.name.clone(),
+                        input: c.input.clone(),
+                        chunks: String::new(),
+                    },
+                );
             }
             Event::ToolCallUpdate { id, chunk } => {
                 if let Some(t) = self.current_tools.get_mut(&id) {
@@ -518,9 +587,27 @@ impl TuiApp {
         }
     }
 
+    fn on_file_decision_request(&mut self, req: FileDecisionRequest) {
+        if let Some(mut pending) = self.pending_file.take() {
+            if let Some(tx) = pending.respond_to.take() {
+                let _ = tx.send(FileChangeDecision::Reject);
+            }
+            self.chat.push(ChatEntry::System(
+                "rejected previous pending file change because a new change arrived".into(),
+            ));
+        }
+        self.scroll = 0;
+        self.pending_file = Some(PendingFileDecision {
+            change: req.change,
+            respond_to: Some(req.respond_to),
+            scroll: 0,
+        });
+    }
+
     fn flush_current_text(&mut self) {
         if !self.current_text.is_empty() {
-            self.chat.push(ChatEntry::Agent(std::mem::take(&mut self.current_text)));
+            self.chat
+                .push(ChatEntry::Agent(std::mem::take(&mut self.current_text)));
         }
     }
 
@@ -540,6 +627,28 @@ impl TuiApp {
 
     fn handle_key(&mut self, k: KeyEvent) {
         let ctrl = k.modifiers.contains(KeyModifiers::CTRL);
+
+        // File decisions are modal and have priority over normal chat input.
+        if self.pending_file.is_some() {
+            match k.code {
+                KeyCode::Char('a') | KeyCode::Char('y') | KeyCode::Enter => {
+                    self.resolve_pending_file(FileChangeDecision::Accept);
+                }
+                KeyCode::Char('r') | KeyCode::Char('n') | KeyCode::Esc => {
+                    self.resolve_pending_file(FileChangeDecision::Reject);
+                }
+                KeyCode::Up => self.scroll_pending_file(1),
+                KeyCode::Down => self.scroll_pending_file(-1),
+                KeyCode::PageUp => self.scroll_pending_file(10),
+                KeyCode::PageDown => self.scroll_pending_file(-10),
+                KeyCode::Char('c') if ctrl => {
+                    self.resolve_pending_file(FileChangeDecision::Reject);
+                    self.handle_ctrl_c();
+                }
+                _ => {}
+            }
+            return;
+        }
 
         // When the browser is open, all keys go to it.
         if self.browser.is_some() {
@@ -596,6 +705,33 @@ impl TuiApp {
         }
     }
 
+    fn scroll_pending_file(&mut self, delta: i32) {
+        if let Some(p) = &mut self.pending_file {
+            if delta > 0 {
+                p.scroll = p.scroll.saturating_add(delta as usize);
+            } else {
+                p.scroll = p.scroll.saturating_sub(delta.unsigned_abs() as usize);
+            }
+        }
+    }
+
+    fn resolve_pending_file(&mut self, decision: FileChangeDecision) {
+        let Some(mut pending) = self.pending_file.take() else {
+            return;
+        };
+        if let Some(tx) = pending.respond_to.take() {
+            let _ = tx.send(decision);
+        }
+        let verb = match decision {
+            FileChangeDecision::Accept => "accepted",
+            FileChangeDecision::Reject => "rejected",
+        };
+        self.chat.push(ChatEntry::System(format!(
+            "{verb} file change: {}",
+            pending.change.path
+        )));
+    }
+
     /// Open the session browser overlay. Loads sessions from disk synchronously
     /// (the list is small and the store is local); if the store is unavailable
     /// we show an error in the chat instead.
@@ -609,14 +745,18 @@ impl TuiApp {
         let cwd = match std::env::current_dir() {
             Ok(p) => p,
             Err(e) => {
-                self.chat.push(ChatEntry::System(format!("session browser: cwd error: {e}")));
+                self.chat.push(ChatEntry::System(format!(
+                    "session browser: cwd error: {e}"
+                )));
                 return;
             }
         };
         let store = match SessionStore::for_cwd(&cwd) {
             Ok(s) => s,
             Err(e) => {
-                self.chat.push(ChatEntry::System(format!("session browser: store error: {e}")));
+                self.chat.push(ChatEntry::System(format!(
+                    "session browser: store error: {e}"
+                )));
                 return;
             }
         };
@@ -645,7 +785,12 @@ impl TuiApp {
                             .and_then(|m| m.modified())
                             .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
                         let title = read_title_sync(&path);
-                        out.push(SessionMeta { session_id, path, modified, title });
+                        out.push(SessionMeta {
+                            session_id,
+                            path,
+                            modified,
+                            title,
+                        });
                     }
                 }
                 out.sort_by_key(|m| std::cmp::Reverse(m.modified));
@@ -653,7 +798,8 @@ impl TuiApp {
             }
         };
         if sessions.is_empty() {
-            self.chat.push(ChatEntry::System("(no saved sessions found)".into()));
+            self.chat
+                .push(ChatEntry::System("(no saved sessions found)".into()));
             return;
         }
         self.browser = Some(SessionBrowser::new(sessions));
@@ -671,14 +817,16 @@ impl TuiApp {
         let bytes = match std::fs::read(&meta.path) {
             Ok(b) => b,
             Err(e) => {
-                self.chat.push(ChatEntry::System(format!("restore error: {e}")));
+                self.chat
+                    .push(ChatEntry::System(format!("restore error: {e}")));
                 return;
             }
         };
         let traj: crate::atif::Trajectory = match serde_json::from_slice(&bytes) {
             Ok(t) => t,
             Err(e) => {
-                self.chat.push(ChatEntry::System(format!("restore parse error: {e}")));
+                self.chat
+                    .push(ChatEntry::System(format!("restore parse error: {e}")));
                 return;
             }
         };
@@ -695,7 +843,10 @@ impl TuiApp {
         self.chat.clear();
         self.chat.push(ChatEntry::System(format!(
             "Restored session {session_id}{}. Continue typing.",
-            meta.title.as_deref().map(|t| format!(" — {t}")).unwrap_or_default(),
+            meta.title
+                .as_deref()
+                .map(|t| format!(" — {t}"))
+                .unwrap_or_default(),
         )));
         self.scroll = 0;
     }
@@ -760,15 +911,16 @@ impl TuiApp {
             return;
         }
         let id = &self.session_id;
-        let model_name = config.model.default.clone()
+        let model_name = config
+            .model
+            .default
+            .clone()
             .or_else(|| config.models.first().map(|m| m.name.clone()));
         let traj = crate::atif_codec::encode(id, model_name, &messages);
         if let Err(e) = store.save(&traj).await {
             eprintln!("[ra::tui] failed to save session: {e:#}");
         } else {
-            eprintln!(
-                "[ra::tui] saved session {id} (resume with `ra resume {id} <prompt>`)"
-            );
+            eprintln!("[ra::tui] saved session {id} (resume with `ra resume {id} <prompt>`)");
         }
     }
 
@@ -822,7 +974,9 @@ impl TuiApp {
         buf.draw_text(1, chat_h + 1, &shown, input_style);
 
         // Status pill in the input border, right side.
-        let status = if self.in_flight.is_some() {
+        let status = if self.pending_file.is_some() {
+            "[review file]"
+        } else if self.in_flight.is_some() {
             "[thinking…]"
         } else {
             "[ready]"
@@ -840,7 +994,9 @@ impl TuiApp {
         // ---- Session browser modal ---------------------------------
         if let Some(browser) = &self.browser {
             let modal_w = width.clamp(30, 70);
-            let modal_h = (browser.sessions.len() as u32 + 4).min(height.saturating_sub(4)).max(5);
+            let modal_h = (browser.sessions.len() as u32 + 4)
+                .min(height.saturating_sub(4))
+                .max(5);
             let modal_x = (width.saturating_sub(modal_w)) / 2;
             let modal_y = (height.saturating_sub(modal_h)) / 2;
 
@@ -852,7 +1008,13 @@ impl TuiApp {
                 .build();
             let header_style = Style::fg(Rgba::from_rgb_u8(200, 180, 100));
 
-            buf.draw_box(modal_x, modal_y, modal_w, modal_h, BoxStyle::rounded(modal_border));
+            buf.draw_box(
+                modal_x,
+                modal_y,
+                modal_w,
+                modal_h,
+                BoxStyle::rounded(modal_border),
+            );
             let title = " Sessions (↑↓ navigate, Enter restore, Esc cancel) ";
             buf.draw_text(modal_x + 1, modal_y, title, header_style);
 
@@ -863,7 +1025,13 @@ impl TuiApp {
             } else {
                 0
             };
-            for (i, meta) in browser.sessions.iter().enumerate().skip(start).take(visible) {
+            for (i, meta) in browser
+                .sessions
+                .iter()
+                .enumerate()
+                .skip(start)
+                .take(visible)
+            {
                 let label = format!(
                     "{} {}",
                     &meta.session_id[..meta.session_id.len().min(8)],
@@ -872,9 +1040,17 @@ impl TuiApp {
                 let label: String = label.chars().take(inner_w).collect();
                 let padded = format!("{label:<inner_w$}");
                 let row = modal_y + 1 + (i - start) as u32;
-                let style = if i == browser.selected { item_selected } else { item_normal };
+                let style = if i == browser.selected {
+                    item_selected
+                } else {
+                    item_normal
+                };
                 buf.draw_text(modal_x + 1, row, &padded, style);
             }
+        }
+
+        if let Some(pending) = &self.pending_file {
+            draw_file_decision_modal(buf, width, height, pending);
         }
 
         self.renderer.present()?;
@@ -902,15 +1078,16 @@ impl TuiApp {
                     push_wrapped(&mut out, agent, &format!("ra   ▸ {s}"), width);
                     out.push((agent, String::new()));
                 }
-                ChatEntry::Tool { name, input, output, is_error } => {
+                ChatEntry::Tool {
+                    name,
+                    input,
+                    output,
+                    is_error,
+                } => {
                     let style = if *is_error { tool_err } else { tool_ok };
                     let head = format!("tool ▸ {name}({})", short_json(input, 60));
                     push_wrapped(&mut out, style, &head, width);
-                    let head_out = output
-                        .lines()
-                        .take(8)
-                        .collect::<Vec<_>>()
-                        .join("\n");
+                    let head_out = output.lines().take(8).collect::<Vec<_>>().join("\n");
                     push_wrapped(&mut out, agent_dim, &head_out, width);
                     out.push((style, String::new()));
                 }
@@ -921,7 +1098,12 @@ impl TuiApp {
         }
         // In-flight assistant streaming.
         if !self.current_text.is_empty() {
-            push_wrapped(&mut out, agent, &format!("ra   ▸ {}", self.current_text), width);
+            push_wrapped(
+                &mut out,
+                agent,
+                &format!("ra   ▸ {}", self.current_text),
+                width,
+            );
         }
         out
     }
@@ -957,6 +1139,116 @@ fn short_json(v: &serde_json::Value, max: usize) -> String {
         let cut: String = s.chars().take(max.saturating_sub(1)).collect();
         format!("{cut}…")
     }
+}
+
+fn draw_file_decision_modal(
+    buf: &mut opentui_rust::buffer::OptimizedBuffer,
+    width: u32,
+    height: u32,
+    pending: &PendingFileDecision,
+) {
+    if width < 8 || height < 8 {
+        return;
+    }
+    let modal_w = width.saturating_sub(4).clamp(40, 120);
+    let modal_h = height.saturating_sub(4).clamp(8, 34);
+    let modal_x = (width.saturating_sub(modal_w)) / 2;
+    let modal_y = (height.saturating_sub(modal_h)) / 2;
+    let inner_w = modal_w.saturating_sub(2) as usize;
+    let body_h = modal_h.saturating_sub(5) as usize;
+
+    let border = Style::fg(Rgba::from_rgb_u8(230, 195, 90));
+    let title_style = Style::fg(Rgba::from_rgb_u8(230, 195, 90));
+    let meta_style = Style::fg(Rgba::from_rgb_u8(210, 210, 210));
+    let hint_style = Style::fg(Rgba::from_rgb_u8(170, 180, 200));
+    let add_style = Style::fg(Rgba::from_rgb_u8(130, 230, 160));
+    let del_style = Style::fg(Rgba::from_rgb_u8(245, 130, 130));
+    let hunk_style = Style::fg(Rgba::from_rgb_u8(150, 180, 245));
+    let ctx_style = Style::fg(Rgba::from_rgb_u8(215, 215, 215));
+
+    buf.draw_box(
+        modal_x,
+        modal_y,
+        modal_w,
+        modal_h,
+        BoxStyle::rounded(border),
+    );
+    buf.draw_text(modal_x + 1, modal_y, " Review file change ", title_style);
+
+    let old_lines = pending
+        .change
+        .old_content
+        .as_deref()
+        .map(|s| s.lines().count())
+        .unwrap_or(0);
+    let new_lines = pending.change.new_content.lines().count();
+    let meta = format!(
+        "{} · {} · {} → {} lines",
+        pending.change.tool_name, pending.change.summary, old_lines, new_lines
+    );
+    draw_truncated(buf, modal_x + 1, modal_y + 1, inner_w, &meta, meta_style);
+    draw_truncated(
+        buf,
+        modal_x + 1,
+        modal_y + modal_h.saturating_sub(2),
+        inner_w,
+        "a/Enter accept  r/Esc reject  ↑↓ scroll",
+        hint_style,
+    );
+
+    let lines = diff_lines_for_display(&pending.change.diff, inner_w);
+    let max_scroll = lines.len().saturating_sub(body_h);
+    let scroll = pending.scroll.min(max_scroll);
+    for (i, line) in lines.iter().skip(scroll).take(body_h).enumerate() {
+        let style = match line.chars().next() {
+            Some('+') => add_style,
+            Some('-') => del_style,
+            Some('@') => hunk_style,
+            _ => ctx_style,
+        };
+        let padded = format!("{line:<inner_w$}");
+        buf.draw_text(modal_x + 1, modal_y + 3 + i as u32, &padded, style);
+    }
+
+    if lines.len() > body_h {
+        let pos = format!("{}/{}", scroll + 1, lines.len());
+        let x = modal_x + modal_w.saturating_sub(pos.len() as u32 + 1);
+        buf.draw_text(x, modal_y + modal_h.saturating_sub(2), &pos, hint_style);
+    }
+}
+
+fn draw_truncated(
+    buf: &mut opentui_rust::buffer::OptimizedBuffer,
+    x: u32,
+    y: u32,
+    width: usize,
+    text: &str,
+    style: Style,
+) {
+    let shown: String = text.chars().take(width).collect();
+    let padded = format!("{shown:<width$}");
+    buf.draw_text(x, y, &padded, style);
+}
+
+fn diff_lines_for_display(diff: &str, width: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    if width == 0 {
+        return out;
+    }
+    for line in diff.lines() {
+        let chars: Vec<char> = line.chars().collect();
+        if chars.is_empty() {
+            out.push(String::new());
+            continue;
+        }
+        let mut start = 0usize;
+        while start < chars.len() {
+            let end = (start + width).min(chars.len());
+            out.push(chars[start..end].iter().collect());
+            start = end;
+        }
+    }
+    out
 }
 
 /// Cheap synchronous title lookup for the session browser. Mirrors the

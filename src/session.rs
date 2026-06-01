@@ -1,11 +1,11 @@
 use crate::events::{Event, ToolResult};
 use crate::model::{Message, Model, ModelChunk, StopReason, ToolSpec};
-use crate::tool_ctx::{ClientHandle, ToolCtx};
+use crate::tool_ctx::{ClientHandle, FileChangeApprover, ToolCtx};
 use crate::tools::Tool;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{broadcast, Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, broadcast};
 use tokio_stream::StreamExt;
 use tokio_util::sync::CancellationToken;
 
@@ -43,6 +43,10 @@ pub struct Session {
     /// Optional hook engine that fires PreToolUse / PostToolUse around
     /// every tool execution. None = no hooks configured.
     hooks: Option<Arc<crate::hooks::HookEngine>>,
+    /// Optional interactive file-change approver. TUI mode uses this to show
+    /// write/edit diffs before disk mutation; non-interactive sessions keep it
+    /// unset and preserve existing behavior.
+    file_approver: Option<Arc<dyn FileChangeApprover>>,
     /// Optional RTK rewriter handed to every ToolCtx so shell commands
     /// can pre-route through `rtk rewrite`. Default
     /// (`RtkRewriter::default()`) is a no-op pass-through.
@@ -77,6 +81,7 @@ impl Session {
             config: RwLock::new(HashMap::new()),
             system_prompt: RwLock::new(None),
             hooks: None,
+            file_approver: None,
             rtk: crate::tools::RtkRewriter::default(),
         }
     }
@@ -94,6 +99,14 @@ impl Session {
     #[must_use]
     pub fn with_rtk(mut self, rtk: crate::tools::RtkRewriter) -> Self {
         self.rtk = rtk;
+        self
+    }
+
+    /// Builder-style: attach an interactive file-change approver. File
+    /// mutation tools call this before writing when present.
+    #[must_use]
+    pub fn with_file_approver(mut self, approver: Arc<dyn FileChangeApprover>) -> Self {
+        self.file_approver = Some(approver);
         self
     }
 
@@ -170,13 +183,14 @@ impl Session {
                 Message::User { content } => {
                     total += bpe.encode_with_special_tokens(content).len() as u64;
                 }
-                Message::Assistant { content, tool_calls } => {
+                Message::Assistant {
+                    content,
+                    tool_calls,
+                } => {
                     total += bpe.encode_with_special_tokens(content).len() as u64;
                     for c in tool_calls {
                         total += bpe.encode_with_special_tokens(&c.name).len() as u64;
-                        total += bpe
-                            .encode_with_special_tokens(&c.input.to_string())
-                            .len() as u64;
+                        total += bpe.encode_with_special_tokens(&c.input.to_string()).len() as u64;
                     }
                 }
                 Message::ToolResult(r) => {
@@ -201,7 +215,11 @@ impl Session {
     /// execution through the host editor instead of the local filesystem
     /// and terminal.
     #[must_use]
-    pub fn with_client(mut self, client: Arc<dyn ClientHandle>, session_id: impl Into<String>) -> Self {
+    pub fn with_client(
+        mut self,
+        client: Arc<dyn ClientHandle>,
+        session_id: impl Into<String>,
+    ) -> Self {
         self.client = Some(client);
         self.session_id = Some(session_id.into());
         self
@@ -230,10 +248,9 @@ impl Session {
             guard.clone()
         };
 
-        self.messages
-            .lock()
-            .await
-            .push(Message::User { content: user_text.into() });
+        self.messages.lock().await.push(Message::User {
+            content: user_text.into(),
+        });
         let _ = self.tx.send(Event::AgentStart);
 
         let outcome = tokio::select! {
@@ -271,7 +288,9 @@ impl Session {
         // marker; most providers cooperate.
         let history = if let Some(sp) = self.system_prompt.read().await.clone() {
             let mut h = Vec::with_capacity(history.len() + 1);
-            h.push(Message::User { content: format!("[SYSTEM]\n{sp}") });
+            h.push(Message::User {
+                content: format!("[SYSTEM]\n{sp}"),
+            });
             h.extend(history);
             h
         } else {
@@ -333,7 +352,8 @@ impl Session {
 
             // PreToolUse hook: any deny short-circuits the tool entirely.
             let pre_decision = if let Some(h) = &self.hooks {
-                h.pre_tool_use(self.session_id.as_deref(), &call.name, &call.input).await
+                h.pre_tool_use(self.session_id.as_deref(), &call.name, &call.input)
+                    .await
             } else {
                 crate::hooks::HookDecision::allow()
             };
@@ -352,6 +372,7 @@ impl Session {
                 events: self.tx.clone(),
                 client: self.client.clone(),
                 session_id: self.session_id.clone(),
+                file_approver: self.file_approver.clone(),
                 rtk: self.rtk.clone(),
             };
             let exec = tool.execute(&call.id, call.input.clone(), &ctx).await;
@@ -386,8 +407,10 @@ impl Session {
                     .await;
                 if let Some(reason) = post.block {
                     result.is_error = true;
-                    result.content =
-                        format!("{}\n\n[blocked by PostToolUse hook] {reason}", result.content);
+                    result.content = format!(
+                        "{}\n\n[blocked by PostToolUse hook] {reason}",
+                        result.content
+                    );
                 }
                 if let Some(extra) = post.additional_context {
                     result.content = format!("{}\n\n[hook context]\n{extra}", result.content);
@@ -395,10 +418,7 @@ impl Session {
             }
 
             let _ = self.tx.send(Event::ToolCallEnd(result.clone()));
-            self.messages
-                .lock()
-                .await
-                .push(Message::ToolResult(result));
+            self.messages.lock().await.push(Message::ToolResult(result));
         }
 
         let _ = self.tx.send(Event::TurnEnd);

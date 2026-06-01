@@ -24,5 +24,8 @@ pub use events::{Event, ToolCall, ToolResult};
 pub use llm_model::{LlmModel, LlmModelConfig};
 pub use model::{Message, MockModel, Model, ModelChunk, StopReason, ToolSpec};
 pub use session::{PromptOutcome, Session};
-pub use tool_ctx::{ClientHandle, PermissionOutcome, TerminalRunResult, ToolCtx};
-pub use tools::{default_builtins, BashTool, EditTool, ReadTool, RtkRewriter, Tool, WriteTool};
+pub use tool_ctx::{
+    ClientHandle, FileChange, FileChangeApprover, FileChangeDecision, PermissionOutcome,
+    TerminalRunResult, ToolCtx,
+};
+pub use tools::{BashTool, EditTool, ReadTool, RtkRewriter, Tool, WriteTool, default_builtins};

@@ -408,6 +408,25 @@ fn tool_title(name: &str, input: &serde_json::Value) -> String {
                 format!("$ {s}")
             })
             .unwrap_or_else(|| "Run shell".into()),
+        "git" | "gh" => input
+            .get("args")
+            .and_then(|v| v.as_array())
+            .map(|args| {
+                let mut s = std::iter::once(name.to_string())
+                    .chain(
+                        args.iter()
+                            .filter_map(|v| v.as_str())
+                            .map(ToString::to_string),
+                    )
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                if s.len() > 60 {
+                    s.truncate(60);
+                    s.push('…');
+                }
+                format!("$ {s}")
+            })
+            .unwrap_or_else(|| format!("Run {name}")),
         other => other.to_string(),
     }
 }

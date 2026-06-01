@@ -101,9 +101,45 @@ Run a shell command. With an ACP host attached, this routes through
 Output is the command's combined stdout+stderr; the local-fallback
 path also emits a `[exit=N]` event chunk on the broadcast bus.
 
-Shell-native commands such as `grep`, `find`, and `ls` intentionally
-go through `bash`; Ra does not expose separate built-in wrappers for
-them.
+Prefer the native `git` and `gh` tools for those CLIs. Shell-native
+commands such as `grep`, `find`, and `ls` intentionally go through
+`bash`; Ra does not expose separate built-in wrappers for them.
+
+## Native CLI tools
+
+These wrappers execute common developer CLIs without asking the model to
+compose a shell string. In local CLI / A2A / TUI mode Ra spawns the
+binary directly with `Command::args`, preserving argv boundaries. With
+an ACP host attached, Ra reuses the same permission-gated
+`terminal/*` reverse-call path as `bash`, rendering the argv array as a
+shell-quoted command line for the host terminal.
+
+Output is the command's combined stdout+stderr; both local and ACP
+paths emit a `[exit=N]` event chunk on the broadcast bus.
+
+### `git`
+
+Run native `git`.
+
+```json
+{ "args": ["status", "--short"] }
+```
+
+| Field | Type             | Required | Default | Notes |
+|-------|------------------|----------|---------|-------|
+| args  | array of strings | no       | `[]`    | arguments only; omit the `git` binary |
+
+### `gh`
+
+Run native GitHub CLI (`gh`).
+
+```json
+{ "args": ["pr", "view", "--json", "title,url"] }
+```
+
+| Field | Type             | Required | Default | Notes |
+|-------|------------------|----------|---------|-------|
+| args  | array of strings | no       | `[]`    | arguments only; omit the `gh` binary |
 
 ## Adding new tools
 

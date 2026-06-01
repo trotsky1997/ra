@@ -9,6 +9,7 @@ use tokio::sync::broadcast;
 /// - an optional ACP client handle so tools can call back into the host
 ///   editor (`fs/read_text_file`, `terminal/*`, `session/request_permission`),
 /// - the session id, required by every reverse RPC,
+/// - an optional file-change approval hook used by interactive frontends,
 /// - an optional [`RtkRewriter`](crate::tools::RtkRewriter) so shell commands
 ///   can pre-route through `rtk rewrite` for token compression.
 #[derive(Clone)]
@@ -16,6 +17,7 @@ pub struct ToolCtx {
     pub events: broadcast::Sender<Event>,
     pub client: Option<Arc<dyn ClientHandle>>,
     pub session_id: Option<String>,
+    pub file_approver: Option<Arc<dyn FileChangeApprover>>,
     pub rtk: crate::tools::RtkRewriter,
 }
 
@@ -26,9 +28,36 @@ impl ToolCtx {
             events,
             client: None,
             session_id: None,
+            file_approver: None,
             rtk: crate::tools::RtkRewriter::default(),
         }
     }
+}
+
+/// Candidate text change prepared by a filesystem mutation tool.
+#[derive(Debug, Clone)]
+pub struct FileChange {
+    pub call_id: String,
+    pub tool_name: String,
+    pub path: String,
+    pub old_content: Option<String>,
+    pub new_content: String,
+    pub diff: String,
+    pub summary: String,
+}
+
+/// Decision returned by an interactive frontend for a prepared file change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileChangeDecision {
+    Accept,
+    Reject,
+}
+
+/// Optional approval hook for file writes. Non-interactive sessions leave this
+/// unset, preserving the existing direct-write behavior.
+#[async_trait]
+pub trait FileChangeApprover: Send + Sync {
+    async fn approve_file_change(&self, change: FileChange) -> Result<FileChangeDecision>;
 }
 
 /// A description of how the host should execute a single shell command.
@@ -63,31 +92,20 @@ pub trait ClientHandle: Send + Sync {
     ) -> Result<String>;
 
     /// Write a text file via the host editor.
-    async fn fs_write_text_file(
-        &self,
-        session_id: &str,
-        path: &str,
-        content: &str,
-    ) -> Result<()>;
+    async fn fs_write_text_file(&self, session_id: &str, path: &str, content: &str) -> Result<()>;
 
     /// Run a shell command via the host terminal and wait for it to exit.
     /// Bundles `terminal/create` + `wait_for_exit` + `terminal/output`
     /// + `terminal/release` into one logical operation.
-    async fn run_terminal(
-        &self,
-        session_id: &str,
-        command: &str,
-    ) -> Result<TerminalRunResult>;
+    async fn run_terminal(&self, session_id: &str, command: &str) -> Result<TerminalRunResult>;
 
     /// Kill a still-running terminal previously created via `run_terminal`.
     /// Maps to ACP `terminal/kill`. Default implementation returns an error
     /// so existing handles compile; the ACP-backed handle overrides.
-    async fn kill_terminal(
-        &self,
-        _session_id: &str,
-        _terminal_id: &str,
-    ) -> Result<()> {
-        Err(anyhow::anyhow!("kill_terminal not supported by this ClientHandle"))
+    async fn kill_terminal(&self, _session_id: &str, _terminal_id: &str) -> Result<()> {
+        Err(anyhow::anyhow!(
+            "kill_terminal not supported by this ClientHandle"
+        ))
     }
 
     /// Ask the host to confirm a tool invocation. `tool_call_id` correlates

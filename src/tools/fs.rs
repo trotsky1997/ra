@@ -5,7 +5,7 @@
 //! to direct tokio fs operations when no host is connected (CLI mode,
 //! A2A serve mode, etc.).
 
-use crate::tool_ctx::ToolCtx;
+use crate::tool_ctx::{FileChange, FileChangeDecision, ToolCtx};
 use crate::tools::core::Tool;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -40,7 +40,7 @@ impl Tool for WriteTool {
 
     async fn execute(
         &self,
-        _call_id: &str,
+        call_id: &str,
         input: serde_json::Value,
         ctx: &ToolCtx,
     ) -> Result<String> {
@@ -48,13 +48,40 @@ impl Tool for WriteTool {
         let params: WriteParams =
             serde_json::from_value(input).context("invalid params for write")?;
 
+        if ctx.file_approver.is_some() {
+            let old_content = read_via_host_or_disk(ctx, &params.path).await.ok();
+            approve_if_needed(
+                ctx,
+                FileChange {
+                    call_id: call_id.to_string(),
+                    tool_name: "write".into(),
+                    path: params.path.clone(),
+                    diff: unified_diff(&params.path, old_content.as_deref(), &params.content),
+                    summary: if old_content.is_some() {
+                        format!("overwrite {}", params.path)
+                    } else {
+                        format!("create {}", params.path)
+                    },
+                    old_content,
+                    new_content: params.content.clone(),
+                },
+            )
+            .await?;
+        }
+
         // Reverse-call the ACP host first.
         if let (Some(client), Some(sid)) = (&ctx.client, &ctx.session_id) {
             match client
                 .fs_write_text_file(sid, &params.path, &params.content)
                 .await
             {
-                Ok(()) => return Ok(format!("wrote {} ({} bytes)", params.path, params.content.len())),
+                Ok(()) => {
+                    return Ok(format!(
+                        "wrote {} ({} bytes)",
+                        params.path,
+                        params.content.len()
+                    ))
+                }
                 Err(e) => {
                     eprintln!(
                         "[ra::tools::write] reverse fs/write_text_file failed: {e:#}; \
@@ -116,7 +143,7 @@ impl Tool for EditTool {
 
     async fn execute(
         &self,
-        _call_id: &str,
+        call_id: &str,
         input: serde_json::Value,
         ctx: &ToolCtx,
     ) -> Result<String> {
@@ -137,10 +164,7 @@ impl Tool for EditTool {
 
         let occurrences = original.matches(&params.old_string).count();
         if occurrences == 0 {
-            return Err(anyhow::anyhow!(
-                "old_string not found in {}",
-                params.path
-            ));
+            return Err(anyhow::anyhow!("old_string not found in {}", params.path));
         }
         if !params.replace_all && occurrences > 1 {
             return Err(anyhow::anyhow!(
@@ -156,15 +180,46 @@ impl Tool for EditTool {
             original.replacen(&params.old_string, &params.new_string, 1)
         };
 
+        let replaced = if params.replace_all { occurrences } else { 1 };
+        if ctx.file_approver.is_some() {
+            approve_if_needed(
+                ctx,
+                FileChange {
+                    call_id: call_id.to_string(),
+                    tool_name: "edit".into(),
+                    path: params.path.clone(),
+                    diff: unified_diff(&params.path, Some(&original), &updated),
+                    summary: format!(
+                        "edit {} ({} replacement{})",
+                        params.path,
+                        replaced,
+                        if replaced == 1 { "" } else { "s" }
+                    ),
+                    old_content: Some(original.clone()),
+                    new_content: updated.clone(),
+                },
+            )
+            .await?;
+        }
+
         write_via_host_or_disk(ctx, &params.path, &updated).await?;
 
-        let replaced = if params.replace_all { occurrences } else { 1 };
         Ok(format!(
             "edited {} ({} replacement{})",
             params.path,
             replaced,
             if replaced == 1 { "" } else { "s" }
         ))
+    }
+}
+
+async fn approve_if_needed(ctx: &ToolCtx, change: FileChange) -> Result<()> {
+    let Some(approver) = &ctx.file_approver else {
+        return Ok(());
+    };
+    match approver.approve_file_change(change).await? {
+        FileChangeDecision::Accept => Ok(()),
+        FileChangeDecision::Reject => Err(anyhow::anyhow!("file change rejected by user")),
     }
 }
 
@@ -190,4 +245,203 @@ async fn write_via_host_or_disk(ctx: &ToolCtx, path: &str, content: &str) -> Res
         .await
         .with_context(|| format!("write {path}"))?;
     Ok(())
+}
+
+fn unified_diff(path: &str, old: Option<&str>, new: &str) -> String {
+    let old_label = if old.is_some() {
+        format!("a/{path}")
+    } else {
+        "/dev/null".to_string()
+    };
+    let new_label = format!("b/{path}");
+    let old = old.unwrap_or("");
+    let old_lines = split_lines(old);
+    let new_lines = split_lines(new);
+
+    let mut out = String::new();
+    out.push_str(&format!("--- {old_label}\n"));
+    out.push_str(&format!("+++ {new_label}\n"));
+    out.push_str(&format!(
+        "@@ -1,{} +1,{} @@\n",
+        old_lines.len(),
+        new_lines.len()
+    ));
+    if old_lines.len().saturating_mul(new_lines.len()) > 250_000 {
+        out.push_str(&format!(
+            "\\ large diff omitted from inline review ({} old lines, {} new lines)\n",
+            old_lines.len(),
+            new_lines.len()
+        ));
+        return out;
+    }
+    let ops = diff_ops(&old_lines, &new_lines);
+    for op in ops {
+        match op {
+            DiffOp::Equal(line) => {
+                push_diff_line(&mut out, ' ', line);
+            }
+            DiffOp::Delete(line) => {
+                push_diff_line(&mut out, '-', line);
+            }
+            DiffOp::Insert(line) => {
+                push_diff_line(&mut out, '+', line);
+            }
+        }
+    }
+    out
+}
+
+fn push_diff_line(out: &mut String, prefix: char, line: &str) {
+    out.push(prefix);
+    out.push_str(line);
+    if !line.ends_with('\n') {
+        out.push('\n');
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum DiffOp<'a> {
+    Equal(&'a str),
+    Delete(&'a str),
+    Insert(&'a str),
+}
+
+fn diff_ops<'a>(old: &'a [&'a str], new: &'a [&'a str]) -> Vec<DiffOp<'a>> {
+    let n = old.len();
+    let m = new.len();
+    let mut lcs = vec![vec![0usize; m + 1]; n + 1];
+    for i in (0..n).rev() {
+        for j in (0..m).rev() {
+            lcs[i][j] = if old[i] == new[j] {
+                lcs[i + 1][j + 1] + 1
+            } else {
+                lcs[i + 1][j].max(lcs[i][j + 1])
+            };
+        }
+    }
+
+    let mut out = Vec::new();
+    let (mut i, mut j) = (0usize, 0usize);
+    while i < n && j < m {
+        if old[i] == new[j] {
+            out.push(DiffOp::Equal(old[i]));
+            i += 1;
+            j += 1;
+        } else if lcs[i + 1][j] >= lcs[i][j + 1] {
+            out.push(DiffOp::Delete(old[i]));
+            i += 1;
+        } else {
+            out.push(DiffOp::Insert(new[j]));
+            j += 1;
+        }
+    }
+    while i < n {
+        out.push(DiffOp::Delete(old[i]));
+        i += 1;
+    }
+    while j < m {
+        out.push(DiffOp::Insert(new[j]));
+        j += 1;
+    }
+    out
+}
+
+fn split_lines(s: &str) -> Vec<&str> {
+    if s.is_empty() {
+        return Vec::new();
+    }
+    s.split_inclusive('\n').collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tool_ctx::FileChangeApprover;
+    use async_trait::async_trait;
+    use std::sync::{Arc, Mutex};
+    use tempfile::TempDir;
+
+    struct StaticApprover {
+        decision: FileChangeDecision,
+        seen: Arc<Mutex<Vec<FileChange>>>,
+    }
+
+    #[async_trait]
+    impl FileChangeApprover for StaticApprover {
+        async fn approve_file_change(&self, change: FileChange) -> Result<FileChangeDecision> {
+            self.seen.lock().unwrap().push(change);
+            Ok(self.decision)
+        }
+    }
+
+    fn ctx_with_approver(decision: FileChangeDecision) -> (ToolCtx, Arc<Mutex<Vec<FileChange>>>) {
+        let (events, _) = tokio::sync::broadcast::channel(16);
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let approver = StaticApprover {
+            decision,
+            seen: seen.clone(),
+        };
+        let mut ctx = ToolCtx::local(events);
+        ctx.file_approver = Some(Arc::new(approver));
+        (ctx, seen)
+    }
+
+    #[tokio::test]
+    async fn write_reject_does_not_touch_disk() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("sample.txt");
+        tokio::fs::write(&path, "old\n").await.unwrap();
+        let (ctx, seen) = ctx_with_approver(FileChangeDecision::Reject);
+
+        let err = WriteTool
+            .execute(
+                "call-write",
+                serde_json::json!({
+                    "path": path.to_string_lossy(),
+                    "content": "new\n"
+                }),
+                &ctx,
+            )
+            .await
+            .expect_err("rejected write should error");
+
+        assert!(err.to_string().contains("rejected"));
+        assert_eq!(tokio::fs::read_to_string(&path).await.unwrap(), "old\n");
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert!(seen[0].diff.contains("-old\n"));
+        assert!(seen[0].diff.contains("+new\n"));
+    }
+
+    #[tokio::test]
+    async fn edit_accept_writes_after_decision() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("sample.txt");
+        tokio::fs::write(&path, "alpha\nbeta\n").await.unwrap();
+        let (ctx, seen) = ctx_with_approver(FileChangeDecision::Accept);
+
+        let output = EditTool
+            .execute(
+                "call-edit",
+                serde_json::json!({
+                    "path": path.to_string_lossy(),
+                    "old_string": "beta\n",
+                    "new_string": "gamma\n"
+                }),
+                &ctx,
+            )
+            .await
+            .expect("accepted edit should write");
+
+        assert!(output.contains("edited"));
+        assert_eq!(
+            tokio::fs::read_to_string(&path).await.unwrap(),
+            "alpha\ngamma\n"
+        );
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].tool_name, "edit");
+        assert!(seen[0].diff.contains("-beta\n"));
+        assert!(seen[0].diff.contains("+gamma\n"));
+    }
 }

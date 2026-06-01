@@ -158,11 +158,33 @@ async fn build_session(
     };
     let rtk = crate::tools::RtkRewriter::from_config(&config.rtk);
 
-    let bundle = crate::skills::build_resource_bundle(config, false);
+    let mut bundle = crate::skills::build_resource_bundle(config, false);
+    let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
+    bundle.graphify = crate::graphify::workflow_from_config(&config.graphify, &cwd);
     let system_prompt = bundle.build_system_prompt();
     let prompt_templates = Arc::new(bundle.prompt_map());
 
-    let mut sess = Session::new(model, default_builtins(&config.tools.builtin)).with_rtk(rtk);
+    let mut tools = default_builtins(&config.tools.builtin);
+    if let Some(workflow) = &bundle.graphify {
+        if let Some(project) = &workflow.project {
+            eprintln!(
+                "[ra] Graphify graph {} at {} ({} node(s), {} edge(s))",
+                workflow.status.kind.as_str(),
+                project.graph_path.display(),
+                project.stats.node_count,
+                project.stats.edge_count
+            );
+        } else {
+            eprintln!(
+                "[ra] Graphify graph {} at {}",
+                workflow.status.kind.as_str(),
+                workflow.graph_path.display()
+            );
+        }
+        tools.extend(crate::graphify::tools_for_workflow(workflow));
+    }
+
+    let mut sess = Session::new(model, tools).with_rtk(rtk);
     if let Some(approver) = file_approver {
         sess = sess.with_file_approver(Arc::new(approver));
     }

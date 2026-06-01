@@ -17,17 +17,17 @@
 use std::sync::Arc;
 
 use a2a::{
-    AgentCapabilities, AgentCard, AgentInterface, AgentProvider, AgentSkill, A2AError,
-    HttpAuthSecurityScheme, Message, Part, PartContent, Role, SecurityRequirement,
-    SecurityScheme, StreamResponse, Task, TaskState, TaskStatus, TaskStatusUpdateEvent,
-    TRANSPORT_PROTOCOL_GRPC, TRANSPORT_PROTOCOL_HTTP_JSON, TRANSPORT_PROTOCOL_JSONRPC,
+    A2AError, AgentCapabilities, AgentCard, AgentInterface, AgentProvider, AgentSkill,
+    HttpAuthSecurityScheme, Message, Part, PartContent, Role, SecurityRequirement, SecurityScheme,
+    StreamResponse, Task, TaskState, TaskStatus, TaskStatusUpdateEvent, TRANSPORT_PROTOCOL_GRPC,
+    TRANSPORT_PROTOCOL_HTTP_JSON, TRANSPORT_PROTOCOL_JSONRPC,
 };
 use a2a_grpc::GrpcHandler;
 use a2a_pb::proto::a2a_service_server::A2aServiceServer;
 use a2a_server::{
-    AgentExecutor, DefaultRequestHandler, ExecutorContext, HttpPushSender, InMemoryPushConfigStore,
+    agent_card::agent_card_router, jsonrpc::jsonrpc_router, rest::rest_router, AgentExecutor,
+    DefaultRequestHandler, ExecutorContext, HttpPushSender, InMemoryPushConfigStore,
     InMemoryTaskStore, StaticAgentCard,
-    agent_card::agent_card_router, jsonrpc::jsonrpc_router, rest::rest_router,
 };
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -165,7 +165,12 @@ impl RunnerHost for A2aState {
     fn default_ctx_window(&self) -> u64 {
         // 200k is a safe-ish midpoint; A2A doesn't surface UsageUpdate
         // anyway, and our tiktoken estimate is approximate.
-        match self.model_factory.default_model_id().to_lowercase().as_str() {
+        match self
+            .model_factory
+            .default_model_id()
+            .to_lowercase()
+            .as_str()
+        {
             id if id.contains("gpt-5") => 1_000_000,
             id if id.contains("gemini") => 1_000_000,
             id if id.contains("claude") => 200_000,
@@ -272,10 +277,7 @@ impl AgentExecutor for RaExecutor {
         Box::pin(ReceiverStream::new(rx))
     }
 
-    fn cancel(
-        &self,
-        ctx: ExecutorContext,
-    ) -> BoxStream<'static, Result<StreamResponse, A2AError>> {
+    fn cancel(&self, ctx: ExecutorContext) -> BoxStream<'static, Result<StreamResponse, A2AError>> {
         let task_id = ctx.task_id.clone();
         let context_id = ctx.context_id.clone();
         let state = self.state.clone();
@@ -469,6 +471,7 @@ fn build_card(http_port: u16, grpc_port: u16, require_bearer: bool) -> AgentCard
 }
 
 /// Run both HTTP and gRPC servers concurrently. Returns when either exits.
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
     model: Arc<dyn Model>,
     model_factory: Arc<dyn ModelFactory>,
@@ -492,7 +495,9 @@ pub async fn run(
         hooks,
         rtk,
     ));
-    let executor = RaExecutor { state: state.clone() };
+    let executor = RaExecutor {
+        state: state.clone(),
+    };
     let handler = Arc::new(
         DefaultRequestHandler::new(executor, InMemoryTaskStore::new())
             .with_push_notifications(InMemoryPushConfigStore::new(), HttpPushSender::new(None)),
@@ -533,9 +538,11 @@ pub async fn run(
 
     let http_addr = format!("0.0.0.0:{http_port}");
     let grpc_addr = format!("0.0.0.0:{grpc_port}");
-    let http_listener = TcpListener::bind(&http_addr).await
+    let http_listener = TcpListener::bind(&http_addr)
+        .await
         .with_context(|| format!("bind {http_addr}"))?;
-    let grpc_listener = TcpListener::bind(&grpc_addr).await
+    let grpc_listener = TcpListener::bind(&grpc_addr)
+        .await
         .with_context(|| format!("bind {grpc_addr}"))?;
 
     eprintln!("[ra::a2a] agent card:  http://localhost:{http_port}/.well-known/agent-card.json");

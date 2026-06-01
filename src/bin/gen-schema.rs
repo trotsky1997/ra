@@ -9,7 +9,6 @@
 
 fn main() {
     let schema = schemars::schema_for!(ra::config::RaConfig);
-    let out = serde_json::to_string_pretty(&schema)
-        .expect("serialize JSON schema");
+    let out = serde_json::to_string_pretty(&schema).expect("serialize JSON schema");
     println!("{out}");
 }

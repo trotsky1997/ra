@@ -3,8 +3,8 @@ use std::sync::Arc;
 use clap::{Parser, Subcommand};
 use llm::builder::LLMBackend;
 use ra::{
-    Event, LlmModel, LlmModelConfig, MockModel, Model, Session, acp_server::ModelFactory,
-    default_builtins,
+    acp_server::ModelFactory, default_builtins, Event, LlmModel, LlmModelConfig, MockModel, Model,
+    Session,
 };
 use tokio::io::{self, AsyncWriteExt};
 
@@ -386,6 +386,29 @@ fn apply_obs_config(obs: &ra::config::ObsSection) {
     }
 }
 
+fn load_graphify_workflow(config: &ra::config::RaConfig) -> Option<ra::graphify::GraphifyWorkflow> {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
+    let workflow = ra::graphify::workflow_from_config(&config.graphify, &cwd);
+    if let Some(w) = &workflow {
+        if let Some(project) = &w.project {
+            eprintln!(
+                "[ra] Graphify graph {} at {} ({} node(s), {} edge(s))",
+                w.status.kind.as_str(),
+                project.graph_path.display(),
+                project.stats.node_count,
+                project.stats.edge_count
+            );
+        } else {
+            eprintln!(
+                "[ra] Graphify graph {} at {}",
+                w.status.kind.as_str(),
+                w.graph_path.display()
+            );
+        }
+    }
+    workflow
+}
+
 /// Build A2aTool list from `[[a2a.remote_agents]]`. Each agent may carry
 /// `auth.bearer_env` to point at a Bearer-token env var; when present, we
 /// resolve it here and bake it into the per-agent reqwest client.
@@ -418,7 +441,12 @@ async fn run_acp(config: &ra::config::RaConfig) -> anyhow::Result<()> {
     extra_tools.extend(ra::a2a_tool::load_remote_tools_from_env().await);
     extra_tools.extend(load_a2a_tools_from_config(config).await);
     extra_tools.extend(ra::mcp::load_mcp_tools(&config.mcp.servers).await);
-    let (system_prompt, prompt_templates) = load_skills_and_prompts(config);
+    let graphify_workflow = load_graphify_workflow(config);
+    if let Some(workflow) = &graphify_workflow {
+        extra_tools.extend(ra::graphify::tools_for_workflow(workflow));
+    }
+    let (system_prompt, prompt_templates) =
+        load_skills_and_prompts(config, graphify_workflow.clone());
     let hooks = build_hooks(config);
     let rtk = ra::RtkRewriter::from_config(&config.rtk);
     ra::acp_server::run(
@@ -451,7 +479,12 @@ async fn run_serve(
     extra_tools.extend(ra::a2a_tool::load_remote_tools_from_env().await);
     extra_tools.extend(load_a2a_tools_from_config(config).await);
     extra_tools.extend(ra::mcp::load_mcp_tools(&config.mcp.servers).await);
-    let (system_prompt, prompt_templates) = load_skills_and_prompts(config);
+    let graphify_workflow = load_graphify_workflow(config);
+    if let Some(workflow) = &graphify_workflow {
+        extra_tools.extend(ra::graphify::tools_for_workflow(workflow));
+    }
+    let (system_prompt, prompt_templates) =
+        load_skills_and_prompts(config, graphify_workflow.clone());
     let hooks = build_hooks(config);
     let bearer = config
         .a2a
@@ -492,11 +525,13 @@ fn build_hooks(config: &ra::config::RaConfig) -> Option<Arc<ra::hooks::HookEngin
 /// with the TUI).
 fn load_skills_and_prompts(
     config: &ra::config::RaConfig,
+    graphify: Option<ra::graphify::GraphifyWorkflow>,
 ) -> (
     Option<String>,
     Arc<std::collections::HashMap<String, String>>,
 ) {
-    let bundle = ra::skills::build_resource_bundle(config, true);
+    let mut bundle = ra::skills::build_resource_bundle(config, true);
+    bundle.graphify = graphify;
     let system_prompt = bundle.build_system_prompt();
     let templates = bundle.prompt_map();
     (system_prompt, Arc::new(templates))
@@ -512,8 +547,13 @@ async fn run_print(prompt: Option<String>, config: &ra::config::RaConfig) -> any
 
     let hooks = build_hooks(config);
     let rtk = ra::RtkRewriter::from_config(&config.rtk);
-    let (system_prompt, _templates) = load_skills_and_prompts(config);
-    let mut sess = Session::new(model, default_builtins(&config.tools.builtin)).with_rtk(rtk);
+    let graphify_workflow = load_graphify_workflow(config);
+    let (system_prompt, _templates) = load_skills_and_prompts(config, graphify_workflow.clone());
+    let mut tools = default_builtins(&config.tools.builtin);
+    if let Some(workflow) = &graphify_workflow {
+        tools.extend(ra::graphify::tools_for_workflow(workflow));
+    }
+    let mut sess = Session::new(model, tools).with_rtk(rtk);
     if let Some(h) = hooks {
         sess = sess.with_hooks(h);
     }
@@ -625,8 +665,13 @@ async fn run_resume(id: &str, prompt: String, config: &ra::config::RaConfig) -> 
     let (model, _factory) = build_model(config);
     let hooks = build_hooks(config);
     let rtk = ra::RtkRewriter::from_config(&config.rtk);
-    let (system_prompt, _templates) = load_skills_and_prompts(config);
-    let mut sess = Session::new(model, default_builtins(&config.tools.builtin)).with_rtk(rtk);
+    let graphify_workflow = load_graphify_workflow(config);
+    let (system_prompt, _templates) = load_skills_and_prompts(config, graphify_workflow.clone());
+    let mut tools = default_builtins(&config.tools.builtin);
+    if let Some(workflow) = &graphify_workflow {
+        tools.extend(ra::graphify::tools_for_workflow(workflow));
+    }
+    let mut sess = Session::new(model, tools).with_rtk(rtk);
     if let Some(h) = hooks {
         sess = sess.with_hooks(h);
     }

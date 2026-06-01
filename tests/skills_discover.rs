@@ -2,8 +2,8 @@
 //! SKILL.md files from the standard skills.sh / cross-agent layouts
 //! without any explicit `paths` entry.
 
-use std::fs;
 use ra::skills::{default_discover_globs, load_skills};
+use std::fs;
 use tempfile::TempDir;
 
 fn write_skill(root: &std::path::Path, slug: &str, body: &str) {
@@ -11,9 +11,7 @@ fn write_skill(root: &std::path::Path, slug: &str, body: &str) {
     fs::create_dir_all(&dir).unwrap();
     fs::write(
         dir.join("SKILL.md"),
-        format!(
-            "---\nname: {slug}\ndescription: test skill {slug}\n---\n\n{body}\n"
-        ),
+        format!("---\nname: {slug}\ndescription: test skill {slug}\n---\n\n{body}\n"),
     )
     .unwrap();
 }

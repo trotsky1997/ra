@@ -148,9 +148,7 @@ async fn connect_and_list(s: &crate::config::McpServer) -> Result<Vec<Arc<dyn To
     Ok(out)
 }
 
-async fn connect_stdio(
-    s: &crate::config::McpServer,
-) -> Result<RunningService<RoleClient, ()>> {
+async fn connect_stdio(s: &crate::config::McpServer) -> Result<RunningService<RoleClient, ()>> {
     let cmd_str = s
         .command
         .as_ref()
@@ -164,25 +162,17 @@ async fn connect_stdio(
         cmd.env(k, v);
     }
     let transport = TokioChildProcess::new(cmd).context("spawn MCP child process")?;
-    let service = ()
-        .serve(transport)
-        .await
-        .context("MCP stdio handshake")?;
+    let service = ().serve(transport).await.context("MCP stdio handshake")?;
     Ok(service)
 }
 
-async fn connect_http(
-    s: &crate::config::McpServer,
-) -> Result<RunningService<RoleClient, ()>> {
+async fn connect_http(s: &crate::config::McpServer) -> Result<RunningService<RoleClient, ()>> {
     let url = s
         .url
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("http transport requires `url`"))?;
     let transport = StreamableHttpClientTransport::from_uri(url.as_str());
-    let service = ()
-        .serve(transport)
-        .await
-        .context("MCP http handshake")?;
+    let service = ().serve(transport).await.context("MCP http handshake")?;
     Ok(service)
 }
 

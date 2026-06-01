@@ -114,12 +114,15 @@ fn parse_slash_command(text: &str, extra_names: &[&str]) -> Option<SlashCommand>
         None => (rest, ""),
     };
     let name_lc = name.to_lowercase();
-    let known = SLASH_COMMANDS.contains(&name_lc.as_str())
-        || extra_names.iter().any(|n| *n == name_lc);
+    let known =
+        SLASH_COMMANDS.contains(&name_lc.as_str()) || extra_names.iter().any(|n| *n == name_lc);
     if !known {
         return None;
     }
-    Some(SlashCommand { name: name_lc, args: args.to_string() })
+    Some(SlashCommand {
+        name: name_lc,
+        args: args.to_string(),
+    })
 }
 
 /// The actual runner. Cheap to construct; owns no resources of its own
@@ -180,7 +183,10 @@ impl SessionRunner {
             // Emit terminal events while the observability scope is still
             // alive so they appear inside the agent span.
             let used = self.session.estimate_used_tokens().await;
-            on_event(RunnerEvent::UsageReport { used, size: used_size });
+            on_event(RunnerEvent::UsageReport {
+                used,
+                size: used_size,
+            });
             on_event(RunnerEvent::Finished(result.clone()));
             // AgentEnd hook fires last, so log/cleanup tools see the
             // final state (including any TextDelta drained by the bus
@@ -211,12 +217,16 @@ impl SessionRunner {
                 .user_prompt_submit(Some(&self.session_id), &user_text)
                 .await;
             if let Some(reason) = decision.stop.clone() {
-                on_event(RunnerEvent::TextDelta(format!("[stopped by hook] {reason}")));
+                on_event(RunnerEvent::TextDelta(format!(
+                    "[stopped by hook] {reason}"
+                )));
                 hooks.stop(Some(&self.session_id)).await;
                 return RunOutcome::Failed(reason);
             }
             if let Some(reason) = decision.block.clone() {
-                on_event(RunnerEvent::TextDelta(format!("[blocked by hook] {reason}")));
+                on_event(RunnerEvent::TextDelta(format!(
+                    "[blocked by hook] {reason}"
+                )));
                 hooks.stop(Some(&self.session_id)).await;
                 return RunOutcome::Failed(reason);
             }

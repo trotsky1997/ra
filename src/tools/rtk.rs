@@ -55,7 +55,11 @@ impl RtkRewriter {
             eprintln!(
                 "[ra::rtk] enabled — bash commands will be routed through {}{}",
                 p.display(),
-                if cfg.ultra_compact { " --ultra-compact" } else { "" }
+                if cfg.ultra_compact {
+                    " --ultra-compact"
+                } else {
+                    ""
+                }
             );
         }
         Self {

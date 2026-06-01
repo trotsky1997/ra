@@ -10,41 +10,39 @@
 //! Tools are wired to call back into the client through `AcpClientHandle`:
 //! - `read`  → `fs/read_text_file`
 //! - `bash`  → `terminal/create` + `wait_for_exit` + `terminal/output`
-//!             + `terminal/release`, gated by `session/request_permission`.
+//!   + `terminal/release`, gated by `session/request_permission`.
 
 use std::sync::Arc;
 
 use agent_client_protocol::{
-    Agent as AcpAgent, ConnectionTo, Dispatch, Error as AcpError, Result as AcpResult, Stdio,
     on_receive_dispatch, on_receive_notification, on_receive_request,
     schema::{
         AgentCapabilities, AuthMethod, AuthMethodAgent, AuthMethodId, AuthenticateRequest,
         AuthenticateResponse, AvailableCommand, AvailableCommandInput, AvailableCommandsUpdate,
         CancelNotification, CloseSessionRequest, CloseSessionResponse, ConfigOptionUpdate,
-        ContentBlock, ContentChunk,
-        CreateTerminalRequest, CurrentModeUpdate, DeleteSessionRequest, DeleteSessionResponse,
-        ForkSessionRequest, ForkSessionResponse, InitializeRequest, InitializeResponse,
-        KillTerminalRequest, ListSessionsRequest, ListSessionsResponse, LoadSessionRequest,
-        LoadSessionResponse,
-        LogoutRequest, LogoutResponse, ModelId, ModelInfo, NewSessionRequest, NewSessionResponse,
-        PermissionOption, PermissionOptionId, PermissionOptionKind, PromptRequest, PromptResponse,
-        ReadTextFileRequest, ReleaseTerminalRequest, RequestPermissionOutcome,
-        RequestPermissionRequest, ResumeSessionRequest, ResumeSessionResponse, SessionId,
+        ContentBlock, ContentChunk, CreateTerminalRequest, CurrentModeUpdate, DeleteSessionRequest,
+        DeleteSessionResponse, ForkSessionRequest, ForkSessionResponse, InitializeRequest,
+        InitializeResponse, KillTerminalRequest, ListSessionsRequest, ListSessionsResponse,
+        LoadSessionRequest, LoadSessionResponse, LogoutRequest, LogoutResponse, ModelId, ModelInfo,
+        NewSessionRequest, NewSessionResponse, PermissionOption, PermissionOptionId,
+        PermissionOptionKind, PromptRequest, PromptResponse, ReadTextFileRequest,
+        ReleaseTerminalRequest, RequestPermissionOutcome, RequestPermissionRequest,
+        ResumeSessionRequest, ResumeSessionResponse, SessionConfigId, SessionConfigOption,
+        SessionConfigOptionValue, SessionConfigSelectOption, SessionConfigValueId, SessionId,
         SessionInfo, SessionMode, SessionModeId, SessionModeState, SessionModelState,
-        SessionConfigId, SessionConfigOption, SessionConfigOptionValue, SessionConfigSelectOption,
-        SessionConfigValueId, SessionNotification, SessionUpdate, SetSessionConfigOptionRequest,
+        SessionNotification, SessionUpdate, SetSessionConfigOptionRequest,
         SetSessionConfigOptionResponse, SetSessionModeRequest, SetSessionModeResponse,
         SetSessionModelRequest, SetSessionModelResponse, StopReason, TerminalOutputRequest,
         TextContent, ToolCall as AcpToolCall, ToolCallContent, ToolCallId, ToolCallStatus,
         ToolCallUpdate, ToolCallUpdateFields, ToolKind, UnstructuredCommandInput, UsageUpdate,
         WaitForTerminalExitRequest, WriteTextFileRequest,
     },
-    util,
+    util, Agent as AcpAgent, ConnectionTo, Dispatch, Error as AcpError, Result as AcpResult, Stdio,
 };
 use anyhow::anyhow;
 use async_trait::async_trait;
-use std::path::PathBuf;
 use dashmap::DashMap;
+use std::path::PathBuf;
 use ulid::Ulid;
 
 use crate::atif_codec;
@@ -77,11 +75,14 @@ fn ra_modes() -> SessionModeState {
 /// keys in environment variables and considers itself "always authenticated"
 /// once those are set, so this is a single no-op method.
 fn ra_auth_methods() -> Vec<AuthMethod> {
-    let mut m = AuthMethodAgent::new(AuthMethodId::from("env".to_string()), "Environment".to_string());
-    m.description = Some("Auth via PI_API_KEY / ANTHROPIC_API_KEY / OPENAI_API_KEY env vars.".into());
+    let mut m = AuthMethodAgent::new(
+        AuthMethodId::from("env".to_string()),
+        "Environment".to_string(),
+    );
+    m.description =
+        Some("Auth via PI_API_KEY / ANTHROPIC_API_KEY / OPENAI_API_KEY env vars.".into());
     vec![AuthMethod::Agent(m)]
 }
-
 
 /// Best-guess context window size (in tokens) for a given model id, used
 /// as the `size` field on `SessionUpdate::UsageUpdate`. Falls back to a
@@ -92,8 +93,6 @@ fn ctx_window_for(model_id: &str) -> u64 {
         1_000_000
     } else if id.contains("gpt-4.1") || id.contains("gpt-4o") {
         128_000
-    } else if id.contains("claude") && id.contains("opus") {
-        200_000
     } else if id.contains("claude") {
         200_000
     } else if id.contains("gemini") {
@@ -157,10 +156,9 @@ fn ra_config_options() -> Vec<SessionConfigOption> {
         .description("Whether tool outputs are inlined verbatim or trimmed."),
     ]
 }
-///
 /// Holds the active default model, the model registry (for `session/set_model`
 /// + `NewSessionResponse.models`), the on-disk trajectory store, and the
-/// live ACP session map.
+///   live ACP session map.
 struct SharedState {
     model: Arc<dyn Model>,
     model_factory: Arc<dyn ModelFactory>,
@@ -345,11 +343,7 @@ impl ClientHandle for AcpClientHandle {
         path: &str,
         content: &str,
     ) -> anyhow::Result<()> {
-        let req = WriteTextFileRequest::new(
-            SessionId::from(session_id.to_string()),
-            path,
-            content,
-        );
+        let req = WriteTextFileRequest::new(SessionId::from(session_id.to_string()), path, content);
         self.cx
             .send_request(req)
             .block_task()
@@ -378,7 +372,10 @@ impl ClientHandle for AcpClientHandle {
 
         let exit = self
             .cx
-            .send_request(WaitForTerminalExitRequest::new(sid.clone(), term_id.clone()))
+            .send_request(WaitForTerminalExitRequest::new(
+                sid.clone(),
+                term_id.clone(),
+            ))
             .block_task()
             .await
             .map_err(|e| anyhow!("terminal/wait_for_exit: {e:?}"))?;
@@ -403,11 +400,7 @@ impl ClientHandle for AcpClientHandle {
         })
     }
 
-    async fn kill_terminal(
-        &self,
-        session_id: &str,
-        terminal_id: &str,
-    ) -> anyhow::Result<()> {
+    async fn kill_terminal(&self, session_id: &str, terminal_id: &str) -> anyhow::Result<()> {
         use agent_client_protocol::schema::TerminalId;
         let req = KillTerminalRequest::new(
             SessionId::from(session_id.to_string()),
@@ -454,11 +447,8 @@ impl ClientHandle for AcpClientHandle {
             ToolCallUpdateFields::new().title(title.to_string()),
         );
 
-        let req = RequestPermissionRequest::new(
-            SessionId::from(session_id.to_string()),
-            update,
-            options,
-        );
+        let req =
+            RequestPermissionRequest::new(SessionId::from(session_id.to_string()), update, options);
 
         let resp = self
             .cx
@@ -539,10 +529,11 @@ pub async fn run(
             on_receive_request!(),
         )
         .on_receive_request(
-            async move |req: NewSessionRequest, responder, cx: ConnectionTo<agent_client_protocol::Client>| {
+            async move |req: NewSessionRequest,
+                        responder,
+                        cx: ConnectionTo<agent_client_protocol::Client>| {
                 let id = format!("ra_{}", Ulid::new());
-                let handle: Arc<dyn ClientHandle> =
-                    Arc::new(AcpClientHandle { cx: cx.clone() });
+                let handle: Arc<dyn ClientHandle> = Arc::new(AcpClientHandle { cx: cx.clone() });
                 s_new.create_session(&id, handle, req.cwd.clone()).await;
                 // Persist an empty trajectory upfront so the session shows up
                 // in session/list immediately (not just after first prompt).
@@ -567,7 +558,9 @@ pub async fn run(
             on_receive_request!(),
         )
         .on_receive_request(
-            async move |req: PromptRequest, responder, cx: ConnectionTo<agent_client_protocol::Client>| {
+            async move |req: PromptRequest,
+                        responder,
+                        cx: ConnectionTo<agent_client_protocol::Client>| {
                 let session_id = req.session_id.clone();
                 let user_text = collect_text(&req.prompt);
 
@@ -589,9 +582,16 @@ pub async fn run(
                 let mut accumulated_text = String::new();
 
                 tokio::spawn(async move {
-                    let outcome = runner.run_input(user_text, |ev| {
-                        translate_runner_event(&session_id_for_cb, &cx_for_task, &mut accumulated_text, ev);
-                    }).await;
+                    let outcome = runner
+                        .run_input(user_text, |ev| {
+                            translate_runner_event(
+                                &session_id_for_cb,
+                                &cx_for_task,
+                                &mut accumulated_text,
+                                ev,
+                            );
+                        })
+                        .await;
 
                     // The runner already emitted UsageReport via the callback,
                     // but PromptResponse.usage carries the same number for
@@ -601,9 +601,7 @@ pub async fn run(
                         RunOutcome::Completed | RunOutcome::Failed(_) => StopReason::EndTurn,
                         RunOutcome::Cancelled => StopReason::Cancelled,
                     };
-                    let _ = responder.respond(
-                        PromptResponse::new(stop).usage(Some(final_usage)),
-                    );
+                    let _ = responder.respond(PromptResponse::new(stop).usage(Some(final_usage)));
                 });
 
                 Ok(())
@@ -641,7 +639,9 @@ pub async fn run(
             on_receive_request!(),
         )
         .on_receive_request(
-            async move |req: ForkSessionRequest, responder, cx: ConnectionTo<agent_client_protocol::Client>| {
+            async move |req: ForkSessionRequest,
+                        responder,
+                        cx: ConnectionTo<agent_client_protocol::Client>| {
                 let Some(parent) = s_fork.get(&req.session_id.to_string()) else {
                     return responder.respond_with_error(util::internal_error(format!(
                         "unknown session id: {}",
@@ -649,9 +649,10 @@ pub async fn run(
                     )));
                 };
                 let new_id = format!("ra_{}", Ulid::new());
-                let handle: Arc<dyn ClientHandle> =
-                    Arc::new(AcpClientHandle { cx: cx.clone() });
-                let child = s_fork.create_session(&new_id, handle, req.cwd.clone()).await;
+                let handle: Arc<dyn ClientHandle> = Arc::new(AcpClientHandle { cx: cx.clone() });
+                let child = s_fork
+                    .create_session(&new_id, handle, req.cwd.clone())
+                    .await;
                 let snapshot = parent.snapshot_messages().await;
                 child.restore_messages(snapshot).await;
                 s_fork.save_session(&new_id).await;
@@ -667,7 +668,9 @@ pub async fn run(
             on_receive_request!(),
         )
         .on_receive_request(
-            async move |req: LoadSessionRequest, responder, cx: ConnectionTo<agent_client_protocol::Client>| {
+            async move |req: LoadSessionRequest,
+                        responder,
+                        cx: ConnectionTo<agent_client_protocol::Client>| {
                 let id = req.session_id.to_string();
                 let cwd = req.cwd.clone();
                 let store = match SessionStore::for_cwd(&cwd) {
@@ -682,14 +685,12 @@ pub async fn run(
                 let traj = match store.load(&id).await {
                     Ok(t) => t,
                     Err(e) => {
-                        return responder.respond_with_error(util::internal_error(format!(
-                            "load {id}: {e:#}"
-                        )));
+                        return responder
+                            .respond_with_error(util::internal_error(format!("load {id}: {e:#}")));
                     }
                 };
                 let messages = atif_codec::decode(&traj);
-                let handle: Arc<dyn ClientHandle> =
-                    Arc::new(AcpClientHandle { cx: cx.clone() });
+                let handle: Arc<dyn ClientHandle> = Arc::new(AcpClientHandle { cx: cx.clone() });
                 let session = s_load.create_session(&id, handle, cwd).await;
                 session.restore_messages(messages).await;
                 let resp = LoadSessionResponse::default();
@@ -699,7 +700,10 @@ pub async fn run(
         )
         .on_receive_request(
             async move |req: ListSessionsRequest, responder, _cx| {
-                let cwd = req.cwd.clone().unwrap_or_else(|| s_list.default_cwd.clone());
+                let cwd = req
+                    .cwd
+                    .clone()
+                    .unwrap_or_else(|| s_list.default_cwd.clone());
                 let store = match SessionStore::for_cwd(&cwd) {
                     Ok(s) => s,
                     Err(e) => {
@@ -712,18 +716,14 @@ pub async fn run(
                 let metas = match store.list().await {
                     Ok(m) => m,
                     Err(e) => {
-                        return responder.respond_with_error(util::internal_error(format!(
-                            "list: {e:#}"
-                        )));
+                        return responder
+                            .respond_with_error(util::internal_error(format!("list: {e:#}")));
                     }
                 };
                 let sessions = metas
                     .into_iter()
                     .map(|m| {
-                        let mut info = SessionInfo::new(
-                            SessionId::from(m.session_id),
-                            cwd.clone(),
-                        );
+                        let mut info = SessionInfo::new(SessionId::from(m.session_id), cwd.clone());
                         info.title = m.title;
                         info.updated_at = chrono::DateTime::<chrono::Utc>::from(m.modified)
                             .format("%Y-%m-%dT%H:%M:%SZ")
@@ -748,7 +748,9 @@ pub async fn run(
             on_receive_request!(),
         )
         .on_receive_request(
-            async move |req: ResumeSessionRequest, responder, cx: ConnectionTo<agent_client_protocol::Client>| {
+            async move |req: ResumeSessionRequest,
+                        responder,
+                        cx: ConnectionTo<agent_client_protocol::Client>| {
                 // resume == load semantically for us: the on-disk trajectory
                 // is the source of truth, and a fresh in-memory Session is
                 // hydrated from it. (We don't keep idle sessions warm.)
@@ -766,14 +768,12 @@ pub async fn run(
                 let traj = match store.load(&id).await {
                     Ok(t) => t,
                     Err(e) => {
-                        return responder.respond_with_error(util::internal_error(format!(
-                            "load {id}: {e:#}"
-                        )));
+                        return responder
+                            .respond_with_error(util::internal_error(format!("load {id}: {e:#}")));
                     }
                 };
                 let messages = atif_codec::decode(&traj);
-                let handle: Arc<dyn ClientHandle> =
-                    Arc::new(AcpClientHandle { cx: cx.clone() });
+                let handle: Arc<dyn ClientHandle> = Arc::new(AcpClientHandle { cx: cx.clone() });
                 let session = s_resume.create_session(&id, handle, cwd).await;
                 session.restore_messages(messages).await;
                 let resp = ResumeSessionResponse::default();
@@ -798,9 +798,8 @@ pub async fn run(
                     }
                 };
                 if let Err(e) = store.delete(&id).await {
-                    return responder.respond_with_error(util::internal_error(format!(
-                        "delete {id}: {e:#}"
-                    )));
+                    return responder
+                        .respond_with_error(util::internal_error(format!("delete {id}: {e:#}")));
                 }
                 responder.respond(DeleteSessionResponse::default())
             },
@@ -834,7 +833,9 @@ pub async fn run(
             on_receive_request!(),
         )
         .on_receive_request(
-            async move |req: SetSessionModeRequest, responder, cx: ConnectionTo<agent_client_protocol::Client>| {
+            async move |req: SetSessionModeRequest,
+                        responder,
+                        cx: ConnectionTo<agent_client_protocol::Client>| {
                 let id = req.session_id.to_string();
                 let Some(session) = s_setmode.get(&id) else {
                     return responder.respond_with_error(util::internal_error(format!(
@@ -857,9 +858,9 @@ pub async fn run(
                 // refresh any picker UI.
                 let notif = SessionNotification::new(
                     req.session_id.clone(),
-                    SessionUpdate::CurrentModeUpdate(CurrentModeUpdate::new(
-                        SessionModeId::from(mode_id),
-                    )),
+                    SessionUpdate::CurrentModeUpdate(CurrentModeUpdate::new(SessionModeId::from(
+                        mode_id,
+                    ))),
                 );
                 let _ = cx.send_notification(notif);
                 responder.respond(SetSessionModeResponse::default())
@@ -867,7 +868,9 @@ pub async fn run(
             on_receive_request!(),
         )
         .on_receive_request(
-            async move |req: SetSessionConfigOptionRequest, responder, cx: ConnectionTo<agent_client_protocol::Client>| {
+            async move |req: SetSessionConfigOptionRequest,
+                        responder,
+                        cx: ConnectionTo<agent_client_protocol::Client>| {
                 let id = req.session_id.to_string();
                 let Some(session) = s_setconfig.get(&id) else {
                     return responder.respond_with_error(util::internal_error(format!(
@@ -959,7 +962,13 @@ fn translate_runner_event(
                 ContentBlock::Text(TextContent::new(s)),
             )));
         }
-        RunnerEvent::ToolCallStart { id, name: _, input, title, kind } => {
+        RunnerEvent::ToolCallStart {
+            id,
+            name: _,
+            input,
+            title,
+            kind,
+        } => {
             notify(SessionUpdate::ToolCall(
                 AcpToolCall::new(ToolCallId::from(id), title)
                     .kind(tool_kind_hint_to_acp(kind))
@@ -967,15 +976,19 @@ fn translate_runner_event(
                     .raw_input(input),
             ));
         }
-        RunnerEvent::ToolCallEnd { id, is_error, content } => {
+        RunnerEvent::ToolCallEnd {
+            id,
+            is_error,
+            content,
+        } => {
             let status = if is_error {
                 ToolCallStatus::Failed
             } else {
                 ToolCallStatus::Completed
             };
-            let acp_content = vec![ToolCallContent::from(ContentBlock::Text(
-                TextContent::new(content.clone()),
-            ))];
+            let acp_content = vec![ToolCallContent::from(ContentBlock::Text(TextContent::new(
+                content.clone(),
+            )))];
             let fields = ToolCallUpdateFields::new()
                 .status(status)
                 .content(acp_content)

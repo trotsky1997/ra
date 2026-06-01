@@ -10,10 +10,10 @@
 use std::sync::Arc;
 
 use nemo_relay::api::event::Event as AtofEvent;
-use nemo_relay::api::runtime::{TASK_SCOPE_STACK, create_scope_stack};
+use nemo_relay::api::runtime::{create_scope_stack, TASK_SCOPE_STACK};
 use nemo_relay::api::scope::{
-    EmitMarkEventParams, PopScopeParams, PushScopeParams, ScopeHandle, ScopeType, event,
-    pop_scope, push_scope,
+    event, pop_scope, push_scope, EmitMarkEventParams, PopScopeParams, PushScopeParams,
+    ScopeHandle, ScopeType,
 };
 use nemo_relay::api::subscriber::register_subscriber;
 
@@ -40,12 +40,11 @@ pub fn init() {
 }
 
 fn init_stderr() {
-    let cb: Arc<dyn Fn(&AtofEvent) + Send + Sync> = Arc::new(|event: &AtofEvent| {
-        match event.try_to_json_value() {
+    let cb: Arc<dyn Fn(&AtofEvent) + Send + Sync> =
+        Arc::new(|event: &AtofEvent| match event.try_to_json_value() {
             Ok(v) => eprintln!("[ra::atof] {}", v),
             Err(e) => eprintln!("[ra::atof] <serialize error: {e}>"),
-        }
-    });
+        });
     if let Err(e) = register_subscriber("ra-stderr", cb) {
         eprintln!("[ra::atof] register_subscriber: {e}");
     } else {
@@ -69,7 +68,10 @@ fn init_file() {
         },
     };
     if let Err(e) = std::fs::create_dir_all(&dir) {
-        eprintln!("[ra::atof] backend=file: mkdir {}: {e}; falling back to stderr", dir.display());
+        eprintln!(
+            "[ra::atof] backend=file: mkdir {}: {e}; falling back to stderr",
+            dir.display()
+        );
         init_stderr();
         return;
     }
@@ -81,7 +83,10 @@ fn init_file() {
     {
         Ok(f) => f,
         Err(e) => {
-            eprintln!("[ra::atof] backend=file: open {}: {e}; falling back to stderr", path.display());
+            eprintln!(
+                "[ra::atof] backend=file: open {}: {e}; falling back to stderr",
+                path.display()
+            );
             init_stderr();
             return;
         }
@@ -194,11 +199,7 @@ impl Drop for ScopeGuard {
         let Some(handle) = self.handle.take() else {
             return;
         };
-        if let Err(e) = pop_scope(
-            PopScopeParams::builder()
-                .handle_uuid(&handle.uuid)
-                .build(),
-        ) {
+        if let Err(e) = pop_scope(PopScopeParams::builder().handle_uuid(&handle.uuid).build()) {
             eprintln!("[ra::atof] pop_scope: {e}");
         }
     }
@@ -217,4 +218,3 @@ where
 {
     TASK_SCOPE_STACK.scope(create_scope_stack(), fut).await
 }
-

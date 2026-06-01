@@ -13,16 +13,16 @@ use a2a::{
     AgentCapabilities, AgentCard, Message, Part, Role, SendMessageConfiguration,
     SendMessageRequest, StreamResponse, TaskPushNotificationConfig, TaskState,
 };
-use a2a_client::A2AClient;
 use a2a_client::jsonrpc::JsonRpcTransport;
+use a2a_client::A2AClient;
 use a2a_server::{
-    AgentExecutor, DefaultRequestHandler, ExecutorContext, HttpPushSender, InMemoryPushConfigStore,
-    InMemoryTaskStore, PushConfigStore, StaticAgentCard,
-    agent_card::agent_card_router, jsonrpc::jsonrpc_router,
+    agent_card::agent_card_router, jsonrpc::jsonrpc_router, AgentExecutor, DefaultRequestHandler,
+    ExecutorContext, HttpPushSender, InMemoryPushConfigStore, InMemoryTaskStore, PushConfigStore,
+    StaticAgentCard,
 };
-use axum::Router;
 use axum::extract::State;
 use axum::response::IntoResponse;
+use axum::Router;
 use futures::stream::{self, BoxStream};
 use tokio::net::TcpListener;
 use ulid::Ulid;
@@ -38,7 +38,7 @@ impl AgentExecutor for EchoExecutor {
         &self,
         ctx: ExecutorContext,
     ) -> BoxStream<'static, Result<StreamResponse, a2a::A2AError>> {
-        use a2a::{Task, TaskStatus, TaskStatusUpdateEvent, TaskState as TS};
+        use a2a::{Task, TaskState as TS, TaskStatus, TaskStatusUpdateEvent};
         use chrono::Utc;
 
         let task_id = ctx.task_id.clone();
@@ -84,7 +84,7 @@ impl AgentExecutor for EchoExecutor {
         &self,
         ctx: ExecutorContext,
     ) -> BoxStream<'static, Result<StreamResponse, a2a::A2AError>> {
-        use a2a::{TaskStatus, TaskStatusUpdateEvent, TaskState as TS};
+        use a2a::{TaskState as TS, TaskStatus, TaskStatusUpdateEvent};
         use chrono::Utc;
         Box::pin(stream::once(async move {
             Ok(StreamResponse::StatusUpdate(TaskStatusUpdateEvent {
@@ -303,7 +303,10 @@ async fn test_push_notification_delivered_on_task_completion() {
     assert!(
         has_completed,
         "at least one push event should carry completed state; got: {:?}",
-        bodies.iter().map(|b| String::from_utf8_lossy(b).to_string()).collect::<Vec<_>>()
+        bodies
+            .iter()
+            .map(|b| String::from_utf8_lossy(b).to_string())
+            .collect::<Vec<_>>()
     );
 }
 

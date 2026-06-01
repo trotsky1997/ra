@@ -89,8 +89,8 @@ impl SessionStore {
         let bytes = tokio::fs::read(&path)
             .await
             .with_context(|| format!("read {}", path.display()))?;
-        let traj: Trajectory = serde_json::from_slice(&bytes)
-            .with_context(|| format!("parse {}", path.display()))?;
+        let traj: Trajectory =
+            serde_json::from_slice(&bytes).with_context(|| format!("parse {}", path.display()))?;
         Ok(traj)
     }
 
@@ -118,9 +118,14 @@ impl SessionStore {
                     .and_then(|m| m.modified())
                     .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
                 let title = read_title(&path);
-                out.push(SessionMeta { session_id, path, modified, title });
+                out.push(SessionMeta {
+                    session_id,
+                    path,
+                    modified,
+                    title,
+                });
             }
-            out.sort_by(|a, b| b.modified.cmp(&a.modified));
+            out.sort_by_key(|b| std::cmp::Reverse(b.modified));
             Ok(out)
         })
         .await
@@ -140,9 +145,7 @@ impl SessionStore {
 
 /// 16-hex-char prefix of `sha256(cwd_str)`. Stable, filesystem-safe.
 fn cwd_hash(cwd: &Path) -> String {
-    let canon = cwd
-        .canonicalize()
-        .unwrap_or_else(|_| cwd.to_path_buf());
+    let canon = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
     let mut h = Sha256::new();
     h.update(canon.to_string_lossy().as_bytes());
     let digest = h.finalize();

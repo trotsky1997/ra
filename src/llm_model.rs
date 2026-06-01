@@ -15,8 +15,8 @@ use async_trait::async_trait;
 use futures::stream::{BoxStream, StreamExt};
 use llm::{
     builder::{LLMBackend, LLMBuilder},
-    chat::{ChatMessage, MessageType, StreamChunk, Tool as LlmTool, FunctionTool},
-    LLMProvider, ToolCall as LlmToolCall, FunctionCall as LlmFunctionCall,
+    chat::{ChatMessage, FunctionTool, MessageType, StreamChunk, Tool as LlmTool},
+    FunctionCall as LlmFunctionCall, LLMProvider, ToolCall as LlmToolCall,
 };
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
@@ -52,7 +52,9 @@ impl LlmModel {
         }
 
         let provider = builder.build().context("LLMBuilder::build")?;
-        Ok(Self { provider: Arc::from(provider) })
+        Ok(Self {
+            provider: Arc::from(provider),
+        })
     }
 }
 
@@ -75,12 +77,21 @@ impl Model for LlmModel {
 
         tokio::spawn(async move {
             let stream_res: Result<
-                Pin<Box<dyn futures::Stream<Item = Result<StreamChunk, llm::error::LLMError>> + Send>>,
+                Pin<
+                    Box<
+                        dyn futures::Stream<Item = Result<StreamChunk, llm::error::LLMError>>
+                            + Send,
+                    >,
+                >,
                 _,
             > = provider
                 .chat_stream_with_tools(
                     &chat_msgs,
-                    if llm_tools.is_empty() { None } else { Some(&llm_tools) },
+                    if llm_tools.is_empty() {
+                        None
+                    } else {
+                        Some(&llm_tools)
+                    },
                 )
                 .await;
 
@@ -88,7 +99,9 @@ impl Model for LlmModel {
                 Ok(s) => s,
                 Err(e) => {
                     eprintln!("[ra::llm_model] chat_stream_with_tools: {e}");
-                    let _ = tx.send(ModelChunk::End { stop_reason: StopReason::EndTurn });
+                    let _ = tx.send(ModelChunk::End {
+                        stop_reason: StopReason::EndTurn,
+                    });
                     return;
                 }
             };
@@ -140,7 +153,10 @@ fn encode_messages(msgs: &[Message]) -> Vec<ChatMessage> {
             Message::User { content } => {
                 out.push(ChatMessage::user().content(content.clone()).build());
             }
-            Message::Assistant { content, tool_calls } => {
+            Message::Assistant {
+                content,
+                tool_calls,
+            } => {
                 if !content.is_empty() {
                     out.push(ChatMessage::assistant().content(content.clone()).build());
                 }
@@ -156,11 +172,7 @@ fn encode_messages(msgs: &[Message]) -> Vec<ChatMessage> {
                             },
                         })
                         .collect();
-                    out.push(
-                        ChatMessage::assistant()
-                            .tool_use(calls)
-                            .build(),
-                    );
+                    out.push(ChatMessage::assistant().tool_use(calls).build());
                 }
             }
             Message::ToolResult(r) => {
@@ -211,7 +223,8 @@ fn clean_schema(schema: &serde_json::Value) -> serde_json::Value {
         obj.remove("$schema");
         obj.remove("title");
         obj.remove("definitions");
-        obj.entry("additionalProperties").or_insert(serde_json::json!(false));
+        obj.entry("additionalProperties")
+            .or_insert(serde_json::json!(false));
     }
     v
 }

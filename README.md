@@ -54,6 +54,14 @@ The eye watching from the banner is 𓂀 (U+13080).
   repo with no `openspec/` yet, a bootstrap hint so the agent can adopt
   the convention itself (`[openspec] agent_own = false` for catalog only).
   Ra consumes the convention; it doesn't reimplement the `openspec` CLI.
+- **Agent-owned Graphify support.** Auto-discovers or targets
+  [Graphify](https://github.com/safishamsi/graphify)
+  `graphify-out/graph.json`, folds an R2A graph workflow into the
+  system prompt, and exposes `graphify_ensure`, `graphify_impact`, and
+  `graphify_update` alongside native query/path/explain tools. Ra can
+  detect missing or stale graphs, guide or run a low-cost AST refresh,
+  and use the graph for requirement intake, planning, verification, and
+  artifact traceability without requiring the user to run Graphify first.
 - **HCP-flavored TOML config.** Single `ra.toml` (or `~/.ra.toml`)
   configures models, tools, skills, prompts, hooks, MCP servers, A2A
   serve/auth, remote A2A agents, observability backend, …
@@ -165,8 +173,9 @@ api_key_env = "ANTHROPIC_API_KEY"
 
 For the full annotated example covering every section
 (`[run]`, `[obs]`, `[tools]`, `[skills]`, `[prompts]`, `[agents_md]`,
-`[resources]`, `[a2a.serve]` + auth, `[[a2a.remote_agents]]`,
-`[[mcp.servers]]`, `[[hooks.PreToolUse]]`, …) see
+`[openspec]`, `[graphify]`, `[resources]`, `[a2a.serve]` + auth,
+`[[a2a.remote_agents]]`, `[[mcp.servers]]`,
+`[[hooks.PreToolUse]]`, …) see
 [`spec/ra.toml.example`](spec/ra.toml.example). The schema is in
 [`spec/ra-config.schema.json`](spec/ra-config.schema.json).
 
@@ -184,6 +193,7 @@ Resolution order: `--config <path>` → `$RA_CONFIG` → `./ra.toml` →
 | `ast_grep` | Read-only structural code search via ast-grep / `sg`; returns JSON matches. |
 | `git`   | Runs native `git` with argv-safe arguments; ACP hosts use the terminal reverse-call with shell quoting. This path does not use RTK. |
 | `gh`    | Runs native GitHub CLI (`gh`) with argv-safe arguments; ACP hosts use the terminal reverse-call with shell quoting. This path does not use RTK. |
+| `graphify_ensure` / `graphify_impact` / `graphify_update` / `graphify_query` / `graphify_path` / `graphify_explain` | Added when `[graphify]` is enabled; maintains and uses Graphify as Ra's R2A project graph. |
 
 Toggle the catalog via `[tools] builtin = […]`; an empty allow-list
 ships every built-in tool. Prefer `git` / `gh` for those CLIs; `grep`,

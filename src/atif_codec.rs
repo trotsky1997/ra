@@ -42,7 +42,10 @@ pub fn encode(
                     is_copied_context: None,
                 });
             }
-            RaMessage::Assistant { content, tool_calls } => {
+            RaMessage::Assistant {
+                content,
+                tool_calls,
+            } => {
                 let calls = if tool_calls.is_empty() {
                     None
                 } else {
@@ -102,7 +105,9 @@ pub fn encode(
                     });
                 }
                 let last = traj.steps.last_mut().expect("at least one agent step");
-                let obs = last.observation.get_or_insert(Observation { results: Vec::new() });
+                let obs = last.observation.get_or_insert(Observation {
+                    results: Vec::new(),
+                });
                 obs.results.push(ObservationResult {
                     source_call_id: Some(r.call_id.clone()),
                     content: Some(AtifMessage::text(&r.content)),
@@ -126,7 +131,9 @@ pub fn decode(traj: &Trajectory) -> Vec<RaMessage> {
     for step in &traj.steps {
         match step.source {
             StepSource::User => {
-                out.push(RaMessage::User { content: step.message.as_text() });
+                out.push(RaMessage::User {
+                    content: step.message.as_text(),
+                });
             }
             StepSource::Agent => {
                 let calls: Vec<RaToolCall> = step
@@ -155,16 +162,9 @@ pub fn decode(traj: &Trajectory) -> Vec<RaMessage> {
                             .and_then(|v| v.as_bool())
                             .unwrap_or(false);
                         out.push(RaMessage::ToolResult(ToolResult {
-                            call_id: r
-                                .source_call_id
-                                .clone()
-                                .unwrap_or_default(),
+                            call_id: r.source_call_id.clone().unwrap_or_default(),
                             is_error,
-                            content: r
-                                .content
-                                .as_ref()
-                                .map(|m| m.as_text())
-                                .unwrap_or_default(),
+                            content: r.content.as_ref().map(|m| m.as_text()).unwrap_or_default(),
                         }));
                     }
                 }
@@ -187,8 +187,13 @@ mod tests {
     #[test]
     fn roundtrip_text_only() {
         let msgs = vec![
-            RaMessage::User { content: "hi".into() },
-            RaMessage::Assistant { content: "hello".into(), tool_calls: vec![] },
+            RaMessage::User {
+                content: "hi".into(),
+            },
+            RaMessage::Assistant {
+                content: "hello".into(),
+                tool_calls: vec![],
+            },
         ];
         let traj = encode("sess1", Some("m".into()), &msgs);
         let back = decode(&traj);
@@ -200,7 +205,9 @@ mod tests {
     #[test]
     fn roundtrip_with_tool() {
         let msgs = vec![
-            RaMessage::User { content: "run ls".into() },
+            RaMessage::User {
+                content: "run ls".into(),
+            },
             RaMessage::Assistant {
                 content: "running".into(),
                 tool_calls: vec![RaToolCall {
@@ -214,16 +221,16 @@ mod tests {
                 is_error: false,
                 content: "Cargo.toml\n".into(),
             }),
-            RaMessage::Assistant { content: "done".into(), tool_calls: vec![] },
+            RaMessage::Assistant {
+                content: "done".into(),
+                tool_calls: vec![],
+            },
         ];
         let traj = encode("sess2", None, &msgs);
         // 3 ATIF steps: user / agent (with obs) / agent
         assert_eq!(traj.steps.len(), 3);
         assert_eq!(traj.steps[1].tool_calls.as_ref().unwrap().len(), 1);
-        assert_eq!(
-            traj.steps[1].observation.as_ref().unwrap().results.len(),
-            1
-        );
+        assert_eq!(traj.steps[1].observation.as_ref().unwrap().results.len(), 1);
         // Round-trip the structure
         let back = decode(&traj);
         assert_eq!(back.len(), msgs.len());

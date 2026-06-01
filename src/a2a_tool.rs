@@ -96,7 +96,9 @@ fn extract_text(resp: &SendMessageResponse) -> String {
         SendMessageResponse::Task(t) => t.status.message.as_ref().map(|m| &m.parts[..]),
         SendMessageResponse::Message(m) => Some(&m.parts[..]),
     };
-    let Some(parts) = parts else { return String::new() };
+    let Some(parts) = parts else {
+        return String::new();
+    };
     let mut out = String::new();
     for p in parts {
         if let PartContent::Text(t) = &p.content {
@@ -182,11 +184,7 @@ pub async fn load_remote_tool_with_bearer(
     }
 }
 
-async fn build_tool_with_bearer(
-    name: &str,
-    url: &str,
-    bearer: Option<&str>,
-) -> Result<A2aTool> {
+async fn build_tool_with_bearer(name: &str, url: &str, bearer: Option<&str>) -> Result<A2aTool> {
     // Sanitize tool name for LLM function-calling: must match
     // [a-zA-Z0-9_-]+ on most providers. Slugify naively.
     let tool_name = format!(

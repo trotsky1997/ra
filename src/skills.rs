@@ -81,6 +81,8 @@ pub struct ResourceBundle {
     /// `[openspec] enabled && agent_own` when discovery comes up empty;
     /// ignored when `openspec` is `Some`.
     pub openspec_bootstrap: bool,
+    /// Agent-owned Graphify R2A graph workflow, if enabled.
+    pub graphify: Option<crate::graphify::GraphifyWorkflow>,
 }
 
 impl ResourceBundle {
@@ -92,7 +94,8 @@ impl ResourceBundle {
     /// 1. AGENTS.md walked from project root → cwd (so deepest wins)
     /// 2. Plain `[resources]` files in the order they were configured
     /// 3. OpenSpec catalog (capability specs + active changes), if any
-    /// 4. Skill descriptions only (progressive disclosure), each with
+    /// 4. Graphify R2A graph workflow and native tool hints, if any
+    /// 5. Skill descriptions only (progressive disclosure), each with
     ///    a path hint so the LLM can `read` the SKILL.md when needed
     pub fn build_system_prompt(&self) -> Option<String> {
         let mut buf = String::new();
@@ -130,7 +133,17 @@ impl ResourceBundle {
             ensure_trailing_blank(&mut buf);
         }
 
-        // 4. skills as a structured catalog (description only).
+        // 4. Graphify catalog (progressive disclosure, query-first).
+        if let Some(section) = self
+            .graphify
+            .as_ref()
+            .and_then(|p| p.build_system_prompt_section())
+        {
+            buf.push_str(&section);
+            ensure_trailing_blank(&mut buf);
+        }
+
+        // 5. skills as a structured catalog (description only).
         if !self.skills.is_empty() {
             buf.push_str("# Skills\n\n");
             buf.push_str(
@@ -187,9 +200,9 @@ pub fn load_skills(patterns: &[String]) -> Vec<Skill> {
 /// `[skills] discover = true`. Deliberately small: just Ra's own
 /// project + global folder, plus the cross-agent `./.agents/skills/`
 /// + `~/.agents/skills/` layout. Anything else (per-agent
-/// `.claude/skills/`, catalog-style `skills/.curated/`, …) goes
-/// in `[skills] paths` explicitly so the discovery surface stays
-/// predictable.
+///   `.claude/skills/`, catalog-style `skills/.curated/`, …) goes
+///   in `[skills] paths` explicitly so the discovery surface stays
+///   predictable.
 pub fn default_discover_globs() -> Vec<String> {
     vec![
         "./.ra/skills/**/SKILL.md".to_string(),
@@ -303,7 +316,7 @@ fn parse_skill(p: &Path) -> Result<Skill> {
 fn split_frontmatter(s: &str) -> Option<(&str, &str)> {
     // Skip BOM and leading whitespace.
     let s = s.strip_prefix('\u{FEFF}').unwrap_or(s);
-    let s = s.trim_start_matches(|c: char| c == ' ' || c == '\t' || c == '\r');
+    let s = s.trim_start_matches([' ', '\t', '\r']);
     let after_first = s
         .strip_prefix("---\n")
         .or_else(|| s.strip_prefix("---\r\n"))?;
@@ -480,7 +493,10 @@ pub fn build_resource_bundle(config: &crate::config::RaConfig, emit_logs: bool) 
     if !plain_paths.is_empty() {
         bundle.plain = load_plain_resources(&plain_paths);
         if !bundle.plain.is_empty() {
-            log(&format!("[ra] loaded {} plain resource(s)", bundle.plain.len()));
+            log(&format!(
+                "[ra] loaded {} plain resource(s)",
+                bundle.plain.len()
+            ));
         }
     }
 

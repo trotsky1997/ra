@@ -4,7 +4,9 @@
 
 use ra::{
     config::RaConfig,
-    skills::{build_resource_bundle, default_discover_globs, load_skills, ResourceBundle},
+    skills::{
+        build_resource_bundle, default_discover_globs, load_skills, ResourceBundle, SkillAgentMode,
+    },
 };
 use std::fs;
 use std::sync::{Mutex, OnceLock};
@@ -208,4 +210,72 @@ fn prompt_map_preserves_skill_arguments_metadata() {
         ]
     );
     assert!(template.append_arguments_fallback);
+}
+
+#[test]
+fn skill_parser_preserves_advanced_runtime_frontmatter() {
+    let _guard = cwd_lock();
+    let tmp = TempDir::new().unwrap();
+    let cwd = tmp.path();
+    let skill_dir = cwd.join(".claude/skills/advanced");
+    fs::create_dir_all(&skill_dir).unwrap();
+    fs::write(
+        skill_dir.join("SKILL.md"),
+        r#"---
+description: Advanced skill
+model: review-model
+effort: high
+context: Keep output concise.
+agent: fork
+shell: bash
+allowed-tools: [read, "Bash(git status:*)"]
+disallowed-tools: "write, edit"
+hooks:
+  PreToolUse:
+    - matcher: bash
+      command: "echo hook"
+      timeout: 1
+---
+
+Advanced body.
+"#,
+    )
+    .unwrap();
+
+    std::env::set_current_dir(cwd).unwrap();
+
+    let skills = load_skills(&default_discover_globs());
+    let skill = skills
+        .iter()
+        .find(|s| s.command_name == "advanced")
+        .expect("advanced skill should load");
+
+    assert_eq!(skill.runtime.model.as_deref(), Some("review-model"));
+    assert_eq!(skill.runtime.effort.as_deref(), Some("high"));
+    assert_eq!(
+        skill.runtime.context.as_deref(),
+        Some("Keep output concise.")
+    );
+    assert_eq!(skill.runtime.agent, Some(SkillAgentMode::Fork));
+    assert_eq!(skill.runtime.shell.as_deref(), Some("bash"));
+    assert_eq!(
+        skill.runtime.allowed_tools,
+        vec!["read".to_string(), "Bash(git status:*)".to_string()]
+    );
+    assert_eq!(
+        skill.runtime.disallowed_tools,
+        vec!["write".to_string(), "edit".to_string()]
+    );
+    assert_eq!(skill.runtime.hooks.pre_tool_use.len(), 1);
+
+    let bundle = ResourceBundle {
+        skills,
+        ..ResourceBundle::default()
+    };
+    let slash = bundle.prompt_map();
+    let template = slash.get("advanced").expect("advanced slash template");
+    assert!(
+        template.runtime.is_some(),
+        "advanced runtime metadata must flow into slash templates"
+    );
 }

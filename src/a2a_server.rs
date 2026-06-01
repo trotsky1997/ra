@@ -184,6 +184,10 @@ impl RunnerHost for A2aState {
         // typically don't type slash commands, so we stay terse.
         vec![(self.model_factory.default_model_id(), "Default".into())]
     }
+
+    fn build_model_for_id(&self, model_id: &str) -> Option<Arc<dyn Model>> {
+        self.model_factory.build(model_id)
+    }
 }
 
 /// The A2A executor. Each incoming `SendMessage` / `SendStreamingMessage`

@@ -54,6 +54,19 @@ pub struct Session {
     /// can pre-route through `rtk rewrite`. Default
     /// (`RtkRewriter::default()`) is a no-op pass-through.
     rtk: crate::tools::RtkRewriter,
+    /// Invocation-scoped runtime constraints for direct skill execution.
+    runtime_scope: Arc<Mutex<Option<SessionRuntimeScope>>>,
+    /// Serializes prompt invocations so scoped overrides cannot overlap.
+    prompt_lock: Arc<Mutex<()>>,
+}
+
+/// Temporary runtime controls used for a single `prompt()` invocation.
+#[derive(Clone)]
+pub struct SessionRuntimeScope {
+    pub model: Option<Arc<dyn Model>>,
+    pub allowed_tools: Vec<String>,
+    pub disallowed_tools: Vec<String>,
+    pub hooks: Option<Arc<crate::hooks::HookEngine>>,
 }
 
 /// Result of one `prompt()` call.
@@ -87,6 +100,8 @@ impl Session {
             hooks: None,
             file_approver: None,
             rtk: crate::tools::RtkRewriter::default(),
+            runtime_scope: Arc::new(Mutex::new(None)),
+            prompt_lock: Arc::new(Mutex::new(())),
         }
     }
 
@@ -125,6 +140,17 @@ impl Session {
 
     pub fn hooks(&self) -> Option<&Arc<crate::hooks::HookEngine>> {
         self.hooks.as_ref()
+    }
+
+    pub fn effective_hooks_for_scope(
+        &self,
+        scope: Option<&SessionRuntimeScope>,
+    ) -> Option<Arc<crate::hooks::HookEngine>> {
+        effective_hooks(self.hooks.as_ref(), scope)
+    }
+
+    pub fn cwd(&self) -> &std::path::Path {
+        &self.cwd
     }
 
     /// Set or replace the system-style preamble injected at the head of
@@ -254,6 +280,56 @@ impl Session {
 
     /// Send a user message and run the turn loop to completion or cancellation.
     pub async fn prompt(&self, user_text: impl Into<String>) -> Result<PromptOutcome> {
+        let _prompt_guard = self.prompt_lock.clone().lock_owned().await;
+        self.prompt_unlocked(user_text.into()).await
+    }
+
+    /// Send a user message with temporary runtime controls. The controls apply
+    /// only to this invocation and are cleared even if the turn returns an
+    /// error.
+    pub async fn prompt_scoped(
+        &self,
+        user_text: impl Into<String>,
+        scope: SessionRuntimeScope,
+    ) -> Result<PromptOutcome> {
+        let prompt_guard = self.prompt_lock.clone().lock_owned().await;
+        *self.runtime_scope.lock().await = Some(scope);
+        let result = self.prompt_unlocked(user_text.into()).await;
+        *self.runtime_scope.lock().await = None;
+        drop(prompt_guard);
+        result
+    }
+
+    /// Run a prompt against a child transcript initialized from the current
+    /// parent transcript, then restore the parent and append only the child's
+    /// final assistant text. Used by `agent: fork` skill invocation.
+    pub async fn prompt_forked(
+        &self,
+        user_text: impl Into<String>,
+        scope: Option<SessionRuntimeScope>,
+    ) -> Result<PromptOutcome> {
+        let _prompt_guard = self.prompt_lock.clone().lock_owned().await;
+        let parent_snapshot = self.snapshot_messages().await;
+        if let Some(scope) = scope {
+            *self.runtime_scope.lock().await = Some(scope);
+        }
+        let result = self.prompt_unlocked(user_text.into()).await;
+        *self.runtime_scope.lock().await = None;
+        let child_messages = self.snapshot_messages().await;
+        self.restore_messages(parent_snapshot).await;
+        let outcome = result?;
+        if let Some(final_text) = final_assistant_text(&child_messages) {
+            let mut restored = self.snapshot_messages().await;
+            restored.push(Message::Assistant {
+                content: final_text,
+                tool_calls: Vec::new(),
+            });
+            self.restore_messages(restored).await;
+        }
+        Ok(outcome)
+    }
+
+    async fn prompt_unlocked(&self, user_text: String) -> Result<PromptOutcome> {
         // Re-arm the cancel token for this prompt invocation.
         let token = {
             let mut guard = self.cancel.lock().await;
@@ -261,9 +337,10 @@ impl Session {
             guard.clone()
         };
 
-        self.messages.lock().await.push(Message::User {
-            content: user_text.into(),
-        });
+        self.messages
+            .lock()
+            .await
+            .push(Message::User { content: user_text });
         let _ = self.tx.send(Event::AgentStart);
 
         let outcome = tokio::select! {
@@ -309,16 +386,22 @@ impl Session {
         } else {
             history
         };
+        let scope = self.runtime_scope.lock().await.clone();
         let specs: Vec<ToolSpec> = self
             .tools
             .values()
+            .filter(|t| tool_allowed(t.name(), scope.as_ref()))
             .map(|t| ToolSpec {
                 name: t.name().to_string(),
                 description: t.description().to_string(),
                 parameters: t.schema(),
             })
             .collect();
-        let model = self.model.read().await.clone();
+        let model = if let Some(model) = scope.as_ref().and_then(|s| s.model.clone()) {
+            model
+        } else {
+            self.model.read().await.clone()
+        };
         // ATOF: scope the whole streamed response from the model layer.
         // Drops at the end of the stream-consumption loop, before tool
         // execution starts, so each tool gets its own sibling Tool scope
@@ -357,6 +440,16 @@ impl Session {
         });
 
         for call in pending_calls {
+            if !tool_allowed(&call.name, scope.as_ref()) {
+                let result = ToolResult {
+                    call_id: call.id.clone(),
+                    is_error: true,
+                    content: format!("tool `{}` denied by skill-scoped tool policy", call.name),
+                };
+                let _ = self.tx.send(Event::ToolCallEnd(result.clone()));
+                self.messages.lock().await.push(Message::ToolResult(result));
+                continue;
+            }
             let tool = self
                 .tools
                 .get(&call.name)
@@ -364,7 +457,8 @@ impl Session {
                 .clone();
 
             // PreToolUse hook: any deny short-circuits the tool entirely.
-            let pre_decision = if let Some(h) = &self.hooks {
+            let scoped_hooks = self.effective_hooks_for_scope(scope.as_ref());
+            let pre_decision = if let Some(h) = &scoped_hooks {
                 h.pre_tool_use(self.session_id.as_deref(), &call.name, &call.input)
                     .await
             } else {
@@ -410,7 +504,7 @@ impl Session {
             }
 
             // PostToolUse hook: may block, kill, or append context.
-            if let Some(h) = &self.hooks {
+            if let Some(h) = &scoped_hooks {
                 let post = h
                     .post_tool_use(
                         self.session_id.as_deref(),
@@ -438,4 +532,54 @@ impl Session {
         let _ = self.tx.send(Event::TurnEnd);
         Ok(stop)
     }
+}
+
+fn effective_hooks(
+    session_hooks: Option<&Arc<crate::hooks::HookEngine>>,
+    scope: Option<&SessionRuntimeScope>,
+) -> Option<Arc<crate::hooks::HookEngine>> {
+    match (session_hooks, scope.and_then(|s| s.hooks.as_ref())) {
+        (Some(base), Some(extra)) => Some(Arc::new(base.merged_with(extra))),
+        (Some(base), None) => Some(base.clone()),
+        (None, Some(extra)) => Some(extra.clone()),
+        (None, None) => None,
+    }
+}
+
+fn tool_allowed(name: &str, scope: Option<&SessionRuntimeScope>) -> bool {
+    let Some(scope) = scope else {
+        return true;
+    };
+    if !scope.allowed_tools.is_empty()
+        && !scope
+            .allowed_tools
+            .iter()
+            .any(|decl| tool_decl_matches(decl, name))
+    {
+        return false;
+    }
+    !scope
+        .disallowed_tools
+        .iter()
+        .any(|decl| tool_decl_matches(decl, name))
+}
+
+fn tool_decl_matches(decl: &str, name: &str) -> bool {
+    let decl = decl.trim();
+    if decl == "*" || decl == name {
+        return true;
+    }
+    let head = decl
+        .split_once('(')
+        .map(|(tool, _)| tool)
+        .unwrap_or(decl)
+        .trim();
+    head == name
+}
+
+fn final_assistant_text(messages: &[Message]) -> Option<String> {
+    messages.iter().rev().find_map(|msg| match msg {
+        Message::Assistant { content, .. } if !content.is_empty() => Some(content.clone()),
+        _ => None,
+    })
 }

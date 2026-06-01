@@ -438,11 +438,11 @@
       "additionalProperties": false
     },
     "OpenlspSection": {
-      "description": "`[openlsp]` — native [openlsp](https://github.com/trotsky1997/openlsp) integration. When enabled (the default), Ra registers a built-in `lsp` tool that dispatches openlsp command envelopes via a child process. The tool is silently omitted if no openlsp binary can be resolved.",
+      "description": "`[openlsp]` — native [openlsp-cli](https://github.com/trotsky1997/openlsp) integration. When enabled (the default), Ra registers a built-in `lsp` tool that invokes openlsp-cli as a child process with argv flags. The tool is silently omitted if no openlsp-cli binary can be resolved.",
       "type": "object",
       "properties": {
         "binary": {
-          "description": "Override the openlsp binary path. By default Ra tries `openlsp` on PATH, then `bunx openlsp` if `bun` is available.",
+          "description": "Override the openlsp-cli binary path. By default Ra tries `openlsp-cli` on PATH, then `openlsp` (alias), then `bunx openlsp-cli` if `bun` is available.",
           "default": null,
           "type": [
             "string",
@@ -450,7 +450,7 @@
           ]
         },
         "enabled": {
-          "description": "Default true. Set false to disable the lsp built-in tool even when openlsp is installed.",
+          "description": "Default true. Set false to disable the lsp built-in tool even when openlsp-cli is installed.",
           "default": true,
           "type": "boolean"
         },
@@ -461,7 +461,7 @@
           "format": "double"
         },
         "workspace_root": {
-          "description": "Workspace root passed to openlsp via `--workspace-root`. Defaults to the session cwd when unset.",
+          "description": "Workspace root passed to openlsp-cli via `--workspace-root`. Defaults to the session cwd when unset.",
           "default": null,
           "type": [
             "string",

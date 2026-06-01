@@ -491,23 +491,24 @@ impl<'de> Deserialize<'de> for RtkMode {
     }
 }
 
-/// `[openlsp]` — native [openlsp](https://github.com/trotsky1997/openlsp)
+/// `[openlsp]` — native [openlsp-cli](https://github.com/trotsky1997/openlsp)
 /// integration. When enabled (the default), Ra registers a built-in `lsp`
-/// tool that dispatches openlsp command envelopes via a child process.
-/// The tool is silently omitted if no openlsp binary can be resolved.
+/// tool that invokes openlsp-cli as a child process with argv flags.
+/// The tool is silently omitted if no openlsp-cli binary can be resolved.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct OpenlspSection {
     /// Default true. Set false to disable the lsp built-in tool even when
-    /// openlsp is installed.
+    /// openlsp-cli is installed.
     #[serde(default = "default_true")]
     pub enabled: bool,
-    /// Override the openlsp binary path. By default Ra tries `openlsp` on
-    /// PATH, then `bunx openlsp` if `bun` is available.
+    /// Override the openlsp-cli binary path. By default Ra tries `openlsp-cli`
+    /// on PATH, then `openlsp` (alias), then `bunx openlsp-cli` if `bun` is
+    /// available.
     #[serde(default)]
     pub binary: Option<String>,
-    /// Workspace root passed to openlsp via `--workspace-root`. Defaults to
-    /// the session cwd when unset.
+    /// Workspace root passed to openlsp-cli via `--workspace-root`. Defaults
+    /// to the session cwd when unset.
     #[serde(default)]
     pub workspace_root: Option<String>,
     /// Per-call timeout in seconds. Default 30.0.

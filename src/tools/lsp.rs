@@ -3,7 +3,7 @@
 //! analyze) without requiring the user to configure an MCP server.
 //!
 //! openlsp-cli is argv-based: each invocation is a subcommand with flags.
-//! Example: `openlsp-cli lsp --operation diagnostics --file-path src/main.rs --json`
+//! Example: `openlsp-cli lsp --operation diagnostics --file src/main.rs --json`
 //!
 //! Binary resolution order:
 //!   1. `[openlsp] binary` config override
@@ -88,9 +88,9 @@ pub struct LspParams {
     /// `"goToDefinition"`, `"hover"`, `"findReferences"`, `"rename"`).
     #[serde(default)]
     pub operation: Option<String>,
-    /// File path for file-scoped operations (`--file-path`).
+    /// File path for file-scoped operations (`--file`).
     #[serde(default)]
-    pub file_path: Option<String>,
+    pub file: Option<String>,
     /// Line number (1-based) for position-scoped operations (`--line`).
     #[serde(default)]
     pub line: Option<u32>,
@@ -128,7 +128,7 @@ impl Tool for LspTool {
          Set `command` to the subcommand (`lsp`, `format`, `analyze`, \
          `capabilities`, `config`, `session-close`). For `lsp`, also set \
          `operation` (e.g. `diagnostics`, `goToDefinition`, `hover`, \
-         `findReferences`) and `file_path`. Requires openlsp-cli on PATH \
+         `findReferences`) and `file`. Requires openlsp-cli on PATH \
          or configured via [openlsp] binary in ra.toml."
     }
 
@@ -159,8 +159,8 @@ impl Tool for LspTool {
         }
 
         // File path.
-        if let Some(ref fp) = params.file_path {
-            cmd.arg("--file-path").arg(fp);
+        if let Some(ref fp) = params.file {
+            cmd.arg("--file").arg(fp);
         }
 
         // Position.
@@ -308,7 +308,7 @@ mod tests {
         let input = serde_json::json!({
             "command": "lsp",
             "operation": "diagnostics",
-            "file_path": "src/main.rs"
+            "file": "src/main.rs"
         });
 
         // sh exits 0, so we get the echoed args back.
@@ -320,7 +320,11 @@ mod tests {
             out.contains("diagnostics"),
             "missing operation value: {out}"
         );
-        assert!(out.contains("--file-path"), "missing --file-path: {out}");
+        assert!(out.contains("--file"), "missing --file: {out}");
+        assert!(
+            !out.contains("--file-path"),
+            "--file-path must not appear (upstream uses --file): {out}"
+        );
         assert!(out.contains("src/main.rs"), "missing file path: {out}");
         assert!(
             out.contains("--workspace-root"),

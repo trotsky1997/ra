@@ -142,13 +142,11 @@ pub struct SkillsSection {
     /// Master switch. Default true.
     #[serde(default = "default_true")]
     pub enabled: bool,
-    /// Auto-discover skills from the standard skills.sh layouts:
-    /// `./.ra/skills/`, `~/.ra/skills/`, plus the shared cross-agent
-    /// folders `.claude/skills/`, `.cursor/skills/`, `.codex/skills/`,
-    /// `.kiro/skills/`, `.opencode/skills/` and the catalog-style
-    /// `skills/`, `skills/.curated/`, `skills/.experimental/`,
-    /// `skills/.system/`. Default true so `npx skills add` and bare
-    /// project layouts Just Work.
+    /// Auto-discover skills from Ra-native, universal/cross-agent, and
+    /// Claude Code layouts: `./.ra/skills/`, `~/.ra/skills/`,
+    /// `./.agents/skills/`, `~/.agents/skills/`, `./.claude/skills/`,
+    /// and `~/.claude/skills/`. Default true so project and personal
+    /// skills work without explicit paths.
     #[serde(default = "default_true")]
     pub discover: bool,
     /// Extra glob patterns expanded against `~` and the cwd. Each match

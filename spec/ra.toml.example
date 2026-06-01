@@ -49,21 +49,24 @@ api_key_env = "ANTHROPIC_API_KEY"
 # builtin = ["read", "write", "edit", "bash", "ast_grep", "git", "gh", "grep", "glob", "ls", "fuzzy", "apply_patch"]
 builtin = []
 
-# ─── Skills (agentskills.io v1) ─────────────────────────────────────
-# Native skills.sh (https://github.com/vercel-labs/skills) integration:
+# ─── Skills (Claude Code / agentskills.io) ──────────────────────────
+# Native skills.sh (https://github.com/vercel-labs/skills) and
+# Claude Code-compatible skill integration:
 # `discover = true` (default) auto-loads SKILL.md files from
 #   ./.ra/skills/                 — project-local Ra skills
 #   ~/.ra/skills/                 — user-global Ra skills
 #   ./.agents/skills/             — cross-agent project layout
 #                                   (matches `npx skills add ... -a universal`)
 #   ~/.agents/skills/             — cross-agent global layout
-# Anything else (per-agent `.claude/skills/`, catalog-style
-# `skills/.curated/`, …) goes in `paths` explicitly.
+#   ./.claude/skills/             — Claude Code project skills
+#   ~/.claude/skills/             — Claude Code personal skills
+# Other catalog-style layouts (`skills/.curated/`, …) go in `paths`
+# explicitly.
 [skills]
 enabled = true
 discover = true
 paths = []
-# paths = ["./.claude/skills/**/SKILL.md"]   # opt-in per-agent layouts
+# paths = ["./skills/.curated/**/SKILL.md"]  # opt-in extra layouts
 
 # ─── Prompt templates → slash commands ──────────────────────────────
 [prompts]

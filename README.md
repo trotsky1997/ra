@@ -33,15 +33,19 @@ The eye watching from the banner is 𓂀 (U+13080).
 - **Multi-backend LLM layer.** Anthropic, OpenAI, Google, DeepSeek,
   Ollama, Groq, xAI — and any OpenAI-compatible Responses-API endpoint
   — via the [graniet/llm](https://github.com/graniet/llm) crate.
-- **Skills + prompts + AGENTS.md.** [agentskills.io v1](https://agentskills.io/)
-  SKILL.md files (YAML frontmatter, progressive disclosure),
+- **Skills + prompts + AGENTS.md.** Claude Code-compatible
+  [agentskills.io](https://agentskills.io/) `SKILL.md` files (YAML
+  frontmatter, progressive disclosure, optional `name`/`description`,
+  `disable-model-invocation`, `user-invocable`, and `/skill-name`
+  direct invocation),
   user-defined slash-command prompt templates, and
   [agents.md](https://agents.md/) auto-discovery, all unified through a
   single resource bundle that becomes the agent's system prompt. Ships
   native [skills.sh](https://github.com/vercel-labs/skills) support:
   `npx skills add <repo> -a universal` lands SKILL.md files in
-  `./.agents/skills/` and Ra picks them up automatically — no config
-  needed.
+  `./.agents/skills/` and Ra picks them up automatically. Claude Code
+  project/personal skills in `./.claude/skills/` and `~/.claude/skills/`
+  are discovered automatically too.
 - **Native OpenSpec.** Auto-discovers a project's
   [OpenSpec](https://github.com/Fission-AI/OpenSpec) `openspec/`
   directory (walking cwd → git root, like AGENTS.md) and folds a catalog
@@ -225,7 +229,7 @@ Authoritative schemas live in [`spec/`](spec/) — see
 | ATIF | `spec/atif-v1.7.json` | written on every session |
 | ATOF | `spec/atof-v0.1.json` | emitted via NeMo Relay |
 | HCP-flavored config | `spec/ra-config.schema.json` | live JSON Schema |
-| Skills | [agentskills.io v1](https://agentskills.io/specification.md) | YAML frontmatter, progressive disclosure |
+| Skills | [Claude Code skills](https://code.claude.com/docs/en/skills.md) / [agentskills.io](https://agentskills.io/specification.md) | YAML frontmatter, progressive disclosure, direct `/skill-name` invocation |
 | AGENTS.md | [agents.md](https://agents.md/) | nearest-file-wins discovery |
 | OpenSpec | [Fission-AI/OpenSpec](https://github.com/Fission-AI/OpenSpec) | `openspec/` discovery, progressive disclosure |
 | MCP | rmcp 1.7 (stdio + streamable HTTP) | client only |

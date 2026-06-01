@@ -2,10 +2,12 @@
 //!
 //! Three external specs feed into one unified `ResourceBundle`:
 //!
-//! - **agentskills.io v1** — `SKILL.md` with YAML frontmatter
-//!   (name + description required; license/compatibility/metadata/
-//!   allowed-tools optional). Progressive-disclosure: only the
-//!   description goes into the system prompt at startup; the LLM is
+//! - **Claude Code / agentskills.io skills** — `SKILL.md` with YAML
+//!   frontmatter. `name` and `description` are optional in Claude Code:
+//!   the command name comes from the skill directory, display name falls
+//!   back to that command name, and description falls back to the first
+//!   Markdown paragraph. Progressive-disclosure: only model-invocable
+//!   skill descriptions go into the system prompt at startup; the LLM is
 //!   instructed to call the `read` tool on the SKILL.md path when it
 //!   wants the full body.
 //! - **agents.md** — free-form `AGENTS.md` files autodiscovered
@@ -22,17 +24,27 @@ use globset::{Glob, GlobSetBuilder};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
-/// One agent skill following the agentskills.io v1 spec.
+/// One agent skill following Claude Code / agentskills.io conventions.
 #[derive(Debug, Clone)]
 pub struct Skill {
-    /// `name:` from frontmatter; lowercased dash-only identifier.
+    /// Slash command name, derived from the containing directory.
+    pub command_name: String,
+    /// Display name from frontmatter `name`, falling back to
+    /// `command_name`.
     pub name: String,
-    /// `description:` from frontmatter; the LLM-visible blurb.
+    /// Model-facing blurb from `description` + `when_to_use`, or the
+    /// first Markdown paragraph when omitted.
     pub description: String,
+    /// Optional `when_to_use:` field appended to the model-facing blurb.
+    pub when_to_use: Option<String>,
     /// Optional `compatibility:` field.
     pub compatibility: Option<String>,
     /// Optional `license:` field.
     pub license: Option<String>,
+    /// If true, omit this skill from the model-facing catalog.
+    pub disable_model_invocation: bool,
+    /// If false, do not expose this skill as a direct slash command.
+    pub user_invocable: bool,
     /// Path to the SKILL.md file on disk.
     pub path: PathBuf,
     /// The Markdown body **after** the frontmatter. Not loaded into the
@@ -144,17 +156,23 @@ impl ResourceBundle {
         }
 
         // 5. skills as a structured catalog (description only).
-        if !self.skills.is_empty() {
+        let model_visible_skills: Vec<&Skill> = self
+            .skills
+            .iter()
+            .filter(|s| !s.disable_model_invocation)
+            .collect();
+        if !model_visible_skills.is_empty() {
             buf.push_str("# Skills\n\n");
             buf.push_str(
                 "The following skills are available. Each entry shows its name and a one-paragraph \
                  description. To use a skill, call the `read` tool on its path to load full \
                  instructions before acting.\n\n",
             );
-            for s in &self.skills {
+            for s in model_visible_skills {
                 buf.push_str(&format!(
-                    "## {}\n- description: {}\n- path: `{}`\n",
+                    "## {}\n- command: /{}\n- description: {}\n- path: `{}`\n",
                     s.name,
+                    s.command_name,
                     s.description.trim(),
                     s.path.display()
                 ));
@@ -174,10 +192,16 @@ impl ResourceBundle {
 
     /// Slash-command name → template body, ready to hand to SessionRunner.
     pub fn prompt_map(&self) -> std::collections::HashMap<String, String> {
-        self.prompts
+        let mut map: std::collections::HashMap<String, String> = self
+            .skills
             .iter()
-            .map(|p| (p.name.clone(), p.body.clone()))
-            .collect()
+            .filter(|s| s.user_invocable)
+            .map(|s| (s.command_name.clone(), s.body.clone()))
+            .collect();
+        for p in &self.prompts {
+            map.insert(p.name.clone(), p.body.clone());
+        }
+        map
     }
 }
 
@@ -197,18 +221,16 @@ pub fn load_skills(patterns: &[String]) -> Vec<Skill> {
 }
 
 /// The default skill-discovery globs Ra scans when
-/// `[skills] discover = true`. Deliberately small: just Ra's own
-/// project + global folder, plus the cross-agent `./.agents/skills/`
-/// + `~/.agents/skills/` layout. Anything else (per-agent
-///   `.claude/skills/`, catalog-style `skills/.curated/`, …) goes
-///   in `[skills] paths` explicitly so the discovery surface stays
-///   predictable.
+/// `[skills] discover = true`: Ra-native skills, universal/cross-agent
+/// skills, and Claude Code's project/personal skill directories.
 pub fn default_discover_globs() -> Vec<String> {
     vec![
         "./.ra/skills/**/SKILL.md".to_string(),
         "~/.ra/skills/**/SKILL.md".to_string(),
         "./.agents/skills/**/SKILL.md".to_string(),
         "~/.agents/skills/**/SKILL.md".to_string(),
+        "./.claude/skills/**/SKILL.md".to_string(),
+        "~/.claude/skills/**/SKILL.md".to_string(),
     ]
 }
 
@@ -283,11 +305,38 @@ pub fn load_plain_resources(paths: &[String]) -> Vec<PlainResource> {
 struct Frontmatter {
     name: Option<String>,
     description: Option<String>,
+    when_to_use: Option<String>,
     license: Option<String>,
     compatibility: Option<String>,
+    #[serde(rename = "argument-hint")]
+    #[allow(dead_code)]
+    argument_hint: Option<String>,
+    #[allow(dead_code)]
+    arguments: Option<serde_yaml::Value>,
+    #[serde(rename = "disable-model-invocation")]
+    disable_model_invocation: Option<bool>,
+    #[serde(rename = "user-invocable")]
+    user_invocable: Option<bool>,
     #[serde(rename = "allowed-tools")]
     #[allow(dead_code)]
-    allowed_tools: Option<String>,
+    allowed_tools: Option<serde_yaml::Value>,
+    #[serde(rename = "disallowed-tools")]
+    #[allow(dead_code)]
+    disallowed_tools: Option<serde_yaml::Value>,
+    #[allow(dead_code)]
+    model: Option<String>,
+    #[allow(dead_code)]
+    effort: Option<String>,
+    #[allow(dead_code)]
+    context: Option<String>,
+    #[allow(dead_code)]
+    agent: Option<String>,
+    #[allow(dead_code)]
+    hooks: Option<serde_yaml::Value>,
+    #[allow(dead_code)]
+    paths: Option<serde_yaml::Value>,
+    #[allow(dead_code)]
+    shell: Option<String>,
 }
 
 fn parse_skill(p: &Path) -> Result<Skill> {
@@ -295,20 +344,74 @@ fn parse_skill(p: &Path) -> Result<Skill> {
     let (fm_raw, body) =
         split_frontmatter(&raw).with_context(|| "missing or malformed YAML frontmatter")?;
     let fm: Frontmatter = serde_yaml::from_str(fm_raw).with_context(|| "parse YAML frontmatter")?;
-    let name = fm
-        .name
-        .ok_or_else(|| anyhow::anyhow!("frontmatter missing required `name`"))?;
-    let description = fm
-        .description
-        .ok_or_else(|| anyhow::anyhow!("frontmatter missing required `description`"))?;
+    let command_name = skill_command_name(p)?;
+    let name = fm.name.clone().unwrap_or_else(|| command_name.clone());
+    let description = skill_description(&fm, body);
     Ok(Skill {
+        command_name,
         name,
         description,
+        when_to_use: fm.when_to_use,
         compatibility: fm.compatibility,
         license: fm.license,
+        disable_model_invocation: fm.disable_model_invocation.unwrap_or(false),
+        user_invocable: fm.user_invocable.unwrap_or(true),
         path: p.to_path_buf(),
         body: body.to_string(),
     })
+}
+
+fn skill_command_name(p: &Path) -> Result<String> {
+    p.parent()
+        .and_then(|dir| dir.file_name())
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| anyhow::anyhow!("cannot derive skill command name from path"))
+}
+
+fn skill_description(fm: &Frontmatter, body: &str) -> String {
+    let mut description = fm
+        .description
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| first_markdown_paragraph(body).unwrap_or_default());
+    if let Some(when) = fm
+        .when_to_use
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        if !description.is_empty() {
+            description.push(' ');
+        }
+        description.push_str(when);
+    }
+    description
+}
+
+fn first_markdown_paragraph(body: &str) -> Option<String> {
+    let mut paragraph: Vec<String> = Vec::new();
+    for line in body.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            if !paragraph.is_empty() {
+                break;
+            }
+            continue;
+        }
+        if trimmed.starts_with('#') && paragraph.is_empty() {
+            continue;
+        }
+        paragraph.push(trimmed.to_string());
+    }
+    if paragraph.is_empty() {
+        None
+    } else {
+        Some(paragraph.join(" "))
+    }
 }
 
 /// Split `--- ... ---` YAML frontmatter from the body. Returns `(yaml,

@@ -1,0 +1,85 @@
+# CI — mirrors the pre-commit checklist in CLAUDE.md.
+#
+# Required gates (must pass): stable build + test, nightly TUI build + test,
+# and a config-schema drift check. These are exactly the commands a
+# contributor is told to run before committing, so green CI == checklist done.
+#
+# Advisory job (non-blocking): rustfmt + clippy. The tree is not fully
+# rustfmt-clean today and CLAUDE.md only asks you to format files you touch,
+# so these run for signal but do not fail the build. Flip `continue-on-error`
+# to false once the tree is clean if you want them enforced.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Cancel superseded runs on the same ref to save runner minutes.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  test:
+    name: stable build + test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo build
+        run: cargo build --verbose
+      - name: cargo test
+        run: cargo test --verbose
+
+  tui:
+    name: nightly TUI build + test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # opentui_rust uses edition 2024 → nightly required (see CLAUDE.md).
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo build --features tui
+        run: cargo +nightly build --features tui --verbose
+      - name: cargo test --features tui
+        run: cargo +nightly test --features tui --verbose
+
+  schema:
+    name: config schema is in sync
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Regenerate from the live RaConfig types and fail if the committed
+      # schema drifted (i.e. someone edited src/config.rs without re-running
+      # `cargo run --bin gen-schema`).
+      - name: regenerate schema
+        run: cargo run --bin gen-schema > spec/ra-config.schema.json
+      - name: check for drift
+        run: git diff --exit-code spec/ra-config.schema.json
+
+  lint:
+    name: rustfmt + clippy (advisory)
+    runs-on: ubuntu-latest
+    # Non-blocking: the tree is not fully fmt-clean yet. Surfaces signal
+    # without gating merges. Set to false to enforce once clean.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo fmt --check
+        run: cargo fmt --all --check
+      - name: cargo clippy
+        run: cargo clippy --all-targets -- -D warnings

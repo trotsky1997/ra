@@ -35,6 +35,8 @@ Authoritative schemas / specs for every protocol Ra speaks or persists to.
 | `tools.md`                        | Reference for `read`/`write`/`edit`/`bash` | hand-written                                        | tracks `src/tools/` |
 | **Hooks — Claude Code wire**      |                                                         |                                                           |           |
 | (no local schema)                 | Wire format follows the upstream Claude Code hooks spec | https://code.claude.com/docs/en/hooks.md                  | reference |
+| **OpenSpec — spec-driven dev**    |                                                         |                                                           |           |
+| (no local schema)                 | `openspec/` directory convention Ra discovers (`src/openspec.rs`) | https://github.com/Fission-AI/OpenSpec          | reference |
 
 ## Regenerating
 

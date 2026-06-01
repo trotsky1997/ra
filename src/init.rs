@@ -49,6 +49,13 @@ paths = []
 
 [agents_md]
 enabled = true
+
+# Native OpenSpec (https://github.com/Fission-AI/OpenSpec) discovery.
+# Ra finds the nearest `openspec/` directory and folds its capability
+# specs + active changes into the system prompt (progressive disclosure).
+[openspec]
+enabled = true
+# path = "./docs/openspec"   # override the auto-discovered location
 "#;
 
 const EXAMPLE_SKILL_TEMPLATE: &str = r#"---

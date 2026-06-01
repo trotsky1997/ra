@@ -3,8 +3,8 @@ use std::sync::Arc;
 use clap::{Parser, Subcommand};
 use llm::builder::LLMBackend;
 use ra::{
-    acp_server::ModelFactory, default_builtins, Event, LlmModel, LlmModelConfig, MockModel, Model,
-    Session,
+    Event, LlmModel, LlmModelConfig, MockModel, Model, Session, acp_server::ModelFactory,
+    default_builtins,
 };
 use tokio::io::{self, AsyncWriteExt};
 
@@ -195,8 +195,7 @@ impl EnvModelFactory {
 
         if let Ok(key) = std::env::var("ANTHROPIC_API_KEY") {
             if !key.is_empty() {
-                let model = std::env::var("RA_MODEL")
-                    .unwrap_or_else(|_| "claude-opus-4-5".into());
+                let model = std::env::var("RA_MODEL").unwrap_or_else(|_| "claude-opus-4-5".into());
                 entries.push(ModelEntry {
                     id: format!("anthropic/{model}"),
                     name: format!("Anthropic {model}"),
@@ -210,8 +209,7 @@ impl EnvModelFactory {
 
         if let Ok(key) = std::env::var("OPENAI_API_KEY") {
             if !key.is_empty() {
-                let model =
-                    std::env::var("RA_MODEL").unwrap_or_else(|_| "gpt-4.1-mini".into());
+                let model = std::env::var("RA_MODEL").unwrap_or_else(|_| "gpt-4.1-mini".into());
                 let base_url = std::env::var("OPENAI_BASE_URL").ok();
                 entries.push(ModelEntry {
                     id: format!("openai/{model}"),
@@ -291,7 +289,10 @@ fn build_model(config: &ra::config::RaConfig) -> (Arc<dyn Model>, Arc<dyn ModelF
             let backend = match parse_backend(&m.backend) {
                 Some(b) => b,
                 None => {
-                    eprintln!("[ra::config] unknown backend '{}' for model '{}', skipping", m.backend, m.name);
+                    eprintln!(
+                        "[ra::config] unknown backend '{}' for model '{}', skipping",
+                        m.backend, m.name
+                    );
                     continue;
                 }
             };
@@ -313,7 +314,10 @@ fn build_model(config: &ra::config::RaConfig) -> (Arc<dyn Model>, Arc<dyn ModelF
         }
         // Honour explicit default if specified
         if let Some(default_name) = &config.model.default {
-            if let Some(idx) = entries.iter().position(|e| e.id.starts_with(&format!("{}/", default_name))) {
+            if let Some(idx) = entries
+                .iter()
+                .position(|e| e.id.starts_with(&format!("{}/", default_name)))
+            {
                 if idx != 0 {
                     entries.swap(0, idx);
                 }
@@ -331,7 +335,9 @@ fn build_model(config: &ra::config::RaConfig) -> (Arc<dyn Model>, Arc<dyn ModelF
             "[ra] default model: {} (backend={:?})",
             entry.id, entry.backend
         );
-        factory.build(&entry.id).expect("default model build failed")
+        factory
+            .build(&entry.id)
+            .expect("default model build failed")
     } else {
         eprintln!("[ra] no API key set; using MockModel");
         Arc::new(MockModel)
@@ -383,9 +389,7 @@ fn apply_obs_config(obs: &ra::config::ObsSection) {
 /// Build A2aTool list from `[[a2a.remote_agents]]`. Each agent may carry
 /// `auth.bearer_env` to point at a Bearer-token env var; when present, we
 /// resolve it here and bake it into the per-agent reqwest client.
-async fn load_a2a_tools_from_config(
-    config: &ra::config::RaConfig,
-) -> Vec<Arc<dyn ra::Tool>> {
+async fn load_a2a_tools_from_config(config: &ra::config::RaConfig) -> Vec<Arc<dyn ra::Tool>> {
     let mut out: Vec<Arc<dyn ra::Tool>> = Vec::new();
     for agent in &config.a2a.remote_agents {
         let bearer = agent
@@ -394,12 +398,9 @@ async fn load_a2a_tools_from_config(
             .and_then(|a| a.bearer_env.as_ref())
             .and_then(|env| std::env::var(env).ok())
             .filter(|s| !s.is_empty());
-        if let Some(t) = ra::a2a_tool::load_remote_tool_with_bearer(
-            &agent.name,
-            &agent.url,
-            bearer.as_deref(),
-        )
-        .await
+        if let Some(t) =
+            ra::a2a_tool::load_remote_tool_with_bearer(&agent.name, &agent.url, bearer.as_deref())
+                .await
         {
             out.push(t);
         }
@@ -420,9 +421,17 @@ async fn run_acp(config: &ra::config::RaConfig) -> anyhow::Result<()> {
     let (system_prompt, prompt_templates) = load_skills_and_prompts(config);
     let hooks = build_hooks(config);
     let rtk = ra::RtkRewriter::from_config(&config.rtk);
-    ra::acp_server::run(model, factory, extra_tools, system_prompt, prompt_templates, hooks, rtk)
-        .await
-        .map_err(|e| anyhow::anyhow!("{e:?}"))?;
+    ra::acp_server::run(
+        model,
+        factory,
+        extra_tools,
+        system_prompt,
+        prompt_templates,
+        hooks,
+        rtk,
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("{e:?}"))?;
     Ok(())
 }
 
@@ -481,7 +490,10 @@ fn build_hooks(config: &ra::config::RaConfig) -> Option<Arc<ra::hooks::HookEngin
 /// return the composed system prompt + slash-template map.
 fn load_skills_and_prompts(
     config: &ra::config::RaConfig,
-) -> (Option<String>, Arc<std::collections::HashMap<String, String>>) {
+) -> (
+    Option<String>,
+    Arc<std::collections::HashMap<String, String>>,
+) {
     let mut bundle = ra::skills::ResourceBundle::default();
 
     if config.skills.enabled {
@@ -511,7 +523,39 @@ fn load_skills_and_prompts(
         let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
         bundle.agents_md = ra::skills::discover_agents_md(&cwd);
         if !bundle.agents_md.is_empty() {
-            eprintln!("[ra] discovered {} AGENTS.md file(s)", bundle.agents_md.len());
+            eprintln!(
+                "[ra] discovered {} AGENTS.md file(s)",
+                bundle.agents_md.len()
+            );
+        }
+    }
+    if config.openspec.enabled {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
+        let project = match &config.openspec.path {
+            // Explicit override: load exactly that dir if it exists.
+            Some(p) => {
+                let dir = ra::config::RaConfig::expand_path(p, &cwd);
+                if dir.is_dir() {
+                    Some(ra::openspec::load(&dir))
+                } else {
+                    eprintln!(
+                        "[ra] openspec.path {} is not a directory; skipping",
+                        dir.display()
+                    );
+                    None
+                }
+            }
+            // Default: walk cwd → git root for an `openspec/` dir.
+            None => ra::openspec::discover(&cwd),
+        };
+        bundle.openspec = project.filter(|p| !p.is_empty());
+        if let Some(p) = &bundle.openspec {
+            eprintln!(
+                "[ra] discovered OpenSpec project at {} ({} spec(s), {} active change(s))",
+                p.root.display(),
+                p.specs.len(),
+                p.changes.len()
+            );
         }
     }
     let mut plain_paths = Vec::new();
@@ -563,10 +607,11 @@ async fn run_print(prompt: Option<String>, config: &ra::config::RaConfig) -> any
     let cwd = std::env::current_dir()?;
     if let Ok(store) = ra::store::SessionStore::for_cwd(&cwd) {
         let messages = session.snapshot_messages().await;
-        let traj =
-            ra::atif_codec::encode(&session_id, build_model_name(config), &messages);
+        let traj = ra::atif_codec::encode(&session_id, build_model_name(config), &messages);
         match store.save(&traj).await {
-            Ok(_) => eprintln!("[ra] saved session {session_id} (resume with `ra resume {session_id} <prompt>`)"),
+            Ok(_) => eprintln!(
+                "[ra] saved session {session_id} (resume with `ra resume {session_id} <prompt>`)"
+            ),
             Err(e) => eprintln!("[ra] warning: could not save session: {e:#}"),
         }
     }
@@ -632,11 +677,7 @@ fn spawn_event_printer(
 
 /// Resume a saved trajectory from disk and continue with a new prompt.
 /// Bucket comes from the current cwd (same key SessionStore uses to save).
-async fn run_resume(
-    id: &str,
-    prompt: String,
-    config: &ra::config::RaConfig,
-) -> anyhow::Result<()> {
+async fn run_resume(id: &str, prompt: String, config: &ra::config::RaConfig) -> anyhow::Result<()> {
     if config.run.banner {
         eprintln!("{BANNER}");
     }
@@ -697,8 +738,8 @@ async fn run_list_sessions(_config: &ra::config::RaConfig) -> anyhow::Result<()>
     }
     println!("# saved sessions in {}", store.bucket().display());
     for m in metas {
-        let modified = chrono::DateTime::<chrono::Utc>::from(m.modified)
-            .format("%Y-%m-%d %H:%M:%S UTC");
+        let modified =
+            chrono::DateTime::<chrono::Utc>::from(m.modified).format("%Y-%m-%d %H:%M:%S UTC");
         match m.title.as_deref() {
             Some(title) => println!("{}\t{modified}\t{title}", m.session_id),
             None => println!("{}\t{modified}", m.session_id),

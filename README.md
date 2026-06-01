@@ -42,6 +42,12 @@ The eye watching from the banner is 𓂀 (U+13080).
   `npx skills add <repo> -a universal` lands SKILL.md files in
   `./.agents/skills/` and Ra picks them up automatically — no config
   needed.
+- **Native OpenSpec.** Auto-discovers a project's
+  [OpenSpec](https://github.com/Fission-AI/OpenSpec) `openspec/`
+  directory (walking cwd → git root, like AGENTS.md) and folds a catalog
+  of its capability specs and active changes — with requirement counts
+  and task progress — into the system prompt via progressive disclosure.
+  Ra consumes the convention; it doesn't reimplement the `openspec` CLI.
 - **HCP-flavored TOML config.** Single `ra.toml` (or `~/.ra.toml`)
   configures models, tools, skills, prompts, hooks, MCP servers, A2A
   serve/auth, remote A2A agents, observability backend, …
@@ -189,6 +195,7 @@ Authoritative schemas live in [`spec/`](spec/) — see
 | HCP-flavored config | `spec/ra-config.schema.json` | live JSON Schema |
 | Skills | [agentskills.io v1](https://agentskills.io/specification.md) | YAML frontmatter, progressive disclosure |
 | AGENTS.md | [agents.md](https://agents.md/) | nearest-file-wins discovery |
+| OpenSpec | [Fission-AI/OpenSpec](https://github.com/Fission-AI/OpenSpec) | `openspec/` discovery, progressive disclosure |
 | MCP | rmcp 1.7 (stdio + streamable HTTP) | client only |
 | Hooks | [Claude Code hooks](https://code.claude.com/docs/en/hooks.md) | wire-compatible subset |
 
@@ -213,6 +220,7 @@ src/
 ├── a2a_tool.rs      consume remote A2A agents as local tools
 ├── mcp.rs           rmcp client → Ra tools
 ├── skills.rs        Skill / Prompt / AGENTS.md / ResourceBundle
+├── openspec.rs      OpenSpec project discovery → system-prompt catalog
 ├── hooks.rs         Claude-Code-spec hook engine
 ├── store.rs         ATIF trajectory persistence
 ├── atif_codec.rs    in-memory ↔ ATIF JSON

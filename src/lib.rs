@@ -11,6 +11,7 @@ pub mod llm_model;
 pub mod mcp;
 pub mod model;
 pub mod nemo_obs;
+pub mod openspec;
 pub mod session;
 pub mod session_runner;
 pub mod skills;

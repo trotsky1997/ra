@@ -303,6 +303,10 @@ impl RunnerHost for SharedState {
             .map(|m| (m.model_id.to_string(), m.name.clone()))
             .collect()
     }
+
+    fn build_model_for_id(&self, model_id: &str) -> Option<Arc<dyn Model>> {
+        self.model_factory.build(model_id)
+    }
 }
 
 /// Bridge between Ra's `ClientHandle` trait and the ACP `ConnectionTo<Client>`.

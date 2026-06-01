@@ -15,14 +15,17 @@
 
 use crate::events::Event as RaEvent;
 use crate::model::Message as RaMessage;
+use crate::model::Model;
 use crate::nemo_obs;
-use crate::session::{PromptOutcome, Session};
-use crate::skills::SlashTemplate;
-use anyhow::Result;
+use crate::session::{PromptOutcome, Session, SessionRuntimeScope};
+use crate::skills::{SkillRuntimeOptions, SlashTemplate};
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use futures::future::BoxFuture;
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Arc;
+use tokio::process::Command;
 
 /// Hint to clients about the kind of work a tool does. Maps to ACP `ToolKind`
 /// and A2A artifact roles, but stays protocol-neutral here.
@@ -79,6 +82,13 @@ pub enum RunnerEvent {
     Finished(RunOutcome),
 }
 
+#[derive(Clone)]
+struct PreparedSkillRuntime {
+    scope: SessionRuntimeScope,
+    stop_hooks: Option<Arc<crate::hooks::HookEngine>>,
+    forked: bool,
+}
+
 /// Narrow capability surface a `SessionRunner` needs from whatever holds
 /// long-lived agent state. Lets the protocol-specific server (ACP,
 /// A2A, …) own the actual `SharedState` without leaking ACP types
@@ -94,6 +104,11 @@ pub trait RunnerHost: Send + Sync {
 
     /// Names + ids of advertised models, used by `/models` slash command.
     fn list_models_for_display(&self) -> Vec<(String, String)>;
+
+    /// Resolve a model id for invocation-scoped skill overrides.
+    fn build_model_for_id(&self, _model_id: &str) -> Option<Arc<dyn Model>> {
+        None
+    }
 }
 
 /// Slash command parsed from a user message.
@@ -206,14 +221,61 @@ impl SessionRunner {
     {
         on_event(RunnerEvent::Started);
 
-        // UserPromptSubmit hook (if any). A block short-circuits the
-        // whole turn loop and surfaces the reason as agent text.
-        // `additionalContext` is prepended as a system-style preamble to
-        // the user prompt so the model sees it on the same turn.
-        let mut user_text = user_text;
-        if let Some(hooks) = self.session.hooks() {
+        let template_names: Vec<&str> = self.prompt_templates.keys().map(|s| s.as_str()).collect();
+        let mut effective_text = user_text;
+        let mut skill_runtime = None;
+        if let Some(cmd) = parse_slash_command(&effective_text, &template_names) {
+            // Built-in slash commands run server-side; user-defined prompt
+            // templates expand into a fresh prompt that *does* hit the LLM.
+            if SLASH_COMMANDS.contains(&cmd.name.as_str()) {
+                self.run_slash(&cmd, on_event).await;
+                return RunOutcome::Completed;
+            }
+            if let Some(template) = self.prompt_templates.get(&cmd.name).cloned() {
+                skill_runtime = template.runtime.clone();
+                if let Some(runtime) = &skill_runtime {
+                    match render_dynamic_shell_context(
+                        template.body.clone(),
+                        runtime,
+                        self.session.cwd(),
+                    )
+                    .await
+                    {
+                        Ok(rendered) => {
+                            let shell_rendered_template = SlashTemplate {
+                                body: rendered,
+                                ..template
+                            };
+                            effective_text =
+                                render_slash_template(&shell_rendered_template, &cmd.args);
+                        }
+                        Err(e) => return RunOutcome::Failed(format!("{e:#}")),
+                    }
+                    if let Some(context) = runtime.prompt_context() {
+                        effective_text = format!("[skill context]\n{context}\n\n{effective_text}");
+                    }
+                } else {
+                    effective_text = render_slash_template(&template, &cmd.args);
+                }
+            }
+        }
+
+        let prepared_runtime = match skill_runtime.as_ref() {
+            Some(runtime) => match self.runtime_scope_for(runtime).await {
+                Ok(prepared) => Some(prepared),
+                Err(e) => return RunOutcome::Failed(format!("{e:#}")),
+            },
+            None => None,
+        };
+        let scope = prepared_runtime
+            .as_ref()
+            .map(|prepared| prepared.scope.clone());
+
+        // UserPromptSubmit hooks run after slash expansion so skill-scoped
+        // hooks observe the same prompt that will reach the model.
+        if let Some(hooks) = self.session.effective_hooks_for_scope(scope.as_ref()) {
             let decision = hooks
-                .user_prompt_submit(Some(&self.session_id), &user_text)
+                .user_prompt_submit(Some(&self.session_id), &effective_text)
                 .await;
             if let Some(reason) = decision.stop.clone() {
                 on_event(RunnerEvent::TextDelta(format!(
@@ -230,29 +292,26 @@ impl SessionRunner {
                 return RunOutcome::Failed(reason);
             }
             if let Some(extra) = decision.additional_context {
-                user_text = format!("[hook context]\n{extra}\n\n{user_text}");
-            }
-        }
-
-        let template_names: Vec<&str> = self.prompt_templates.keys().map(|s| s.as_str()).collect();
-        let mut effective_text = user_text;
-        if let Some(cmd) = parse_slash_command(&effective_text, &template_names) {
-            // Built-in slash commands run server-side; user-defined prompt
-            // templates expand into a fresh prompt that *does* hit the LLM.
-            if SLASH_COMMANDS.contains(&cmd.name.as_str()) {
-                self.run_slash(&cmd, on_event).await;
-                return RunOutcome::Completed;
-            }
-            if let Some(template) = self.prompt_templates.get(&cmd.name).cloned() {
-                effective_text = render_slash_template(&template, &cmd.args);
+                effective_text = format!("[hook context]\n{extra}\n\n{effective_text}");
             }
         }
 
         // Subscribe BEFORE prompt() so we don't miss the first events.
         let mut rx = self.session.subscribe();
         let session = self.session.clone();
-        let prompt_fut: BoxFuture<'_, Result<PromptOutcome>> =
-            Box::pin(async move { session.prompt(effective_text).await });
+        let forked = prepared_runtime
+            .as_ref()
+            .map(|prepared| prepared.forked)
+            .unwrap_or(false);
+        let prompt_fut: BoxFuture<'_, Result<PromptOutcome>> = Box::pin(async move {
+            if forked {
+                session.prompt_forked(effective_text, scope).await
+            } else if let Some(scope) = scope {
+                session.prompt_scoped(effective_text, scope).await
+            } else {
+                session.prompt(effective_text).await
+            }
+        });
 
         // Pump events from the broadcast channel into the callback while
         // the prompt future runs concurrently. Stops when AgentEnd is
@@ -329,7 +388,43 @@ impl SessionRunner {
                 }
             }
         }
-        outcome.unwrap_or(RunOutcome::Completed)
+        let outcome = outcome.unwrap_or(RunOutcome::Completed);
+        if matches!(outcome, RunOutcome::Completed) {
+            if let Some(hooks) = prepared_runtime.and_then(|prepared| prepared.stop_hooks) {
+                hooks.stop(Some(&self.session_id)).await;
+            }
+        }
+        outcome
+    }
+
+    async fn runtime_scope_for(
+        &self,
+        runtime: &SkillRuntimeOptions,
+    ) -> Result<PreparedSkillRuntime> {
+        let model = match runtime.model.as_deref() {
+            Some(model_id) => Some(
+                self.host
+                    .build_model_for_id(model_id)
+                    .with_context(|| format!("skill requested unknown model `{model_id}`"))?,
+            ),
+            None => None,
+        };
+        let skill_hooks = crate::hooks::HookEngine::from_config(&runtime.hooks);
+        let hooks = if skill_hooks.is_empty() {
+            None
+        } else {
+            Some(Arc::new(skill_hooks))
+        };
+        Ok(PreparedSkillRuntime {
+            scope: SessionRuntimeScope {
+                model,
+                allowed_tools: runtime.allowed_tools.clone(),
+                disallowed_tools: runtime.disallowed_tools.clone(),
+                hooks: hooks.clone(),
+            },
+            stop_hooks: hooks,
+            forked: runtime.is_fork(),
+        })
     }
 
     async fn run_slash<F>(&self, cmd: &SlashCommand, on_event: &mut F)
@@ -432,6 +527,118 @@ fn render_slash_template(template: &SlashTemplate, args: &str) -> String {
 
 fn split_slash_args(args: &str) -> Vec<String> {
     args.split_whitespace().map(ToOwned::to_owned).collect()
+}
+
+async fn render_dynamic_shell_context(
+    text: String,
+    runtime: &SkillRuntimeOptions,
+    cwd: &Path,
+) -> Result<String> {
+    let text = render_fenced_shell_context(text, runtime, cwd).await?;
+    render_inline_shell_context(text, runtime, cwd).await
+}
+
+async fn render_fenced_shell_context(
+    text: String,
+    runtime: &SkillRuntimeOptions,
+    cwd: &Path,
+) -> Result<String> {
+    let mut out = String::new();
+    let mut rest = text.as_str();
+    while let Some(start) = rest.find("```!") {
+        out.push_str(&rest[..start]);
+        let after_marker = &rest[start + 4..];
+        let command_start = after_marker
+            .strip_prefix("\r\n")
+            .map(|s| (s, 2usize))
+            .or_else(|| after_marker.strip_prefix('\n').map(|s| (s, 1usize)));
+        let (after_newline, consumed_newline) = match command_start {
+            Some(pair) => pair,
+            None => {
+                out.push_str("```!");
+                rest = after_marker;
+                continue;
+            }
+        };
+        if let Some(end) = after_newline.find("\n```") {
+            let command = &after_newline[..end];
+            out.push_str(&run_shell_context(command, runtime, cwd).await);
+            let after_end = &after_newline[end + 4..];
+            rest = if let Some(stripped) = after_end.strip_prefix("\r\n") {
+                stripped
+            } else if let Some(stripped) = after_end.strip_prefix('\n') {
+                stripped
+            } else {
+                after_end
+            };
+        } else {
+            out.push_str("```!");
+            out.push_str(&after_marker[..consumed_newline]);
+            rest = after_newline;
+        }
+    }
+    out.push_str(rest);
+    Ok(out)
+}
+
+async fn render_inline_shell_context(
+    text: String,
+    runtime: &SkillRuntimeOptions,
+    cwd: &Path,
+) -> Result<String> {
+    let mut out = String::new();
+    let mut rest = text.as_str();
+    while let Some(start) = rest.find("!`") {
+        out.push_str(&rest[..start]);
+        let after_marker = &rest[start + 2..];
+        if let Some(end) = after_marker.find('`') {
+            let command = &after_marker[..end];
+            out.push_str(&run_shell_context(command, runtime, cwd).await);
+            rest = &after_marker[end + 1..];
+        } else {
+            out.push_str("!`");
+            rest = after_marker;
+            break;
+        }
+    }
+    out.push_str(rest);
+    Ok(out)
+}
+
+async fn run_shell_context(command: &str, runtime: &SkillRuntimeOptions, cwd: &Path) -> String {
+    let command = command.trim();
+    if command.is_empty() {
+        return String::new();
+    }
+    let shell = runtime.shell.as_deref().unwrap_or("");
+    let mut cmd = if shell.eq_ignore_ascii_case("bash") {
+        let mut c = Command::new("bash");
+        c.arg("-lc").arg(command);
+        c
+    } else {
+        let mut c = Command::new("/bin/sh");
+        c.arg("-c").arg(command);
+        c
+    };
+    let output = cmd.current_dir(cwd).output().await;
+    match output {
+        Ok(output) => {
+            let mut combined = String::from_utf8_lossy(&output.stdout).into_owned();
+            if !output.stderr.is_empty() {
+                combined.push_str(&String::from_utf8_lossy(&output.stderr));
+            }
+            if output.status.success() {
+                combined
+            } else {
+                format!(
+                    "[shell context command failed: `{command}` exited with {}]\n{}",
+                    output.status.code().unwrap_or(-1),
+                    combined
+                )
+            }
+        }
+        Err(e) => format!("[shell context command failed: `{command}`: {e}]"),
+    }
 }
 
 fn tool_kind(name: &str) -> ToolKindHint {

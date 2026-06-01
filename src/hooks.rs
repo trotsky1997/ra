@@ -211,6 +211,21 @@ impl HookEngine {
             && self.stop.is_empty()
     }
 
+    pub fn merged_with(&self, other: &HookEngine) -> HookEngine {
+        HookEngine {
+            pre: Arc::new(self.pre.iter().chain(other.pre.iter()).cloned().collect()),
+            post: Arc::new(self.post.iter().chain(other.post.iter()).cloned().collect()),
+            submit: Arc::new(
+                self.submit
+                    .iter()
+                    .chain(other.submit.iter())
+                    .cloned()
+                    .collect(),
+            ),
+            stop: Arc::new(self.stop.iter().chain(other.stop.iter()).cloned().collect()),
+        }
+    }
+
     /// Fire every PreToolUse hook whose matcher hits `tool_name`. Returns
     /// the merged decision (block / additional_context / stop).
     pub async fn pre_tool_use(

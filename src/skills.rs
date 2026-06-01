@@ -19,6 +19,7 @@
 //!
 //! Plus prompt templates from `[prompts]` for slash commands.
 
+use crate::config::HooksSection;
 use anyhow::{Context, Result};
 use globset::{Glob, GlobSetBuilder};
 use serde::Deserialize;
@@ -44,6 +45,8 @@ pub struct Skill {
     pub compatibility: Option<String>,
     /// Optional `license:` field.
     pub license: Option<String>,
+    /// Runtime-only Claude Code fields that apply to direct skill invocation.
+    pub runtime: SkillRuntimeOptions,
     /// If true, omit this skill from the model-facing catalog.
     pub disable_model_invocation: bool,
     /// If false, do not expose this skill as a direct slash command.
@@ -64,12 +67,65 @@ pub struct PromptTemplate {
     pub body: String,
 }
 
+/// Runtime controls carried by Claude Code skill frontmatter and applied
+/// only when the skill is directly invoked as `/skill-name`.
+#[derive(Debug, Default, Clone)]
+pub struct SkillRuntimeOptions {
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    pub context: Option<String>,
+    pub agent: Option<String>,
+    pub shell: Option<String>,
+    pub allowed_tools: Vec<String>,
+    pub disallowed_tools: Vec<String>,
+    pub hooks: HooksSection,
+}
+
+impl SkillRuntimeOptions {
+    pub fn is_empty(&self) -> bool {
+        self.model.is_none()
+            && self.effort.is_none()
+            && self.context.is_none()
+            && self.agent.is_none()
+            && self.shell.is_none()
+            && self.allowed_tools.is_empty()
+            && self.disallowed_tools.is_empty()
+            && self.hooks.pre_tool_use.is_empty()
+            && self.hooks.post_tool_use.is_empty()
+            && self.hooks.user_prompt_submit.is_empty()
+            && self.hooks.stop.is_empty()
+    }
+
+    pub fn is_fork(&self) -> bool {
+        self.context
+            .as_deref()
+            .map(|s| s.eq_ignore_ascii_case("fork"))
+            .unwrap_or(false)
+            || self
+                .agent
+                .as_deref()
+                .map(|s| {
+                    let s = s.trim();
+                    s.eq_ignore_ascii_case("fork") || s.eq_ignore_ascii_case("subagent")
+                })
+                .unwrap_or(false)
+    }
+
+    pub fn prompt_context(&self) -> Option<&str> {
+        self.context
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case("fork"))
+    }
+}
+
 /// Slash-command template handed to [`crate::session_runner::SessionRunner`].
 #[derive(Debug, Clone)]
 pub struct SlashTemplate {
     pub body: String,
     pub arguments: Vec<String>,
     pub append_arguments_fallback: bool,
+    pub runtime: Option<SkillRuntimeOptions>,
 }
 
 impl SlashTemplate {
@@ -78,14 +134,16 @@ impl SlashTemplate {
             body,
             arguments: Vec::new(),
             append_arguments_fallback: false,
+            runtime: None,
         }
     }
 
-    pub fn skill(body: String, arguments: Vec<String>) -> Self {
+    pub fn skill(body: String, arguments: Vec<String>, runtime: SkillRuntimeOptions) -> Self {
         Self {
             body,
             arguments,
             append_arguments_fallback: true,
+            runtime: Some(runtime),
         }
     }
 }
@@ -228,7 +286,7 @@ impl ResourceBundle {
             .map(|s| {
                 (
                     s.command_name.clone(),
-                    SlashTemplate::skill(s.body.clone(), s.arguments.clone()),
+                    SlashTemplate::skill(s.body.clone(), s.arguments.clone(), s.runtime.clone()),
                 )
             })
             .collect();
@@ -368,24 +426,16 @@ struct Frontmatter {
     #[serde(rename = "user-invocable")]
     user_invocable: Option<bool>,
     #[serde(rename = "allowed-tools")]
-    #[allow(dead_code)]
     allowed_tools: Option<serde_yaml::Value>,
     #[serde(rename = "disallowed-tools")]
-    #[allow(dead_code)]
     disallowed_tools: Option<serde_yaml::Value>,
-    #[allow(dead_code)]
     model: Option<String>,
-    #[allow(dead_code)]
     effort: Option<String>,
-    #[allow(dead_code)]
     context: Option<String>,
-    #[allow(dead_code)]
     agent: Option<String>,
-    #[allow(dead_code)]
-    hooks: Option<serde_yaml::Value>,
+    hooks: Option<HooksSection>,
     #[allow(dead_code)]
     paths: Option<serde_yaml::Value>,
-    #[allow(dead_code)]
     shell: Option<String>,
 }
 
@@ -398,6 +448,16 @@ fn parse_skill(p: &Path) -> Result<Skill> {
     let name = fm.name.clone().unwrap_or_else(|| command_name.clone());
     let description = skill_description(&fm, body);
     let arguments = parse_arguments(fm.arguments.as_ref());
+    let runtime = SkillRuntimeOptions {
+        model: normalize_opt_string(fm.model),
+        effort: normalize_opt_string(fm.effort),
+        context: normalize_opt_string(fm.context),
+        agent: normalize_opt_string(fm.agent),
+        shell: normalize_opt_string(fm.shell),
+        allowed_tools: parse_tool_list(fm.allowed_tools.as_ref()),
+        disallowed_tools: parse_tool_list(fm.disallowed_tools.as_ref()),
+        hooks: fm.hooks.unwrap_or_default(),
+    };
     Ok(Skill {
         command_name,
         name,
@@ -406,11 +466,36 @@ fn parse_skill(p: &Path) -> Result<Skill> {
         arguments,
         compatibility: fm.compatibility,
         license: fm.license,
+        runtime,
         disable_model_invocation: fm.disable_model_invocation.unwrap_or(false),
         user_invocable: fm.user_invocable.unwrap_or(true),
         path: p.to_path_buf(),
         body: body.to_string(),
     })
+}
+
+fn normalize_opt_string(raw: Option<String>) -> Option<String> {
+    raw.map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+}
+
+fn parse_tool_list(raw: Option<&serde_yaml::Value>) -> Vec<String> {
+    match raw {
+        Some(serde_yaml::Value::String(s)) => split_tool_list(s),
+        Some(serde_yaml::Value::Sequence(items)) => items
+            .iter()
+            .filter_map(|item| item.as_str())
+            .flat_map(split_tool_list)
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn split_tool_list(s: &str) -> Vec<String> {
+    s.split(',')
+        .map(str::trim)
+        .filter(|tool| !tool.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
 }
 
 fn parse_arguments(raw: Option<&serde_yaml::Value>) -> Vec<String> {

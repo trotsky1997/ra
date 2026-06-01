@@ -189,6 +189,7 @@ async fn send_executes_fake_tmux_with_expected_argv_and_events() {
             "-t",
             "ra__dev:repl",
             "-l",
+            "--",
             "hello; rm -rf /",
             "send-keys",
             "-t",

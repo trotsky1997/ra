@@ -439,14 +439,14 @@ async fn execute_tmux_send(call_id: &str, params: TmuxSendParams, ctx: &ToolCtx)
         None => {
             return Ok(missing_tmux_json(
                 "tmux_send",
-                &send_args(&target, &params, false),
+                &send_args(&target, &params),
             ))
         }
     };
 
     let mut last = None;
     if !params.keys.is_empty() {
-        let args = send_args(&target, &params, false);
+        let args = send_args(&target, &params);
         emit_invocation(ctx, call_id, &args);
         let output = run_tmux(&tmux, &args).await?;
         let exit_code = output.exit_code;
@@ -609,16 +609,16 @@ async fn execute_tmux_listen(
 
     let initial_eval = event.evaluate(&initial.stdout, &initial.stdout);
     if initial_eval.triggered {
-        return listen_response(
-            &args,
-            &target,
-            &event,
-            initial.stdout,
-            "",
-            initial_eval,
-            false,
-            params.max_output_bytes,
-        );
+        return listen_response(ListenResponse {
+            args: &args,
+            target: &target,
+            event: &event,
+            stdout: initial.stdout,
+            delta: String::new(),
+            eval: initial_eval,
+            timed_out: false,
+            max_output_bytes: params.max_output_bytes,
+        });
     }
 
     let started = tokio::time::Instant::now();
@@ -642,31 +642,31 @@ async fn execute_tmux_listen(
         let eval = event.evaluate(&initial.stdout, &latest);
         if eval.triggered {
             let delta = text_delta(&initial.stdout, &latest);
-            return listen_response(
-                &args,
-                &target,
-                &event,
-                latest,
-                &delta,
+            return listen_response(ListenResponse {
+                args: &args,
+                target: &target,
+                event: &event,
+                stdout: latest,
+                delta,
                 eval,
-                false,
-                params.max_output_bytes,
-            );
+                timed_out: false,
+                max_output_bytes: params.max_output_bytes,
+            });
         }
     }
 
     let delta = text_delta(&initial.stdout, &latest);
     let eval = event.evaluate(&initial.stdout, &latest);
-    listen_response(
-        &args,
-        &target,
-        &event,
-        latest,
-        &delta,
+    listen_response(ListenResponse {
+        args: &args,
+        target: &target,
+        event: &event,
+        stdout: latest,
+        delta,
         eval,
-        true,
-        params.max_output_bytes,
-    )
+        timed_out: true,
+        max_output_bytes: params.max_output_bytes,
+    })
 }
 
 async fn execute_tmux_wait(call_id: &str, params: TmuxWaitParams, ctx: &ToolCtx) -> Result<String> {
@@ -931,7 +931,7 @@ async fn run_nonblocking(
             enter: true,
             literal: true,
         };
-        let args = send_args(target, &send, false);
+        let args = send_args(target, &send);
         emit_invocation(ctx, call_id, &args);
         let first = run_tmux(tmux, &args).await?;
         emit_exit(ctx, call_id, first.exit_code);
@@ -1194,7 +1194,7 @@ fn new_window_args(target: &TmuxTarget, command: Option<&str>, cwd: &Path) -> Ve
     args
 }
 
-fn send_args(target: &TmuxTarget, params: &TmuxSendParams, include_enter: bool) -> Vec<String> {
+fn send_args(target: &TmuxTarget, params: &TmuxSendParams) -> Vec<String> {
     let mut args = vec![
         "send-keys".to_string(),
         "-t".to_string(),
@@ -1202,6 +1202,8 @@ fn send_args(target: &TmuxTarget, params: &TmuxSendParams, include_enter: bool) 
     ];
     if params.literal {
         args.push("-l".to_string());
+        // `--` prevents tmux from interpreting a leading `-` in the keys as a flag.
+        args.push("--".to_string());
         args.push(params.keys.clone());
     } else {
         args.extend(
@@ -1211,9 +1213,6 @@ fn send_args(target: &TmuxTarget, params: &TmuxSendParams, include_enter: bool) 
                 .filter(|key| !key.is_empty())
                 .map(ToString::to_string),
         );
-    }
-    if include_enter && params.enter {
-        args.push("Enter".to_string());
     }
     args
 }
@@ -1330,18 +1329,30 @@ fn process_response(
     .context("serialize tmux tool output")
 }
 
-fn listen_response(
-    args: &[String],
-    target: &TmuxTarget,
-    event: &ListenEvent,
+struct ListenResponse<'a> {
+    args: &'a [String],
+    target: &'a TmuxTarget,
+    event: &'a ListenEvent,
     stdout: String,
-    delta: &str,
+    delta: String,
     eval: EventEvaluation,
     timed_out: bool,
     max_output_bytes: usize,
-) -> Result<String> {
+}
+
+fn listen_response(r: ListenResponse<'_>) -> Result<String> {
+    let ListenResponse {
+        args,
+        target,
+        event,
+        stdout,
+        delta,
+        eval,
+        timed_out,
+        max_output_bytes,
+    } = r;
     let (stdout, stdout_truncated) = trim_to_byte_budget(stdout, max_output_bytes);
-    let (delta, delta_truncated) = trim_to_byte_budget(delta.to_string(), max_output_bytes);
+    let (delta, delta_truncated) = trim_to_byte_budget(delta, max_output_bytes);
     serde_json::to_string_pretty(&json!({
         "ok": !timed_out,
         "tool": "tmux_listen",
@@ -1477,14 +1488,16 @@ struct TmuxTarget {
 
 impl TmuxTarget {
     fn new(session: &str, window: Option<&str>, pane: Option<&str>) -> Result<Self> {
-        let logical_session = validate_name("session", session, false)?;
+        let logical_session = validate_name("session", session, true, false)?;
         let session = format!("{RA_SESSION_PREFIX}{logical_session}");
         let window = match window {
-            Some(window) => validate_name("window", window, false)?,
+            // `.` is the pane separator in tmux target syntax (session:window.pane),
+            // so window names must not contain it to avoid ambiguous targets.
+            Some(window) => validate_name("window", window, false, false)?,
             None => DEFAULT_WINDOW.to_string(),
         };
         let pane = pane
-            .map(|pane| validate_name("pane", pane, true))
+            .map(|pane| validate_name("pane", pane, true, true))
             .transpose()?;
         let target = match &pane {
             Some(pane) => format!("{session}:{window}.{pane}"),
@@ -1721,7 +1734,7 @@ fn elapsed_millis(duration: Duration) -> u128 {
     duration.as_millis()
 }
 
-fn validate_name(field: &str, value: &str, allow_percent: bool) -> Result<String> {
+fn validate_name(field: &str, value: &str, allow_dot: bool, allow_percent: bool) -> Result<String> {
     let value = value.trim();
     if value.is_empty() {
         return Err(anyhow!("tmux {field} must not be empty"));
@@ -1730,13 +1743,20 @@ fn validate_name(field: &str, value: &str, allow_percent: bool) -> Result<String
         return Err(anyhow!("tmux {field} must be at most 80 bytes"));
     }
     let valid = value.chars().all(|ch| {
-        ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.') || (allow_percent && ch == '%')
+        ch.is_ascii_alphanumeric()
+            || matches!(ch, '_' | '-')
+            || (allow_dot && ch == '.')
+            || (allow_percent && ch == '%')
     });
     if !valid {
-        return Err(anyhow!(
-            "tmux {field} may only contain ASCII letters, digits, `_`, `-`, `.`{}",
-            if allow_percent { ", or `%`" } else { "" }
-        ));
+        let mut allowed = "ASCII letters, digits, `_`, `-`".to_string();
+        if allow_dot {
+            allowed.push_str(", `.`");
+        }
+        if allow_percent {
+            allowed.push_str(", `%`");
+        }
+        return Err(anyhow!("tmux {field} may only contain {allowed}"));
     }
     Ok(value.to_string())
 }
@@ -1783,13 +1803,10 @@ fn trim_to_byte_budget(mut text: String, max_bytes: usize) -> (String, bool) {
 }
 
 fn text_delta(initial: &str, latest: &str) -> String {
-    if latest.starts_with(initial) {
-        latest[initial.len()..].to_string()
-    } else if latest == initial {
-        String::new()
-    } else {
-        latest.to_string()
-    }
+    latest
+        .strip_prefix(initial)
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| latest.to_string())
 }
 
 fn join_non_empty(parts: &[String]) -> String {
@@ -1879,8 +1896,8 @@ mod tests {
         };
 
         assert_eq!(
-            send_args(&target, &params, false),
-            vec!["send-keys", "-t", "ra__dev:main", "-l", "hello; rm -rf /"]
+            send_args(&target, &params),
+            vec!["send-keys", "-t", "ra__dev:main", "-l", "--", "hello; rm -rf /"]
         );
     }
 

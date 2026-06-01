@@ -7,11 +7,11 @@ Built-in Ra tool that wraps the openlsp-cli for language-aware code intelligence
 The system SHALL provide a built-in tool named `lsp` that invokes openlsp-cli with argv flags and returns structured JSON results.
 
 #### Scenario: Diagnostics on a file
-- **WHEN** the agent calls `lsp` with `{"command": "lsp", "operation": "diagnostics", "file_path": "src/main.rs"}`
+- **WHEN** the agent calls `lsp` with `{"command": "lsp", "operation": "diagnostics", "file": "src/main.rs"}`
 - **THEN** the tool returns a JSON array of diagnostic objects from openlsp-cli
 
 #### Scenario: Go-to-definition
-- **WHEN** the agent calls `lsp` with `{"command": "lsp", "operation": "goToDefinition", "file_path": "src/main.rs", "line": 10, "character": 5}`
+- **WHEN** the agent calls `lsp` with `{"command": "lsp", "operation": "goToDefinition", "file": "src/main.rs", "line": 10, "character": 5}`
 - **THEN** the tool returns location information for the symbol at that position
 
 #### Scenario: Capabilities query

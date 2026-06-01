@@ -121,8 +121,9 @@ from the resource bundle, not from disk.
 `Model::stream(&history, &specs) -> Stream<ModelChunk>` is the only
 contract the turn loop depends on. Two implementors:
 
-- **`MockModel`** — drives the `bash:` / `read:` / `grep:` … prefixes
-  for the no-API-key quick start and the `ScriptedModel` test pattern.
+- **`MockModel`** — drives the `bash:` / `read:` / `write:` / `edit:`
+  prefixes for the no-API-key quick start and the `ScriptedModel` test
+  pattern.
 - **`LlmModel`** (`src/llm_model.rs`) — bridges to graniet/llm, which
   fans out to Anthropic / OpenAI / Google / DeepSeek / Ollama / Groq /
   xAI and any OpenAI-compatible Responses endpoint. Backend selection
@@ -176,9 +177,9 @@ built-in tool.
   Relay. `run_one_turn` opens an `llm_scope` around the model stream and
   drops it *before* tool execution so each tool gets a sibling scope,
   not a nested one.
-- **RTK (`src/tools/rtk.rs`)** — shell-flavoured tools consult
-  `rtk rewrite` first for token-compressed output. Trust signal is
-  "stdout non-empty", not exit status (RTK exits 3 on a hit).
+- **RTK (`src/tools/rtk.rs`)** — `bash` commands consult `rtk rewrite`
+  first for token-compressed output. Trust signal is "stdout non-empty",
+  not exit status (RTK exits 3 on a hit).
 - **Persistence (`src/store.rs`, `src/atif_codec.rs`, `src/atif.rs`)** —
   the message log encodes to ATIF v1.7 JSONL under
   `RA_HOME/sessions/<cwd-hash>/`. `atif_codec` must round-trip;

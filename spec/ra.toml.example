@@ -36,14 +36,11 @@ api_key_env = "ANTHROPIC_API_KEY"
 #   write  — write a file
 #   edit   — replace a literal substring inside a file (Claude Code shape)
 #   bash   — run a shell command (ACP terminal reverse-call when available)
-#   grep   — search file contents via ripgrep (rg)         [needs `rg`]
-#   find   — find files by name via fd                     [needs `fd`/`fdfind`]
-#   ls     — list directory via eza (or exa)               [needs `eza`/`exa`]
-# An empty list (or omitted section) ships every tool whose external
-# binary is on PATH; missing binaries are logged once at startup and
-# the tool is silently dropped.
+# Shell-native commands such as grep/find/ls go through bash rather
+# than separate built-in tool wrappers.
+# An empty list (or omitted section) ships every built-in tool.
 [tools]
-# builtin = ["read", "write", "edit", "bash", "grep", "find", "ls"]
+# builtin = ["read", "write", "edit", "bash"]
 builtin = []
 
 # ─── Skills (agentskills.io v1) ─────────────────────────────────────
@@ -141,10 +138,10 @@ mode = "default"                   # default | plan | ask
 
 # ─── RTK (Rust Token Killer) ───────────────────────────────────────
 # Native integration with https://github.com/rtk-ai/rtk: when enabled,
-# every shell-flavoured tool call (bash, grep, find, ls) is offered to
-# `rtk rewrite` first; if RTK has a recipe for that command, the
-# rewritten form is what actually runs and the model sees RTK's
-# token-compressed output instead of the raw verbose stream.
+# every bash command is offered to `rtk rewrite` first; if RTK has a
+# recipe for that command, the rewritten form is what actually runs and
+# the model sees RTK's token-compressed output instead of the raw
+# verbose stream.
 # Default mode is "auto" (use rtk if it's on PATH, transparent
 # fallthrough otherwise); set to "on" to require it (warn on missing),
 # or "off" to disable it even when installed.

@@ -104,9 +104,6 @@ before editing.
 - `src/tools/rtk.rs` — RTK exits non-zero (3, not 0) when it has
   a recipe; the trustworthy signal is "stdout non-empty", *not*
   `status.success()`. Don't "fix" that.
-- `src/tools/search.rs` — `canonical_probe()` strips paths and
-  aliases `fdfind` → `fd` so RTK matches; reverting that breaks
-  RTK on Debian.
 - `src/a2a_server.rs` — A2A reqwest version is **0.13** (aliased as
   `reqwest13` in Cargo.toml) while the rest of the codebase pins
   **0.12** for llm/nemo-relay. Don't try to unify.

@@ -9,8 +9,8 @@ use tokio::sync::broadcast;
 /// - an optional ACP client handle so tools can call back into the host
 ///   editor (`fs/read_text_file`, `terminal/*`, `session/request_permission`),
 /// - the session id, required by every reverse RPC,
-/// - an optional [`RtkRewriter`](crate::tools::RtkRewriter) so shell-flavoured
-///   tools can pre-route commands through `rtk rewrite` for token compression.
+/// - an optional [`RtkRewriter`](crate::tools::RtkRewriter) so shell commands
+///   can pre-route through `rtk rewrite` for token compression.
 #[derive(Clone)]
 pub struct ToolCtx {
     pub events: broadcast::Sender<Event>,

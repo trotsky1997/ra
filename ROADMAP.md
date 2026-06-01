@@ -59,11 +59,9 @@ on disk and tested; speculative ideas live as GitHub issues.
   when an editor host is connected.
 - `bash` — ACP `terminal/*` reverse-call with permission gating, else
   local `/bin/sh -c`.
-- `grep`, `find`, `ls` — wrap ripgrep, fd, eza; missing-binary
-  detection drops the tool from the catalog.
 - Native [RTK](https://github.com/rtk-ai/rtk) integration: every
-  shell-flavoured tool consults `rtk rewrite` first, swapping
-  verbose `git status` / `cargo test` / `kubectl` output for RTK's
+  `bash` command consults `rtk rewrite` first, swapping verbose
+  `git status` / `cargo test` / `kubectl` output for RTK's
   token-compressed equivalents (60–90% savings).
 
 ### TUI
@@ -96,12 +94,6 @@ Roughly ordered by user value, not certainty.
   in the chat.
 
 ### Quality of life
-- **Dependency-free `grep` / `find` / `ls`.** Replace the external
-  `rg` / `fd` / `eza` invocations with the underlying crates
-  (`grep` + `ignore` for ripgrep; `ignore::WalkBuilder` is what fd
-  uses internally; `eza`'s formatting could become a small in-repo
-  module). Removes the runtime PATH probe and means `ra` works in
-  scratch containers with nothing but the binary.
 - **`ra init`** to scaffold an `ra.toml` and a `.ra/skills/`
   directory in the cwd, with the most common config knobs commented
   in.

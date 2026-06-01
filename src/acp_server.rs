@@ -208,8 +208,8 @@ impl SharedState {
         let available_models = model_factory.available();
         let default_cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
         // The full tool catalog is passed in by the caller (main.rs) so the
-        // `[tools] builtin` allow-list and missing-binary detection live in
-        // one place. Empty input is allowed but unusual.
+        // `[tools] builtin` allow-list lives in one place. Empty input is
+        // allowed but unusual.
         let tools = extra_tools;
         Self {
             model,

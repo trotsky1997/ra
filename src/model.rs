@@ -9,8 +9,13 @@ use std::time::Duration;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "role", rename_all = "snake_case")]
 pub enum Message {
-    User { content: String },
-    Assistant { content: String, tool_calls: Vec<ToolCall> },
+    User {
+        content: String,
+    },
+    Assistant {
+        content: String,
+        tool_calls: Vec<ToolCall>,
+    },
     ToolResult(ToolResult),
 }
 
@@ -22,7 +27,9 @@ pub enum ModelChunk {
     /// 模型决定调用工具。骨架版一次只发一个，真实实现可以发多个。
     ToolCall(ToolCall),
     /// 本 turn 的模型输出结束。stop_reason 让上层判断要不要继续 loop。
-    End { stop_reason: StopReason },
+    End {
+        stop_reason: StopReason,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,9 +67,6 @@ pub struct ToolSpec {
 /// - 用户最后一条消息以 `read:`  开头  → 发起 read 调用
 /// - `write:<path>|<content>`           → 发起 write 调用
 /// - `edit:<path>|<old>|<new>`          → 发起 edit 调用
-/// - `grep:<pattern>[ <path>]`          → 发起 grep 调用
-/// - `find:<pattern>[ <path>]`          → 发起 find 调用
-/// - `ls:[<path>]`                       → 发起 ls 调用
 /// - 上一条是 ToolResult                → 把结果转述一下并结束
 /// - 否则                                → 按字符流式回显
 pub struct MockModel;
@@ -99,7 +103,9 @@ impl Model for MockModel {
                         name: "bash".into(),
                         input: serde_json::json!({ "command": cmd }),
                     }),
-                    ModelChunk::End { stop_reason: StopReason::ToolUse },
+                    ModelChunk::End {
+                        stop_reason: StopReason::ToolUse,
+                    },
                 ]
             }
             Some(Message::User { content }) if content.starts_with("read:") => {
@@ -111,7 +117,9 @@ impl Model for MockModel {
                         name: "read".into(),
                         input: serde_json::json!({ "path": path }),
                     }),
-                    ModelChunk::End { stop_reason: StopReason::ToolUse },
+                    ModelChunk::End {
+                        stop_reason: StopReason::ToolUse,
+                    },
                 ]
             }
             Some(Message::User { content }) if content.starts_with("write:") => {
@@ -128,7 +136,9 @@ impl Model for MockModel {
                             "content": text,
                         }),
                     }),
-                    ModelChunk::End { stop_reason: StopReason::ToolUse },
+                    ModelChunk::End {
+                        stop_reason: StopReason::ToolUse,
+                    },
                 ]
             }
             Some(Message::User { content }) if content.starts_with("edit:") => {
@@ -149,65 +159,9 @@ impl Model for MockModel {
                             "new_string": new_s,
                         }),
                     }),
-                    ModelChunk::End { stop_reason: StopReason::ToolUse },
-                ]
-            }
-            Some(Message::User { content }) if content.starts_with("grep:") => {
-                // grep:<pattern>[ <path>]
-                let body = content.trim_start_matches("grep:").trim();
-                let (pat, path) = match body.find(' ') {
-                    Some(idx) => (&body[..idx], Some(body[idx + 1..].trim().to_string())),
-                    None => (body, None),
-                };
-                let mut input = serde_json::json!({ "pattern": pat });
-                if let Some(p) = path {
-                    input["path"] = serde_json::Value::String(p);
-                }
-                vec![
-                    ModelChunk::TextDelta(format!("Grepping for {}...\n", pat)),
-                    ModelChunk::ToolCall(ToolCall {
-                        id: format!("call_{}", rand_id()),
-                        name: "grep".into(),
-                        input,
-                    }),
-                    ModelChunk::End { stop_reason: StopReason::ToolUse },
-                ]
-            }
-            Some(Message::User { content }) if content.starts_with("find:") => {
-                // find:<pattern>[ <path>]
-                let body = content.trim_start_matches("find:").trim();
-                let (pat, path) = match body.find(' ') {
-                    Some(idx) => (&body[..idx], Some(body[idx + 1..].trim().to_string())),
-                    None => (body, None),
-                };
-                let mut input = serde_json::json!({ "pattern": pat });
-                if let Some(p) = path {
-                    input["path"] = serde_json::Value::String(p);
-                }
-                vec![
-                    ModelChunk::TextDelta(format!("Finding {}...\n", pat)),
-                    ModelChunk::ToolCall(ToolCall {
-                        id: format!("call_{}", rand_id()),
-                        name: "find".into(),
-                        input,
-                    }),
-                    ModelChunk::End { stop_reason: StopReason::ToolUse },
-                ]
-            }
-            Some(Message::User { content }) if content.starts_with("ls:") => {
-                let path = content.trim_start_matches("ls:").trim().to_string();
-                let mut input = serde_json::json!({});
-                if !path.is_empty() {
-                    input["path"] = serde_json::Value::String(path.clone());
-                }
-                vec![
-                    ModelChunk::TextDelta(format!("Listing {}...\n", path)),
-                    ModelChunk::ToolCall(ToolCall {
-                        id: format!("call_{}", rand_id()),
-                        name: "ls".into(),
-                        input,
-                    }),
-                    ModelChunk::End { stop_reason: StopReason::ToolUse },
+                    ModelChunk::End {
+                        stop_reason: StopReason::ToolUse,
+                    },
                 ]
             }
             Some(Message::User { content }) => {
@@ -219,7 +173,9 @@ impl Model for MockModel {
                     }))
                     .collect()
             }
-            _ => vec![ModelChunk::End { stop_reason: StopReason::EndTurn }],
+            _ => vec![ModelChunk::End {
+                stop_reason: StopReason::EndTurn,
+            }],
         };
 
         // 加点延迟模拟真实流式
@@ -244,6 +200,9 @@ fn rand_id() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     format!(
         "{:x}",
-        SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
     )
 }

@@ -43,8 +43,8 @@ pub struct Session {
     /// Optional hook engine that fires PreToolUse / PostToolUse around
     /// every tool execution. None = no hooks configured.
     hooks: Option<Arc<crate::hooks::HookEngine>>,
-    /// Optional RTK rewriter handed to every ToolCtx so shell-flavoured
-    /// tools can pre-route commands through `rtk rewrite`. Default
+    /// Optional RTK rewriter handed to every ToolCtx so shell commands
+    /// can pre-route through `rtk rewrite`. Default
     /// (`RtkRewriter::default()`) is a no-op pass-through.
     rtk: crate::tools::RtkRewriter,
 }
@@ -90,8 +90,7 @@ impl Session {
     }
 
     /// Builder-style: attach an [`RtkRewriter`](crate::tools::RtkRewriter)
-    /// so shell-flavoured tools (`bash`, `grep`, `find`, `ls`) can route
-    /// their commands through RTK for token-compressed output.
+    /// so shell commands can route through RTK for token-compressed output.
     #[must_use]
     pub fn with_rtk(mut self, rtk: crate::tools::RtkRewriter) -> Self {
         self.rtk = rtk;

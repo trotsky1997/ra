@@ -21,6 +21,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
+use async_trait::async_trait;
 use opentui_rust::buffer::BoxStyle;
 use opentui_rust::input::{Event as InputEvent, InputParser, KeyCode, KeyEvent, KeyModifiers};
 use opentui_rust::renderer::RendererOptions;
@@ -31,6 +32,8 @@ use tokio::sync::{broadcast, mpsc};
 use crate::config::RaConfig;
 use crate::events::Event;
 use crate::session::Session;
+use crate::session_runner::{RunnerHost, SessionRunner};
+use crate::store::{SessionMeta, SessionStore};
 use crate::tools::default_builtins;
 
 /// One rendered line in the scrollback. Kept minimal; everything else
@@ -68,8 +71,9 @@ pub async fn run(config: &RaConfig) -> Result<()> {
     // and A2A make. Idempotent inside nemo_obs.
     crate::nemo_obs::init();
 
-    let session = build_session(config).await?;
-    let mut app = TuiApp::new(session.clone()).await?;
+    let (session, prompt_templates) = build_session(config).await?;
+    let session_id = ulid::Ulid::new().to_string();
+    let mut app = TuiApp::new(session.clone(), session_id, prompt_templates, config).await?;
 
     // Wrap the entire interactive loop in one Agent-typed scope so
     // every nested LLM/tool/hook scope nests under it in the trace.
@@ -98,7 +102,11 @@ fn is_a_tty() -> bool {
 
 /// Build the Session the same way `run_print` does — model + tools +
 /// hooks + RTK + system prompt — so TUI mode honours every config knob.
-async fn build_session(config: &RaConfig) -> Result<Arc<Session>> {
+/// Also returns the prompt-template map so the TUI runner can expand
+/// `/skill-name args...` the same way ACP/A2A do.
+async fn build_session(
+    config: &RaConfig,
+) -> Result<(Arc<Session>, Arc<HashMap<String, String>>)> {
     use crate::skills::ResourceBundle;
     let factory = build_model_factory(config);
     let model = factory
@@ -131,6 +139,7 @@ async fn build_session(config: &RaConfig) -> Result<Arc<Session>> {
         bundle.agents_md = crate::skills::discover_agents_md(&cwd);
     }
     let system_prompt = bundle.build_system_prompt();
+    let prompt_templates = Arc::new(bundle.prompt_map());
 
     let mut sess = Session::new(model, default_builtins(&config.tools.builtin)).with_rtk(rtk);
     if let Some(h) = hooks {
@@ -140,7 +149,7 @@ async fn build_session(config: &RaConfig) -> Result<Arc<Session>> {
     if let Some(sp) = system_prompt {
         session.set_system_prompt(sp).await;
     }
-    Ok(session)
+    Ok((session, prompt_templates))
 }
 
 // ---- Tiny model-factory shim ---------------------------------------------
@@ -202,6 +211,86 @@ fn build_model_factory(_config: &RaConfig) -> EnvFirstModel {
     EnvFirstModel
 }
 
+// ---- RunnerHost for TUI --------------------------------------------------
+//
+// The TUI doesn't need model-swap support (no ACP session/set_model), so
+// the host is minimal: save the trajectory on each turn, report a fixed
+// context window, and list whatever the env factory found.
+
+struct TuiRunnerHost {
+    session: Arc<Session>,
+    session_id: String,
+    config_model_name: Option<String>,
+    ctx_window: u64,
+}
+
+#[async_trait]
+impl RunnerHost for TuiRunnerHost {
+    async fn save_session(&self, _session_id: &str) {
+        let cwd = match std::env::current_dir() {
+            Ok(p) => p,
+            Err(_) => return,
+        };
+        let store = match SessionStore::for_cwd(&cwd) {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        let messages = self.session.snapshot_messages().await;
+        if messages.is_empty() {
+            return;
+        }
+        let traj = crate::atif_codec::encode(
+            &self.session_id,
+            self.config_model_name.clone(),
+            &messages,
+        );
+        if let Err(e) = store.save(&traj).await {
+            eprintln!("[ra::tui] failed to save session: {e:#}");
+        }
+    }
+
+    fn default_ctx_window(&self) -> u64 {
+        self.ctx_window
+    }
+
+    fn list_models_for_display(&self) -> Vec<(String, String)> {
+        // TUI doesn't support model switching; return the active model name.
+        let name = self
+            .config_model_name
+            .clone()
+            .unwrap_or_else(|| "mock".into());
+        vec![(name.clone(), name)]
+    }
+}
+
+// ---- Session browser modal -----------------------------------------------
+
+/// State for the Ctrl-R session browser overlay.
+struct SessionBrowser {
+    sessions: Vec<SessionMeta>,
+    selected: usize,
+}
+
+impl SessionBrowser {
+    fn new(sessions: Vec<SessionMeta>) -> Self {
+        Self { sessions, selected: 0 }
+    }
+
+    fn move_up(&mut self) {
+        self.selected = self.selected.saturating_sub(1);
+    }
+
+    fn move_down(&mut self) {
+        if !self.sessions.is_empty() {
+            self.selected = (self.selected + 1).min(self.sessions.len() - 1);
+        }
+    }
+
+    fn selected_meta(&self) -> Option<&SessionMeta> {
+        self.sessions.get(self.selected)
+    }
+}
+
 /// UI-layer events emitted by the TUI as the user drives it. Exposed
 /// over a `tokio::sync::broadcast` so anyone (default consumer:
 /// `nemo_obs`/ATOF; future: tests, log sinks) can observe what
@@ -224,6 +313,8 @@ pub enum TuiEvent {
 
 struct TuiApp {
     session: Arc<Session>,
+    runner: Arc<SessionRunner>,
+    session_id: String,
     renderer: Renderer,
     _raw_guard: opentui_rust::terminal::RawModeGuard,
     parser: InputParser,
@@ -247,10 +338,18 @@ struct TuiApp {
     quit: bool,
     width: u32,
     height: u32,
+
+    /// When Some, the session browser overlay is open.
+    browser: Option<SessionBrowser>,
 }
 
 impl TuiApp {
-    async fn new(session: Arc<Session>) -> Result<Self> {
+    async fn new(
+        session: Arc<Session>,
+        session_id: String,
+        prompt_templates: Arc<HashMap<String, String>>,
+        config: &RaConfig,
+    ) -> Result<Self> {
         let (tw, th) = terminal_size().unwrap_or((100, 32));
         let width = u32::from(tw);
         let height = u32::from(th);
@@ -262,6 +361,19 @@ impl TuiApp {
         };
         let renderer = Renderer::new_with_options(width, height, opts)?;
         let raw_guard = enable_raw_mode()?;
+
+        let config_model_name = config.model.default.clone()
+            .or_else(|| config.models.first().map(|m| m.name.clone()));
+        let host = Arc::new(TuiRunnerHost {
+            session: session.clone(),
+            session_id: session_id.clone(),
+            config_model_name,
+            ctx_window: 200_000,
+        });
+        let runner = Arc::new(
+            SessionRunner::new(session.clone(), session_id.clone(), host)
+                .with_prompt_templates(prompt_templates),
+        );
 
         // stdin → mpsc bridge: reading stdin blocks the OS thread, so we
         // do it on a dedicated blocking task and ship bytes back.
@@ -293,6 +405,8 @@ impl TuiApp {
         spawn_atof_bridge(ui_tx.subscribe());
         let mut app = Self {
             session,
+            runner,
+            session_id,
             renderer,
             _raw_guard: raw_guard,
             parser: InputParser::new(),
@@ -300,7 +414,7 @@ impl TuiApp {
             event_rx,
             ui_tx,
             chat: vec![ChatEntry::System(
-                "Ra TUI — type a prompt and press Enter. Ctrl-C cancels, Ctrl-D quits.".into(),
+                "Ra TUI — type a prompt and press Enter. Ctrl-C cancels, Ctrl-R browses sessions, Ctrl-D quits.".into(),
             )],
             current_text: String::new(),
             current_tools: HashMap::new(),
@@ -311,6 +425,7 @@ impl TuiApp {
             quit: false,
             width,
             height,
+            browser: None,
         };
         let _ = app.ui_tx.send(TuiEvent::Started);
         app.draw()?;
@@ -425,9 +540,35 @@ impl TuiApp {
 
     fn handle_key(&mut self, k: KeyEvent) {
         let ctrl = k.modifiers.contains(KeyModifiers::CTRL);
+
+        // When the browser is open, all keys go to it.
+        if self.browser.is_some() {
+            match k.code {
+                KeyCode::Esc => {
+                    self.browser = None;
+                }
+                KeyCode::Up => {
+                    if let Some(b) = &mut self.browser {
+                        b.move_up();
+                    }
+                }
+                KeyCode::Down => {
+                    if let Some(b) = &mut self.browser {
+                        b.move_down();
+                    }
+                }
+                KeyCode::Enter => {
+                    self.restore_selected_session();
+                }
+                _ => {}
+            }
+            return;
+        }
+
         match k.code {
             KeyCode::Char('c') if ctrl => self.handle_ctrl_c(),
             KeyCode::Char('d') if ctrl => self.quit = true,
+            KeyCode::Char('r') if ctrl => self.open_session_browser(),
             KeyCode::Enter => self.submit(),
             KeyCode::Backspace => {
                 self.input_buf.pop();
@@ -453,6 +594,110 @@ impl TuiApp {
             }
             _ => {}
         }
+    }
+
+    /// Open the session browser overlay. Loads sessions from disk synchronously
+    /// (the list is small and the store is local); if the store is unavailable
+    /// we show an error in the chat instead.
+    fn open_session_browser(&mut self) {
+        if self.in_flight.is_some() {
+            self.chat.push(ChatEntry::System(
+                "(cannot browse sessions while a prompt is running)".into(),
+            ));
+            return;
+        }
+        let cwd = match std::env::current_dir() {
+            Ok(p) => p,
+            Err(e) => {
+                self.chat.push(ChatEntry::System(format!("session browser: cwd error: {e}")));
+                return;
+            }
+        };
+        let store = match SessionStore::for_cwd(&cwd) {
+            Ok(s) => s,
+            Err(e) => {
+                self.chat.push(ChatEntry::System(format!("session browser: store error: {e}")));
+                return;
+            }
+        };
+        // Blocking list — acceptable here because we're on the main thread
+        // between ticks and the bucket is local disk.
+        let sessions = match std::fs::read_dir(store.bucket()) {
+            Err(_) => Vec::new(),
+            Ok(_) => {
+                // Use the sync path: spawn_blocking isn't available without
+                // an async context we can await, so we call the underlying
+                // fs directly. SessionStore::list() is async; replicate the
+                // cheap sync subset here.
+                let mut out = Vec::new();
+                if let Ok(dir) = std::fs::read_dir(store.bucket()) {
+                    for entry in dir.flatten() {
+                        let path = entry.path();
+                        if path.extension().and_then(|s| s.to_str()) != Some("json") {
+                            continue;
+                        }
+                        let session_id = match path.file_stem().and_then(|s| s.to_str()) {
+                            Some(s) => s.to_string(),
+                            None => continue,
+                        };
+                        let modified = entry
+                            .metadata()
+                            .and_then(|m| m.modified())
+                            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                        let title = read_title_sync(&path);
+                        out.push(SessionMeta { session_id, path, modified, title });
+                    }
+                }
+                out.sort_by_key(|m| std::cmp::Reverse(m.modified));
+                out
+            }
+        };
+        if sessions.is_empty() {
+            self.chat.push(ChatEntry::System("(no saved sessions found)".into()));
+            return;
+        }
+        self.browser = Some(SessionBrowser::new(sessions));
+    }
+
+    /// Restore the session selected in the browser. Clears the current chat
+    /// and hydrates the session from the selected trajectory.
+    fn restore_selected_session(&mut self) {
+        let meta = match self.browser.as_ref().and_then(|b| b.selected_meta()) {
+            Some(m) => m.clone(),
+            None => return,
+        };
+        self.browser = None;
+
+        let bytes = match std::fs::read(&meta.path) {
+            Ok(b) => b,
+            Err(e) => {
+                self.chat.push(ChatEntry::System(format!("restore error: {e}")));
+                return;
+            }
+        };
+        let traj: crate::atif::Trajectory = match serde_json::from_slice(&bytes) {
+            Ok(t) => t,
+            Err(e) => {
+                self.chat.push(ChatEntry::System(format!("restore parse error: {e}")));
+                return;
+            }
+        };
+        let messages = crate::atif_codec::decode(&traj);
+        let session = self.session.clone();
+        let session_id = meta.session_id.clone();
+        // Restore messages on the session. We need an async context; spawn a
+        // task and let the next tick pick up the result via the event bus.
+        tokio::spawn(async move {
+            session.restore_messages(messages).await;
+        });
+        // Update our session_id so future saves go to the restored session's file.
+        self.session_id = session_id.clone();
+        self.chat.clear();
+        self.chat.push(ChatEntry::System(format!(
+            "Restored session {session_id}{}. Continue typing.",
+            meta.title.as_deref().map(|t| format!(" — {t}")).unwrap_or_default(),
+        )));
+        self.scroll = 0;
     }
 
     fn handle_ctrl_c(&mut self) {
@@ -488,16 +733,14 @@ impl TuiApp {
         self.chat.push(ChatEntry::User(text.clone()));
         self.scroll = 0;
         let _ = self.ui_tx.send(TuiEvent::Submitted(text.clone()));
-        let s = self.session.clone();
+        let runner = self.runner.clone();
         self.in_flight = Some(tokio::spawn(async move {
-            // Each submission gets its own LLM-typed sibling scope so
-            // a single TUI session shows separate "tui/prompt" arcs in
-            // ATOF when multiple prompts run back-to-back.
             crate::nemo_obs::with_task_scope(async move {
                 let _scope = crate::nemo_obs::agent_scope("tui/prompt");
-                if let Err(e) = s.prompt(text).await {
-                    eprintln!("[ra::tui] prompt error: {e:#}");
-                }
+                // Route through SessionRunner so /skill-name args... and
+                // built-in slash commands (/clear, /compact, /models, /mode)
+                // work identically to ACP/A2A.
+                runner.run_input(text, |_ev| {}).await;
             })
             .await;
         }));
@@ -516,10 +759,10 @@ impl TuiApp {
         if messages.is_empty() {
             return;
         }
-        let id = ulid::Ulid::new().to_string();
+        let id = &self.session_id;
         let model_name = config.model.default.clone()
             .or_else(|| config.models.first().map(|m| m.name.clone()));
-        let traj = crate::atif_codec::encode(&id, model_name, &messages);
+        let traj = crate::atif_codec::encode(id, model_name, &messages);
         if let Err(e) = store.save(&traj).await {
             eprintln!("[ra::tui] failed to save session: {e:#}");
         } else {
@@ -592,6 +835,46 @@ impl TuiApp {
                 status,
                 Style::fg(Rgba::from_rgb_u8(120, 200, 120)),
             );
+        }
+
+        // ---- Session browser modal ---------------------------------
+        if let Some(browser) = &self.browser {
+            let modal_w = width.clamp(30, 70);
+            let modal_h = (browser.sessions.len() as u32 + 4).min(height.saturating_sub(4)).max(5);
+            let modal_x = (width.saturating_sub(modal_w)) / 2;
+            let modal_y = (height.saturating_sub(modal_h)) / 2;
+
+            let modal_border = Style::fg(Rgba::from_rgb_u8(200, 180, 100));
+            let item_normal = Style::fg(Rgba::from_rgb_u8(200, 200, 200));
+            let item_selected = Style::builder()
+                .fg(Rgba::from_rgb_u8(30, 30, 30))
+                .bg(Rgba::from_rgb_u8(120, 180, 240))
+                .build();
+            let header_style = Style::fg(Rgba::from_rgb_u8(200, 180, 100));
+
+            buf.draw_box(modal_x, modal_y, modal_w, modal_h, BoxStyle::rounded(modal_border));
+            let title = " Sessions (↑↓ navigate, Enter restore, Esc cancel) ";
+            buf.draw_text(modal_x + 1, modal_y, title, header_style);
+
+            let inner_w = modal_w.saturating_sub(2) as usize;
+            let visible = (modal_h.saturating_sub(2)) as usize;
+            let start = if browser.selected >= visible {
+                browser.selected - visible + 1
+            } else {
+                0
+            };
+            for (i, meta) in browser.sessions.iter().enumerate().skip(start).take(visible) {
+                let label = format!(
+                    "{} {}",
+                    &meta.session_id[..meta.session_id.len().min(8)],
+                    meta.title.as_deref().unwrap_or("(no title)"),
+                );
+                let label: String = label.chars().take(inner_w).collect();
+                let padded = format!("{label:<inner_w$}");
+                let row = modal_y + 1 + (i - start) as u32;
+                let style = if i == browser.selected { item_selected } else { item_normal };
+                buf.draw_text(modal_x + 1, row, &padded, style);
+            }
         }
 
         self.renderer.present()?;
@@ -674,6 +957,24 @@ fn short_json(v: &serde_json::Value, max: usize) -> String {
         let cut: String = s.chars().take(max.saturating_sub(1)).collect();
         format!("{cut}…")
     }
+}
+
+/// Cheap synchronous title lookup for the session browser. Mirrors the
+/// async `store::read_title` but runs on the main thread between ticks.
+fn read_title_sync(path: &std::path::Path) -> Option<String> {
+    let bytes = std::fs::read(path).ok()?;
+    let traj: crate::atif::Trajectory = serde_json::from_slice(&bytes).ok()?;
+    traj.steps
+        .iter()
+        .find(|s| matches!(s.source, crate::atif::StepSource::User))
+        .map(|s| {
+            let mut t = s.message.as_text();
+            if t.len() > 60 {
+                t.truncate(60);
+                t.push('…');
+            }
+            t
+        })
 }
 
 /// Default UI-event consumer: translates each `TuiEvent` into a NeMo

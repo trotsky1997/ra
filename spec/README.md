@@ -32,7 +32,7 @@ Authoritative schemas / specs for every protocol Ra speaks or persists to.
 | `ra-config.schema.json`           | Ra's own JSON Schema (HCP-flavored, factored down)      | generated via `cargo run --bin gen-schema`                | ✓ schemars derive |
 | `ra.toml.example`                 | Annotated example config covering every section         | hand-written                                              | tracks code |
 | **Tools — built-in catalog**      |                                                         |                                                           |           |
-| `tools.md`                        | Reference for `read`/`write`/`edit`/`bash`/`grep`/`find`/`ls` | hand-written                                        | tracks `src/tools/` |
+| `tools.md`                        | Reference for `read`/`write`/`edit`/`bash` | hand-written                                        | tracks `src/tools/` |
 | **Hooks — Claude Code wire**      |                                                         |                                                           |           |
 | (no local schema)                 | Wire format follows the upstream Claude Code hooks spec | https://code.claude.com/docs/en/hooks.md                  | reference |
 

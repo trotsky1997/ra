@@ -263,7 +263,7 @@ impl SessionRunner {
                         Ok(RaEvent::ToolCallStart(c)) => {
                             let kind = match c.name.as_str() {
                                 "read" => ToolKindHint::Read,
-                                "bash" => ToolKindHint::Execute,
+                                "bash" | "git" | "gh" => ToolKindHint::Execute,
                                 _ => ToolKindHint::Other,
                             };
                             let title = tool_title(&c.name, &c.input);
@@ -304,7 +304,7 @@ impl SessionRunner {
                             RaEvent::ToolCallStart(c) => {
                                 let kind = match c.name.as_str() {
                                     "read" => ToolKindHint::Read,
-                                    "bash" => ToolKindHint::Execute,
+                                    "bash" | "git" | "gh" => ToolKindHint::Execute,
                                     _ => ToolKindHint::Other,
                                 };
                                 let title = tool_title(&c.name, &c.input);

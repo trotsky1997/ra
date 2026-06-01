@@ -101,9 +101,12 @@ Run a shell command. With an ACP host attached, this routes through
 Output is the command's combined stdout+stderr; the local-fallback
 path also emits a `[exit=N]` event chunk on the broadcast bus.
 
-Prefer the native `git` and `gh` tools for those CLIs. Shell-native
-commands such as `grep`, `find`, and `ls` intentionally go through
-`bash`; Ra does not expose separate built-in wrappers for them.
+Prefer the native `git` and `gh` tools for argv-safe calls to those
+CLIs. Shell-native commands such as `grep`, `find`, and `ls`
+intentionally go through `bash`; Ra does not expose separate built-in
+wrappers for them. When a high-volume `git` or `gh` command needs RTK
+output compression, run it through `bash` so the existing RTK rewrite
+path can apply.
 
 ## Native CLI tools
 
@@ -113,6 +116,12 @@ binary directly with `Command::args`, preserving argv boundaries. With
 an ACP host attached, Ra reuses the same permission-gated
 `terminal/*` reverse-call path as `bash`, rendering the argv array as a
 shell-quoted command line for the host terminal.
+
+These native wrappers do not route through RTK. That tradeoff preserves
+argv semantics in the local process path instead of converting the call
+back into a shell command for compression. Use the `bash` tool for
+verbose `git` / `gh` commands when RTK compression is more important
+than argv-safe process execution.
 
 Output is the command's combined stdout+stderr; both local and ACP
 paths emit a `[exit=N]` event chunk on the broadcast bus.

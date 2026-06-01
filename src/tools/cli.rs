@@ -37,7 +37,9 @@ impl Tool for GitTool {
 
     fn description(&self) -> &str {
         "Run the native git CLI with an argv array. Prefer this over `bash` \
-         for git subcommands; pass only arguments, not the `git` binary."
+         for argv safety; pass only arguments, not the `git` binary. This \
+         native path does not use RTK; use `bash` when you need RTK output \
+         compression for very verbose git commands."
     }
 
     fn schema(&self) -> serde_json::Value {
@@ -62,8 +64,9 @@ impl Tool for GhTool {
 
     fn description(&self) -> &str {
         "Run the native GitHub CLI (`gh`) with an argv array. Prefer this \
-         over `bash` for GitHub issue, PR, repo, and auth commands; pass \
-         only arguments, not the `gh` binary."
+         over `bash` for argv safety; pass only arguments, not the `gh` \
+         binary. This native path does not use RTK; use `bash` when you \
+         need RTK output compression for very verbose gh commands."
     }
 
     fn schema(&self) -> serde_json::Value {

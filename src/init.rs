@@ -33,7 +33,7 @@ banner = true
 
 [tools]
 # Empty means: enable every built-in tool whose external dependency is present.
-# builtin = ["read", "write", "edit", "bash", "grep", "find", "ls"]
+# builtin = ["read", "write", "edit", "bash", "git", "gh"]
 builtin = []
 
 [skills]

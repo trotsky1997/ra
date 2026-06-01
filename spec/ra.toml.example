@@ -36,11 +36,13 @@ api_key_env = "ANTHROPIC_API_KEY"
 #   write  — write a file
 #   edit   — replace a literal substring inside a file (Claude Code shape)
 #   bash   — run a shell command (ACP terminal reverse-call when available)
+#   git    — run native git with argv-safe arguments
+#   gh     — run native GitHub CLI with argv-safe arguments
 # Shell-native commands such as grep/find/ls go through bash rather
-# than separate built-in tool wrappers.
+# than separate built-in tool wrappers. Prefer git/gh for those CLIs.
 # An empty list (or omitted section) ships every built-in tool.
 [tools]
-# builtin = ["read", "write", "edit", "bash"]
+# builtin = ["read", "write", "edit", "bash", "git", "gh"]
 builtin = []
 
 # ─── Skills (agentskills.io v1) ─────────────────────────────────────

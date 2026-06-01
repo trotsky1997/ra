@@ -29,4 +29,6 @@ pub use tool_ctx::{
     ClientHandle, FileChange, FileChangeApprover, FileChangeDecision, PermissionOutcome,
     TerminalRunResult, ToolCtx,
 };
-pub use tools::{BashTool, EditTool, ReadTool, RtkRewriter, Tool, WriteTool, default_builtins};
+pub use tools::{
+    default_builtins, BashTool, EditTool, GhTool, GitTool, ReadTool, RtkRewriter, Tool, WriteTool,
+};

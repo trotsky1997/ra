@@ -175,11 +175,17 @@ Resolution order: `--config <path>` → `$RA_CONFIG` → `./ra.toml` →
 | `write` | Writes a file in full; ACP `fs/write_text_file` when available. Auto-creates parent dirs locally. |
 | `edit`  | Claude-Code-shaped: `{path, old_string, new_string, replace_all}`. Refuses ambiguous matches by default. |
 | `bash`  | Runs a shell command; ACP `terminal/*` (with permission gating) when available, else `/bin/sh -c`. |
+| `git`   | Runs native `git` with argv-safe arguments; ACP hosts use the terminal reverse-call with shell quoting. This path does not use RTK. |
+| `gh`    | Runs native GitHub CLI (`gh`) with argv-safe arguments; ACP hosts use the terminal reverse-call with shell quoting. This path does not use RTK. |
 
 Toggle the catalog via `[tools] builtin = […]`; an empty allow-list
-ships every built-in tool. `grep`, `find`, `ls`, and similar shell
-commands intentionally go through `bash` rather than separate built-in
-tool definitions.
+ships every built-in tool. Prefer `git` / `gh` for those CLIs; `grep`,
+`find`, `ls`, and similar shell commands intentionally go through
+`bash` rather than separate built-in tool definitions.
+
+Native `git` / `gh` prioritize argv safety over RTK rewriting. If a
+high-volume `git` or `gh` command needs RTK output compression, run it
+through `bash` instead so the existing RTK rewrite path can apply.
 
 ## Protocols & specs
 

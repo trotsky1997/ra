@@ -648,7 +648,7 @@ impl TuiApp {
                         out.push(SessionMeta { session_id, path, modified, title });
                     }
                 }
-                out.sort_by(|a, b| b.modified.cmp(&a.modified));
+                out.sort_by_key(|m| std::cmp::Reverse(m.modified));
                 out
             }
         };
@@ -839,7 +839,7 @@ impl TuiApp {
 
         // ---- Session browser modal ---------------------------------
         if let Some(browser) = &self.browser {
-            let modal_w = width.min(70).max(30);
+            let modal_w = width.clamp(30, 70);
             let modal_h = (browser.sessions.len() as u32 + 4).min(height.saturating_sub(4)).max(5);
             let modal_x = (width.saturating_sub(modal_w)) / 2;
             let modal_y = (height.saturating_sub(modal_h)) / 2;

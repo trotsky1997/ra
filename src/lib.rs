@@ -33,9 +33,9 @@ pub use tool_ctx::{
     TerminalRunResult, ToolCtx,
 };
 pub use tools::{
-    default_builtins, default_builtins_with_cfg, ApplyPatchTool, AstGrepTool, BashTool, EditTool,
-    FuzzyTool, GhTool, GitTool, GlobTool, GrepTool, JqTool, JustTool, LsTool, LspTool,
-    MergirafTool, MiseTool, ReadTool, RtkRewriter, TmuxCaptureTool, TmuxKillTool, TmuxListenTool,
-    TmuxRunTool, TmuxSendTool, TmuxWaitTool, Tool, WebfetchCrawlTool, WebfetchFetchTool, WriteTool,
-    WrkflwTool,
+    default_builtins, default_builtins_with_cfg, ApplyPatchTool, AstGrepTool, BashTool,
+    CombyAction, CombyTool, EditTool, FuzzyTool, GhTool, GitTool, GlobTool, GrepTool, JqTool,
+    JustTool, LsTool, LspTool, MergirafTool, MiseTool, ReadTool, RtkRewriter, SdTool,
+    TmuxCaptureTool, TmuxKillTool, TmuxListenTool, TmuxRunTool, TmuxSendTool, TmuxWaitTool, Tool,
+    WebfetchCrawlTool, WebfetchFetchTool, WriteTool, WrkflwTool,
 };

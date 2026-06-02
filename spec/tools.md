@@ -117,6 +117,12 @@ Prefer `jq` over `bash` pipelines for JSON filtering. It preserves argv
 boundaries, feeds input through stdin, returns bounded JSON, and surfaces
 missing-`jq` installation guidance in a structured response.
 
+Prefer `sd` over `bash` + `sed` for regex or literal find/replace across
+files. Prefer `comby` over shell-composed structural rewrite commands for
+template-based code checks, diffs, and in-place rewrites. Both preserve argv
+boundaries, return bounded JSON, and surface missing-binary guidance in a
+structured response.
+
 Prefer `tmux_run`, `tmux_send`, `tmux_capture`, `tmux_kill`,
 `tmux_listen`, and `tmux_wait` over `bash` when the task needs
 persistent terminal state, interactive input, later output inspection,
@@ -131,11 +137,11 @@ compose a shell string. In local CLI / A2A / TUI mode Ra spawns the
 binary directly with `Command::args`, preserving argv boundaries. With an ACP
 host attached, `git` and `gh` reuse the same permission-gated `terminal/*`
 reverse-call path as `bash`, rendering the argv array as a shell-quoted command
-line for the host terminal. `jq`, `mergiraf`, `mise`, `just`, and `wrkflw`
-spawn local binaries directly so they can preserve stdin/output-envelope
-behavior; ACP terminal permission prompts do not wrap those local spawns. The
-central `[tools].builtin` allow-list and PreToolUse/PostToolUse hooks still
-apply.
+line for the host terminal. `jq`, `mergiraf`, `sd`, `comby`, `mise`, `just`,
+and `wrkflw` spawn local binaries directly so they can preserve
+stdin/output-envelope behavior; ACP terminal permission prompts do not wrap
+those local spawns. The central `[tools].builtin` allow-list and
+PreToolUse/PostToolUse hooks still apply.
 
 These native wrappers do not route through RTK. That tradeoff preserves
 argv semantics in the local process path instead of converting the call
@@ -143,9 +149,9 @@ back into a shell command for compression. Use the `bash` tool for
 verbose commands when RTK compression is more important than argv-safe
 process execution.
 
-`git` and `gh` return combined stdout+stderr. `jq`, `mergiraf`, `mise`,
-`just`, and `wrkflw` return bounded JSON envelopes. Tool calls emit progress
-and `[exit=N]` event chunks on the broadcast bus.
+`git` and `gh` return combined stdout+stderr. `jq`, `mergiraf`, `sd`,
+`comby`, `mise`, `just`, and `wrkflw` return bounded JSON envelopes. Tool
+calls emit progress and `[exit=N]` event chunks on the broadcast bus.
 
 ### `git`
 
@@ -304,6 +310,164 @@ stdout, stderr, and exit code. Missing mergiraf uses
 `error.kind:"missing_mergiraf"` with installation guidance including
 `cargo install mergiraf`. Output exceeding `max_output_bytes` is clipped with
 `truncated:true`.
+
+### `sd`
+
+Run native [`sd`](https://github.com/chmln/sd) for regex or literal
+find/replace across explicit file paths. Ra invokes `sd` with an argv array and
+never uses stdin mode, so `paths` must contain at least one entry. Because no
+shell expands arguments, `paths` are passed literally; use the `glob` tool or
+another file-discovery step first when you need glob expansion.
+
+CLI mapping:
+
+```text
+sd [--fixed-strings] [extra_args...] -- <find> <replace> <paths...>
+```
+
+```json
+{
+  "find": "foo_(\\w+)",
+  "replace": "bar_$1",
+  "paths": ["src/main.rs", "src/lib.rs"],
+  "timeout_ms": 30000,
+  "max_output_bytes": 32768
+}
+```
+
+```json
+{
+  "find": "a.b",
+  "replace": "x",
+  "paths": ["README.md"],
+  "string_mode": true,
+  "extra_args": ["--flags", "i"]
+}
+```
+
+| Field | Type | Required | Default | Notes |
+|-------|------|----------|---------|-------|
+| find | string | yes | | Regex pattern, or literal text when `string_mode:true` |
+| replace | string | yes | | Replacement string; sd handles capture references such as `$1` |
+| paths | array of strings | yes | | Explicit file paths; must not be empty |
+| string_mode | boolean | no | `false` | Maps to `--fixed-strings` |
+| extra_args | array of strings | no | `[]` | Advanced sd flags passed before find/replace |
+| cwd | string | no | session cwd | Working directory; relative paths resolve there |
+| timeout_ms | number | no | `30000` | Process timeout |
+| max_output_bytes | number | no | `32768` | Bounds Ra's returned JSON envelope; `0` means unbounded |
+
+Returned envelope:
+
+```json
+{
+  "ok": true,
+  "tool": "sd",
+  "command": {
+    "program": "sd",
+    "args": ["--", "foo", "bar", "src/main.rs"],
+    "cwd": "/repo"
+  },
+  "exit_code": 0,
+  "stdout": "",
+  "stderr": null,
+  "truncated": false
+}
+```
+
+Error cases are returned as valid JSON with `ok:false`. Empty `paths` or an
+invalid `cwd` use `error.kind:"invalid_request"` before spawning `sd`.
+Non-zero exits use `error.kind:"command_failed"` with stdout, stderr, and exit
+code. Timeouts use `error.kind:"timeout"`. Missing sd uses
+`error.kind:"missing_sd"` with installation guidance including `cargo install
+sd`. Output exceeding `max_output_bytes` is clipped with `truncated:true`.
+
+### `comby`
+
+Run native [`comby`](https://comby.dev/) for structural template matching and
+rewriting. The `action` field selects one of three safe command shapes:
+
+| Action | CLI mapping |
+|--------|-------------|
+| `rewrite` | `comby <match_template> <rewrite_template> [extensions...] [-d directory] [-matcher matcher] [-include-files regex] [-exclude-files regex] -in-place [extra_args...]` |
+| `check` | `comby <match_template> "" [extensions...] [-d directory] [-matcher matcher] [-include-files regex] [-exclude-files regex] -match-only [extra_args...]` |
+| `diff` | `comby <match_template> <rewrite_template> [extensions...] [-d directory] [-matcher matcher] [-include-files regex] [-exclude-files regex] -diff [extra_args...]` |
+
+`rewrite` mutates in place by default. `check` and `diff` do not pass
+`-in-place`.
+
+```json
+{
+  "action": "rewrite",
+  "match_template": "foo(:[arg])",
+  "rewrite_template": "bar(:[arg])",
+  "extensions": [".rs"],
+  "directory": "src",
+  "matcher": "rust",
+  "timeout_ms": 60000,
+  "max_output_bytes": 65536
+}
+```
+
+```json
+{
+  "action": "diff",
+  "match_template": "old_api(:[x])",
+  "rewrite_template": "new_api(:[x])",
+  "extensions": [".py"],
+  "matcher": "python"
+}
+```
+
+```json
+{
+  "action": "check",
+  "match_template": "deprecated(:[x])",
+  "extensions": [".js"],
+  "include_files": "src/.*"
+}
+```
+
+| Field | Type | Required | Default | Notes |
+|-------|------|----------|---------|-------|
+| action | string | yes | | `rewrite`, `check`, or `diff` |
+| match_template | string | yes | | Comby template using hole syntax such as `:[arg]` |
+| rewrite_template | string | for `rewrite`/`diff` | | Comby rewrite template |
+| extensions | array of strings | no | `[]` | File extensions passed as positional filters |
+| directory | string | no | | Passed to `-d` |
+| matcher | string | no | | Passed to `-matcher`, e.g. `rust`, `python`, `generic` |
+| include_files | string | no | | Regex passed to `-include-files` |
+| exclude_files | string | no | | Regex passed to `-exclude-files` |
+| extra_args | array of strings | no | `[]` | Advanced comby flags passed after Ra's action flag |
+| cwd | string | no | session cwd | Working directory for the process |
+| timeout_ms | number | no | `60000` | Process timeout |
+| max_output_bytes | number | no | `65536` | Bounds Ra's returned JSON envelope; `0` means unbounded |
+
+Returned envelope:
+
+```json
+{
+  "ok": true,
+  "tool": "comby",
+  "action": "diff",
+  "command": {
+    "program": "comby",
+    "args": ["foo(:[arg])", "bar(:[arg])", ".rs", "-diff"],
+    "cwd": "/repo"
+  },
+  "exit_code": 0,
+  "stdout": "--- a/src/lib.rs\n+++ b/src/lib.rs\n...",
+  "stderr": null,
+  "truncated": false
+}
+```
+
+Error cases are returned as valid JSON with `ok:false`. Missing or empty
+`rewrite_template` for `rewrite`/`diff`, empty `match_template`, or invalid
+`cwd` use `error.kind:"invalid_request"` before spawning `comby`. Non-zero
+exits use `error.kind:"command_failed"` with stdout, stderr, and exit code.
+Timeouts use `error.kind:"timeout"`. Missing comby uses
+`error.kind:"missing_comby"` with installation guidance. Output exceeding
+`max_output_bytes` is clipped with `truncated:true`.
 
 ### `mise`
 

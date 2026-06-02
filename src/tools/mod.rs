@@ -12,6 +12,8 @@
 //! - `git`   — run native git with argv-safe arguments
 //! - `gh`    — run native GitHub CLI with argv-safe arguments
 //! - `jq`    — run jq filters with argv-safe stdin
+//! - `sd`    — regex/literal find-replace across explicit paths
+//! - `comby` — structural code check/diff/rewrite
 //! - `mise`  — run mise tasks and tests with argv-safe arguments
 //! - `just`  — run just recipes with argv-safe arguments
 //! - `wrkflw` — validate/run GitHub Actions workflows locally
@@ -33,6 +35,7 @@
 //! - `tmux_wait` — block until a tmux event or timeout
 
 mod cli;
+mod comby;
 mod core;
 mod extended;
 mod fs;
@@ -41,12 +44,14 @@ mod lsp;
 mod mergiraf;
 mod openspec;
 mod rtk;
+mod sd;
 mod search;
 mod task_workflow;
 mod tmux;
 mod webfetch;
 
 pub use cli::{GhTool, GitTool};
+pub use comby::{CombyAction, CombyTool};
 pub use core::{BashTool, ReadTool};
 pub use extended::{ApplyPatchTool, FuzzyTool, GlobTool, GrepTool, LsTool};
 pub use fs::{EditTool, WriteTool};
@@ -55,6 +60,7 @@ pub use lsp::{resolve_openlsp_binary, LspTool};
 pub use mergiraf::MergirafTool;
 pub use openspec::OpenSpecTool;
 pub use rtk::RtkRewriter;
+pub use sd::SdTool;
 pub use search::AstGrepTool;
 pub use task_workflow::{JustTool, MiseTool, WrkflwTool};
 pub use tmux::{
@@ -108,6 +114,12 @@ pub fn default_builtins_with_cfg(
     }
     if want("jq") {
         out.push(Arc::new(JqTool));
+    }
+    if want("sd") {
+        out.push(Arc::new(SdTool));
+    }
+    if want("comby") {
+        out.push(Arc::new(CombyTool));
     }
     if want("mise") {
         out.push(Arc::new(MiseTool));
@@ -220,6 +232,19 @@ mod tests {
     #[test]
     fn allowlist_can_select_jq_exactly() {
         assert_eq!(builtin_names(&["jq"]), vec!["jq"]);
+    }
+
+    #[test]
+    fn default_catalog_includes_sd_and_comby_tools() {
+        let names = builtin_names(&[]);
+        assert!(names.contains(&"sd".to_string()));
+        assert!(names.contains(&"comby".to_string()));
+    }
+
+    #[test]
+    fn allowlist_can_select_sd_and_comby_exactly() {
+        assert_eq!(builtin_names(&["sd"]), vec!["sd"]);
+        assert_eq!(builtin_names(&["comby"]), vec!["comby"]);
     }
 
     #[test]

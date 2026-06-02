@@ -68,14 +68,14 @@ fn default_catalog_contains_task_workflow_tools_and_allowlist_is_exact() {
         .map(|tool| tool.name().to_string())
         .collect::<Vec<_>>();
 
-    for name in ["mise", "just", "wrkflw"] {
+    for name in ["mise", "just", "wrkflw", "mergiraf"] {
         assert!(
             names.contains(&name.to_string()),
             "missing {name}: {names:?}"
         );
     }
 
-    for name in ["mise", "just", "wrkflw"] {
+    for name in ["mise", "just", "wrkflw", "mergiraf"] {
         let filtered = ra::default_builtins(&[name.to_string()])
             .into_iter()
             .map(|tool| tool.name().to_string())

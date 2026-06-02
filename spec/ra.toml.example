@@ -40,6 +40,7 @@ api_key_env = "ANTHROPIC_API_KEY"
 #   git    — run native git with argv-safe arguments
 #   gh     — run native GitHub CLI with argv-safe arguments
 #   jq     — run jq filters against inline JSON or a JSON file
+#   mergiraf — syntax-aware merge conflict resolution
 #   grep   — structured text search
 #   glob   — structured file discovery
 #   ls     — structured directory listing
@@ -56,7 +57,7 @@ api_key_env = "ANTHROPIC_API_KEY"
 #   tmux_wait — block until a tmux event, hook expression, program result, or sleep timeout resolves
 # An empty list (or omitted section) ships every built-in tool.
 [tools]
-# builtin = ["read", "write", "edit", "bash", "ast_grep", "git", "gh", "jq", "grep", "glob", "ls", "fuzzy", "apply_patch", "webfetch_fetch", "webfetch_crawl", "openspec", "tmux_run", "tmux_send", "tmux_capture", "tmux_kill", "tmux_listen", "tmux_wait"]
+# builtin = ["read", "write", "edit", "bash", "ast_grep", "git", "gh", "jq", "mergiraf", "grep", "glob", "ls", "fuzzy", "apply_patch", "webfetch_fetch", "webfetch_crawl", "openspec", "tmux_run", "tmux_send", "tmux_capture", "tmux_kill", "tmux_listen", "tmux_wait"]
 builtin = []
 
 # ─── Skills (Claude Code / agentskills.io) ──────────────────────────

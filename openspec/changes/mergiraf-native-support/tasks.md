@@ -17,9 +17,9 @@
 
 ## 3. Documentation
 
-- [ ] 3.1 Add `mergiraf` row to the built-in tools table in `README.md`.
-- [ ] 3.2 Document the `mergiraf` schema, all three actions, result envelope, and error cases in `spec/tools.md`.
-- [ ] 3.3 Update `spec/ra.toml.example` and any init templates that enumerate built-in tools.
+- [x] 3.1 Add `mergiraf` row to the built-in tools table in `README.md`.
+- [x] 3.2 Document the `mergiraf` schema, all three actions, result envelope, and error cases in `spec/tools.md`.
+- [x] 3.3 Update `spec/ra.toml.example` and any init templates that enumerate built-in tools.
 
 ## 4. Tests
 

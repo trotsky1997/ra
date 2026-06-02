@@ -153,18 +153,15 @@ fn normalize_skills_args(mut args: Vec<String>) -> Vec<String> {
     let Some(command) = args.first().cloned() else {
         return vec!["--help".to_string()];
     };
-    if command == "add" || command == "a" {
-        if !skills_args_have_agent(&args[1..]) {
-            args.push("--agent".to_string());
-            args.push("codex".to_string());
-        }
+    if (command == "add" || command == "a") && !skills_args_have_agent(&args[1..]) {
+        args.push("--agent".to_string());
+        args.push("codex".to_string());
     }
     args
 }
 
 fn skills_args_have_agent(args: &[String]) -> bool {
-    let mut iter = args.iter();
-    while let Some(arg) = iter.next() {
+    for arg in args {
         if arg == "-a" || arg == "--agent" || arg == "--all" || arg.starts_with("--agent=") {
             return true;
         }

@@ -188,6 +188,15 @@ built-in tool.
   Graphify's NetworkX node-link JSON directly for native query/path/explain
   tools. The default update path is AST-only and local; semantic extraction
   is explicit because it may use an LLM backend.
+- **Memory Dreams (`src/memory_entry.rs`)** — Claude-style Dreams are
+  represented as an agent-owned synthesis seam above the local memory
+  pipeline, not as a `MemoryEntryLifecycle` state. `DreamScheduler`
+  exposes explicit policy decisions for when an agent should start a dream,
+  which prior sessions are eligible inputs, and whether a completed output
+  store may be adopted through the same `decide_use` gate as generated
+  durable memories. The current layer intentionally does not call a live
+  Dreams API. Dream output is generated memory state; the original sessions
+  and input memory store remain source evidence.
 - **Persistence (`src/store.rs`, `src/atif_codec.rs`, `src/atif.rs`)** —
   the message log encodes to ATIF v1.7 JSONL under
   `RA_HOME/sessions/<cwd-hash>/`. `atif_codec` must round-trip;

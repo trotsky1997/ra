@@ -245,6 +245,7 @@ pub fn policy_from_config(section: &MemorySection) -> MemoryPolicy {
         min_idle_before_generation: Duration::from_secs(section.min_idle_before_generation_secs),
         min_session_duration: Duration::from_secs(section.min_session_duration_secs),
         min_rate_limit_remaining_percent: section.min_rate_limit_remaining_percent,
+        min_sessions_between_dreams: section.min_sessions_between_dreams,
     }
 }
 

@@ -456,6 +456,9 @@ pub struct MemorySection {
     /// this percentage.
     #[serde(default)]
     pub min_rate_limit_remaining_percent: u8,
+    /// Minimum completed eligible sessions between agent-owned Dreams.
+    #[serde(default = "default_memory_sessions_between_dreams")]
+    pub min_sessions_between_dreams: usize,
     /// Optional root for generated memory state. Defaults to
     /// `<RA_HOME>/memories`.
     #[serde(default, alias = "path")]
@@ -476,6 +479,7 @@ impl Default for MemorySection {
             min_idle_before_generation_secs: default_memory_idle_secs(),
             min_session_duration_secs: default_memory_session_secs(),
             min_rate_limit_remaining_percent: 0,
+            min_sessions_between_dreams: default_memory_sessions_between_dreams(),
             dir: None,
             max_prompt_memories: default_memory_prompt_limit(),
         }
@@ -488,6 +492,10 @@ fn default_memory_idle_secs() -> u64 {
 
 fn default_memory_session_secs() -> u64 {
     60
+}
+
+fn default_memory_sessions_between_dreams() -> usize {
+    10
 }
 
 fn default_memory_prompt_limit() -> usize {
@@ -777,6 +785,7 @@ timeout = 2.0
         assert!(cfg.memory.generate_memories);
         assert_eq!(cfg.memory.min_idle_before_generation_secs, 600);
         assert_eq!(cfg.memory.min_session_duration_secs, 60);
+        assert_eq!(cfg.memory.min_sessions_between_dreams, 10);
 
         let toml_doc = r#"
 version = 1
@@ -789,6 +798,7 @@ suppress_on_external_context = true
 min_idle_secs = 5
 min_duration_secs = 2
 min_rate_limit_remaining_percent = 25
+min_sessions_between_dreams = 7
 path = "./.ra/memory"
 max_prompt_memories = 3
 "#;
@@ -800,6 +810,7 @@ max_prompt_memories = 3
         assert_eq!(cfg.memory.min_idle_before_generation_secs, 5);
         assert_eq!(cfg.memory.min_session_duration_secs, 2);
         assert_eq!(cfg.memory.min_rate_limit_remaining_percent, 25);
+        assert_eq!(cfg.memory.min_sessions_between_dreams, 7);
         assert_eq!(cfg.memory.dir.as_deref(), Some("./.ra/memory"));
         assert_eq!(cfg.memory.max_prompt_memories, 3);
     }

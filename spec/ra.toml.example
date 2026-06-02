@@ -200,6 +200,7 @@ mode = "default"                   # default | plan | ask
 # min_idle_before_generation_secs = 600
 # min_session_duration_secs = 60
 # min_rate_limit_remaining_percent = 0
+# min_sessions_between_dreams = 10
 # dir = "~/.local/share/ra/memories"   # optional override
 # max_prompt_memories = 20
 

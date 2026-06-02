@@ -450,16 +450,16 @@ async fn run_acp(config: &ra::config::RaConfig) -> anyhow::Result<()> {
     let hooks = build_hooks(config);
     let rtk = ra::RtkRewriter::from_config(&config.rtk);
     let memory = Arc::new(ra::memory::MemorySystem::from_config(config));
-    ra::acp_server::run(
+    ra::acp_server::run(ra::acp_server::AcpServerConfig {
         model,
-        factory,
+        model_factory: factory,
         extra_tools,
         system_prompt,
         prompt_templates,
         hooks,
         rtk,
         memory,
-    )
+    })
     .await
     .map_err(|e| anyhow::anyhow!("{e:?}"))?;
     Ok(())

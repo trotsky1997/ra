@@ -73,17 +73,29 @@ pub struct A2aState {
     memory: Arc<crate::memory::MemorySystem>,
 }
 
+struct A2aStateConfig {
+    model: Arc<dyn Model>,
+    model_factory: Arc<dyn ModelFactory>,
+    extra_tools: Vec<Arc<dyn Tool>>,
+    system_prompt: Option<String>,
+    prompt_templates: Arc<std::collections::HashMap<String, SlashTemplate>>,
+    hooks: Option<Arc<crate::hooks::HookEngine>>,
+    rtk: crate::tools::RtkRewriter,
+    memory: Arc<crate::memory::MemorySystem>,
+}
+
 impl A2aState {
-    pub fn new(
-        model: Arc<dyn Model>,
-        model_factory: Arc<dyn ModelFactory>,
-        extra_tools: Vec<Arc<dyn Tool>>,
-        system_prompt: Option<String>,
-        prompt_templates: Arc<std::collections::HashMap<String, SlashTemplate>>,
-        hooks: Option<Arc<crate::hooks::HookEngine>>,
-        rtk: crate::tools::RtkRewriter,
-        memory: Arc<crate::memory::MemorySystem>,
-    ) -> Self {
+    fn new(config: A2aStateConfig) -> Self {
+        let A2aStateConfig {
+            model,
+            model_factory,
+            extra_tools,
+            system_prompt,
+            prompt_templates,
+            hooks,
+            rtk,
+            memory,
+        } = config;
         // Full tool catalog supplied by the caller (main.rs); see
         // `tools::default_builtins` for the allow-list filter.
         let tools = extra_tools;
@@ -509,7 +521,7 @@ pub async fn run(
 ) -> Result<()> {
     nemo_obs::init();
 
-    let state = Arc::new(A2aState::new(
+    let state = Arc::new(A2aState::new(A2aStateConfig {
         model,
         model_factory,
         extra_tools,
@@ -518,7 +530,7 @@ pub async fn run(
         hooks,
         rtk,
         memory,
-    ));
+    }));
     let executor = RaExecutor {
         state: state.clone(),
     };

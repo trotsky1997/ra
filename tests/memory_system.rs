@@ -11,10 +11,11 @@ use ra::memory::{
 use ra::memory_entry::{GenerationDecision, MemoryEntry, SuppressionReason};
 use ra::model::{Message, Model, ModelChunk, StopReason, ToolSpec};
 use ra::Session;
+use tokio::sync::Mutex as AsyncMutex;
 
-fn env_lock() -> std::sync::MutexGuard<'static, ()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+fn env_lock() -> &'static AsyncMutex<()> {
+    static LOCK: OnceLock<AsyncMutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| AsyncMutex::new(()))
 }
 
 fn enabled_config() -> RaConfig {
@@ -75,7 +76,7 @@ fn memory_config_maps_to_lifecycle_policy_and_thread_controls() {
 
 #[tokio::test]
 async fn memory_store_defaults_under_ra_home_and_roundtrips_artifact() {
-    let _guard = env_lock();
+    let _guard = env_lock().lock().await;
     let tmp = tempfile::tempdir().unwrap();
     unsafe {
         std::env::set_var("RA_HOME", tmp.path());
@@ -108,7 +109,7 @@ async fn memory_store_defaults_under_ra_home_and_roundtrips_artifact() {
 
 #[tokio::test]
 async fn disabled_memory_does_not_create_state_when_loading_prompt() {
-    let _guard = env_lock();
+    let _guard = env_lock().lock().await;
     let tmp = tempfile::tempdir().unwrap();
     unsafe {
         std::env::set_var("RA_HOME", tmp.path());
@@ -123,7 +124,7 @@ async fn disabled_memory_does_not_create_state_when_loading_prompt() {
 
 #[tokio::test]
 async fn prompt_context_respects_use_and_external_context_suppression() {
-    let _guard = env_lock();
+    let _guard = env_lock().lock().await;
     let tmp = tempfile::tempdir().unwrap();
     unsafe {
         std::env::set_var("RA_HOME", tmp.path());
@@ -177,7 +178,7 @@ disable_on_external_context = true
 
 #[tokio::test]
 async fn generation_pipeline_applies_gates_and_redaction() {
-    let _guard = env_lock();
+    let _guard = env_lock().lock().await;
     let tmp = tempfile::tempdir().unwrap();
     unsafe {
         std::env::set_var("RA_HOME", tmp.path());
@@ -264,7 +265,7 @@ fn redaction_masks_common_secret_shapes() {
 
 #[tokio::test]
 async fn session_injects_memory_context_and_thread_can_suppress_it() {
-    let _guard = env_lock();
+    let _guard = env_lock().lock().await;
     let tmp = tempfile::tempdir().unwrap();
     unsafe {
         std::env::set_var("RA_HOME", tmp.path());

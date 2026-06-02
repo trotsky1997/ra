@@ -199,6 +199,28 @@ struct SharedState {
     memory: Arc<crate::memory::MemorySystem>,
 }
 
+struct SharedStateConfig {
+    model: Arc<dyn Model>,
+    model_factory: Arc<dyn ModelFactory>,
+    extra_tools: Vec<Arc<dyn Tool>>,
+    system_prompt: Option<String>,
+    prompt_templates: Arc<std::collections::HashMap<String, SlashTemplate>>,
+    hooks: Option<Arc<crate::hooks::HookEngine>>,
+    rtk: crate::tools::RtkRewriter,
+    memory: Arc<crate::memory::MemorySystem>,
+}
+
+pub struct AcpServerConfig {
+    pub model: Arc<dyn Model>,
+    pub model_factory: Arc<dyn ModelFactory>,
+    pub extra_tools: Vec<Arc<dyn Tool>>,
+    pub system_prompt: Option<String>,
+    pub prompt_templates: Arc<std::collections::HashMap<String, SlashTemplate>>,
+    pub hooks: Option<Arc<crate::hooks::HookEngine>>,
+    pub rtk: crate::tools::RtkRewriter,
+    pub memory: Arc<crate::memory::MemorySystem>,
+}
+
 /// Resolve a model id (sent by the client over `session/set_model`) to a `Model`
 /// instance. Implementors can read environment, multiplex backends, etc.
 pub trait ModelFactory: Send + Sync {
@@ -210,16 +232,17 @@ pub trait ModelFactory: Send + Sync {
 }
 
 impl SharedState {
-    fn new(
-        model: Arc<dyn Model>,
-        model_factory: Arc<dyn ModelFactory>,
-        extra_tools: Vec<Arc<dyn Tool>>,
-        system_prompt: Option<String>,
-        prompt_templates: Arc<std::collections::HashMap<String, SlashTemplate>>,
-        hooks: Option<Arc<crate::hooks::HookEngine>>,
-        rtk: crate::tools::RtkRewriter,
-        memory: Arc<crate::memory::MemorySystem>,
-    ) -> Self {
+    fn new(config: SharedStateConfig) -> Self {
+        let SharedStateConfig {
+            model,
+            model_factory,
+            extra_tools,
+            system_prompt,
+            prompt_templates,
+            hooks,
+            rtk,
+            memory,
+        } = config;
         let available_models = model_factory.available();
         let default_cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
         // The full tool catalog is passed in by the caller (main.rs) so the
@@ -507,21 +530,13 @@ impl ClientHandle for AcpClientHandle {
 
 /// Run the ACP server on stdio. Blocks until the client closes stdin.
 ///
-/// `model` is the initial model used for sessions until the client overrides
-/// it via `session/set_model`. `model_factory` is consulted on those overrides
-/// and to advertise the list of available models in `NewSessionResponse`.
-pub async fn run(
-    model: Arc<dyn Model>,
-    model_factory: Arc<dyn ModelFactory>,
-    extra_tools: Vec<Arc<dyn Tool>>,
-    system_prompt: Option<String>,
-    prompt_templates: Arc<std::collections::HashMap<String, SlashTemplate>>,
-    hooks: Option<Arc<crate::hooks::HookEngine>>,
-    rtk: crate::tools::RtkRewriter,
-    memory: Arc<crate::memory::MemorySystem>,
-) -> AcpResult<()> {
+/// `config.model` is the initial model used for sessions until the client
+/// overrides it via `session/set_model`. `config.model_factory` is consulted on
+/// those overrides and to advertise the list of available models in
+/// `NewSessionResponse`.
+pub async fn run(config: AcpServerConfig) -> AcpResult<()> {
     crate::nemo_obs::init();
-    let state = Arc::new(SharedState::new(
+    let AcpServerConfig {
         model,
         model_factory,
         extra_tools,
@@ -530,7 +545,17 @@ pub async fn run(
         hooks,
         rtk,
         memory,
-    ));
+    } = config;
+    let state = Arc::new(SharedState::new(SharedStateConfig {
+        model,
+        model_factory,
+        extra_tools,
+        system_prompt,
+        prompt_templates,
+        hooks,
+        rtk,
+        memory,
+    }));
 
     // Each handler closure is FnMut, so we clone the Arc into each one.
     let s_init = state.clone();

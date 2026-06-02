@@ -15,6 +15,7 @@
 //! - `mise`  — run mise tasks and tests with argv-safe arguments
 //! - `just`  — run just recipes with argv-safe arguments
 //! - `wrkflw` — validate/run GitHub Actions workflows locally
+//! - `mergiraf` — syntax-aware merge conflict resolution
 //! - `grep`  — structured text search
 //! - `glob`  — structured file discovery
 //! - `ls`    — structured directory listing
@@ -37,6 +38,7 @@ mod extended;
 mod fs;
 mod jq;
 mod lsp;
+mod mergiraf;
 mod openspec;
 mod rtk;
 mod search;
@@ -50,6 +52,7 @@ pub use extended::{ApplyPatchTool, FuzzyTool, GlobTool, GrepTool, LsTool};
 pub use fs::{EditTool, WriteTool};
 pub use jq::JqTool;
 pub use lsp::{resolve_openlsp_binary, LspTool};
+pub use mergiraf::MergirafTool;
 pub use openspec::OpenSpecTool;
 pub use rtk::RtkRewriter;
 pub use search::AstGrepTool;
@@ -114,6 +117,9 @@ pub fn default_builtins_with_cfg(
     }
     if want("wrkflw") {
         out.push(Arc::new(WrkflwTool));
+    }
+    if want("mergiraf") {
+        out.push(Arc::new(MergirafTool));
     }
     if want("grep") {
         out.push(Arc::new(GrepTool));
@@ -219,7 +225,7 @@ mod tests {
     #[test]
     fn default_catalog_includes_task_workflow_tools() {
         let names = builtin_names(&[]);
-        for name in ["mise", "just", "wrkflw"] {
+        for name in ["mise", "just", "wrkflw", "mergiraf"] {
             assert!(
                 names.contains(&name.to_string()),
                 "missing {name}: {names:?}"
@@ -232,6 +238,7 @@ mod tests {
         assert_eq!(builtin_names(&["mise"]), vec!["mise"]);
         assert_eq!(builtin_names(&["just"]), vec!["just"]);
         assert_eq!(builtin_names(&["wrkflw"]), vec!["wrkflw"]);
+        assert_eq!(builtin_names(&["mergiraf"]), vec!["mergiraf"]);
     }
 
     #[test]

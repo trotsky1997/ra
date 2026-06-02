@@ -131,10 +131,11 @@ compose a shell string. In local CLI / A2A / TUI mode Ra spawns the
 binary directly with `Command::args`, preserving argv boundaries. With an ACP
 host attached, `git` and `gh` reuse the same permission-gated `terminal/*`
 reverse-call path as `bash`, rendering the argv array as a shell-quoted command
-line for the host terminal. `jq`, `mise`, `just`, and `wrkflw` spawn local
-binaries directly so they can preserve stdin/output-envelope behavior; ACP
-terminal permission prompts do not wrap those local spawns. The central
-`[tools].builtin` allow-list and PreToolUse/PostToolUse hooks still apply.
+line for the host terminal. `jq`, `mergiraf`, `mise`, `just`, and `wrkflw`
+spawn local binaries directly so they can preserve stdin/output-envelope
+behavior; ACP terminal permission prompts do not wrap those local spawns. The
+central `[tools].builtin` allow-list and PreToolUse/PostToolUse hooks still
+apply.
 
 These native wrappers do not route through RTK. That tradeoff preserves
 argv semantics in the local process path instead of converting the call
@@ -142,9 +143,9 @@ back into a shell command for compression. Use the `bash` tool for
 verbose commands when RTK compression is more important than argv-safe
 process execution.
 
-`git` and `gh` return combined stdout+stderr. `jq`, `mise`, `just`, and
-`wrkflw` return bounded JSON envelopes. Tool calls emit progress and
-`[exit=N]` event chunks on the broadcast bus.
+`git` and `gh` return combined stdout+stderr. `jq`, `mergiraf`, `mise`,
+`just`, and `wrkflw` return bounded JSON envelopes. Tool calls emit progress
+and `[exit=N]` event chunks on the broadcast bus.
 
 ### `git`
 
@@ -229,6 +230,80 @@ and happen before jq is spawned. Non-zero jq exits use
 `error.kind:"jq_error"` with jq stderr and exit code. Missing jq uses
 `error.kind:"missing_jq"` with installation guidance. Output exceeding
 `max_output_bytes` is clipped with `truncated:true`.
+
+### `mergiraf`
+
+Run native [`mergiraf`](https://mergiraf.org/) for syntax-aware merge
+workflows. The `action` field selects one of three command shapes:
+
+| Action | CLI mapping | Mutation behavior |
+|--------|-------------|-------------------|
+| `merge` | `mergiraf merge <base> <ours> <theirs> [--language language] [--compact] [--allow-parse-errors]` | Prints the merge result to stdout unless mergiraf itself decides otherwise; this wrapper does not pass `--git` or `--output`. |
+| `solve` | `mergiraf solve <file>` | Lets mergiraf update the conflicted file according to its normal `solve` behavior. |
+| `languages` | `mergiraf languages --gitattributes` | Read-only supported-language listing. |
+
+```json
+{
+  "action": "merge",
+  "base": "base.rs",
+  "ours": "ours.rs",
+  "theirs": "theirs.rs",
+  "language": "rust",
+  "compact": true
+}
+```
+
+```json
+{
+  "action": "solve",
+  "file": "src/conflicted.rs",
+  "cwd": "."
+}
+```
+
+```json
+{ "action": "languages" }
+```
+
+| Field | Type | Required | Default | Notes |
+|-------|------|----------|---------|-------|
+| action | string | yes | | `merge`, `solve`, or `languages` |
+| base | string | for `merge` | | Base file path passed as one argv entry |
+| ours | string | for `merge` | | Ours/current file path passed as one argv entry |
+| theirs | string | for `merge` | | Theirs/other file path passed as one argv entry |
+| file | string | for `solve` | | Conflict-marker file passed as one argv entry |
+| language | string | no | | Maps to `--language <language>` for `merge` |
+| compact | boolean | no | `false` | Maps to `--compact` for `merge` |
+| allow_parse_errors | boolean | no | `false` | Maps to `--allow-parse-errors` for `merge` |
+| cwd | string | no | session cwd | Working directory; relative paths resolve there |
+| max_output_bytes | number | no | `100000` | Bounds Ra's returned JSON envelope; `0` means unbounded |
+
+Returned envelope:
+
+```json
+{
+  "ok": true,
+  "tool": "mergiraf",
+  "action": "merge",
+  "command": {
+    "program": "mergiraf",
+    "args": ["merge", "base.rs", "ours.rs", "theirs.rs"],
+    "cwd": "/repo"
+  },
+  "exit_code": 0,
+  "stdout": "merged contents\n",
+  "stderr": null,
+  "truncated": false
+}
+```
+
+Error cases are returned as valid JSON with `ok:false`. Missing required
+action fields or an invalid `cwd` use `error.kind:"invalid_request"` before
+spawning mergiraf. Non-zero exits use `error.kind:"mergiraf_error"` with
+stdout, stderr, and exit code. Missing mergiraf uses
+`error.kind:"missing_mergiraf"` with installation guidance including
+`cargo install mergiraf`. Output exceeding `max_output_bytes` is clipped with
+`truncated:true`.
 
 ### `mise`
 

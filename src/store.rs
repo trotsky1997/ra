@@ -144,7 +144,7 @@ impl SessionStore {
 }
 
 /// 16-hex-char prefix of `sha256(cwd_str)`. Stable, filesystem-safe.
-fn cwd_hash(cwd: &Path) -> String {
+pub(crate) fn cwd_hash(cwd: &Path) -> String {
     let canon = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
     let mut h = Sha256::new();
     h.update(canon.to_string_lossy().as_bytes());

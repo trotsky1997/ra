@@ -19,6 +19,9 @@
     "mcp": {
       "$ref": "#/definitions/McpSection"
     },
+    "memory": {
+      "$ref": "#/definitions/MemorySection"
+    },
     "model": {
       "$ref": "#/definitions/ModelSelectorSection"
     },
@@ -327,6 +330,74 @@
             "string",
             "null"
           ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "MemorySection": {
+      "description": "`[memory]` — Codex-style local generated memories. The feature is globally disabled by default; enabling it lets Ra load durable memories into prompt context and generate new local artifacts after eligible sessions.",
+      "type": "object",
+      "properties": {
+        "dir": {
+          "description": "Optional root for generated memory state. Defaults to `<RA_HOME>/memories`.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "disable_on_external_context": {
+          "description": "Disable memory use/generation when external context is present. Accepted aliases cover common wording in upstream and older Ra config drafts.",
+          "default": false,
+          "type": "boolean"
+        },
+        "enabled": {
+          "description": "Global master switch. Default false.",
+          "default": false,
+          "type": "boolean"
+        },
+        "generate_memories": {
+          "description": "Config-level default for contributing future memories. Thread/session controls can further suppress generation without mutating this setting.",
+          "default": true,
+          "type": "boolean"
+        },
+        "max_prompt_memories": {
+          "description": "Max number of memory artifacts rendered into prompt context.",
+          "default": 20,
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0.0
+        },
+        "min_idle_before_generation_secs": {
+          "description": "Idle delay before background generation, in seconds.",
+          "default": 600,
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "min_rate_limit_remaining_percent": {
+          "description": "Skip generation when remaining context/rate-limit headroom is below this percentage.",
+          "default": 0,
+          "type": "integer",
+          "format": "uint8",
+          "minimum": 0.0
+        },
+        "min_session_duration_secs": {
+          "description": "Minimum session duration before generation, in seconds.",
+          "default": 60,
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "region_available": {
+          "description": "Region availability gate. Exposed for parity with Codex-style policy; default true for local Ra.",
+          "default": true,
+          "type": "boolean"
+        },
+        "use_memories": {
+          "description": "Config-level default for using existing memories. Thread/session controls can further suppress use without mutating this setting.",
+          "default": true,
+          "type": "boolean"
         }
       },
       "additionalProperties": false

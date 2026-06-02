@@ -186,6 +186,23 @@ mode = "default"                   # default | plan | ask
 # system_prompt_path = "./prompts/system.md"
 # append_system_prompt_paths = ["./prompts/style.md"]
 
+# ─── Memory (Codex-style generated local recall) ────────────────────
+# Globally disabled by default. When enabled, Ra stores generated,
+# inspectable memory artifacts under <RA_HOME>/memories/<cwd-hash>/ and
+# loads eligible durable memories into prompt context. Required team
+# rules still belong in AGENTS.md or checked-in docs, not only memory
+# state.
+# [memory]
+# enabled = false
+# use_memories = true
+# generate_memories = true
+# disable_on_external_context = false
+# min_idle_before_generation_secs = 600
+# min_session_duration_secs = 60
+# min_rate_limit_remaining_percent = 0
+# dir = "~/.local/share/ra/memories"   # optional override
+# max_prompt_memories = 20
+
 # ─── RTK (Rust Token Killer) ───────────────────────────────────────
 # Native integration with https://github.com/rtk-ai/rtk: when enabled,
 # every bash command is offered to `rtk rewrite` first; if RTK has a

@@ -449,15 +449,17 @@ async fn run_acp(config: &ra::config::RaConfig) -> anyhow::Result<()> {
         load_skills_and_prompts(config, graphify_workflow.clone());
     let hooks = build_hooks(config);
     let rtk = ra::RtkRewriter::from_config(&config.rtk);
-    ra::acp_server::run(
+    let memory = Arc::new(ra::memory::MemorySystem::from_config(config));
+    ra::acp_server::run(ra::acp_server::AcpServerConfig {
         model,
-        factory,
+        model_factory: factory,
         extra_tools,
         system_prompt,
         prompt_templates,
         hooks,
         rtk,
-    )
+        memory,
+    })
     .await
     .map_err(|e| anyhow::anyhow!("{e:?}"))?;
     Ok(())
@@ -505,6 +507,7 @@ async fn run_serve(
         hooks,
         bearer,
         ra::RtkRewriter::from_config(&config.rtk),
+        Arc::new(ra::memory::MemorySystem::from_config(config)),
     )
     .await
 }
@@ -561,6 +564,12 @@ async fn run_print(prompt: Option<String>, config: &ra::config::RaConfig) -> any
     if let Some(sp) = system_prompt {
         session.set_system_prompt(sp).await;
     }
+    let memory = ra::memory::MemorySystem::from_config(config);
+    if let Some(prompt) =
+        ra::memory::load_prompt_for_cwd(Some(&memory), &std::env::current_dir()?).await
+    {
+        session.set_memory_prompt(Some(prompt)).await;
+    }
 
     let printer = spawn_event_printer(session.subscribe());
 
@@ -581,6 +590,8 @@ async fn run_print(prompt: Option<String>, config: &ra::config::RaConfig) -> any
             ),
             Err(e) => eprintln!("[ra] warning: could not save session: {e:#}"),
         }
+        ra::memory::generate_for_session(Some(&memory), &cwd, &session_id, session.clone(), None)
+            .await;
     }
     Ok(())
 }
@@ -679,6 +690,10 @@ async fn run_resume(id: &str, prompt: String, config: &ra::config::RaConfig) -> 
     if let Some(sp) = system_prompt {
         session.set_system_prompt(sp).await;
     }
+    let memory = ra::memory::MemorySystem::from_config(config);
+    if let Some(prompt) = ra::memory::load_prompt_for_cwd(Some(&memory), &cwd).await {
+        session.set_memory_prompt(Some(prompt)).await;
+    }
     session.restore_messages(messages).await;
 
     let printer = spawn_event_printer(session.subscribe());
@@ -693,6 +708,7 @@ async fn run_resume(id: &str, prompt: String, config: &ra::config::RaConfig) -> 
     if let Err(e) = store.save(&traj).await {
         eprintln!("[ra] warning: failed to save resumed trajectory: {e:#}");
     }
+    ra::memory::generate_for_session(Some(&memory), &cwd, id, session.clone(), None).await;
     Ok(())
 }
 

@@ -196,6 +196,10 @@ async fn build_session(
     if let Some(sp) = system_prompt {
         session.set_system_prompt(sp).await;
     }
+    let memory = crate::memory::MemorySystem::from_config(config);
+    if let Some(prompt) = crate::memory::load_prompt_for_cwd(Some(&memory), &cwd).await {
+        session.set_memory_prompt(Some(prompt)).await;
+    }
     Ok((session, prompt_templates))
 }
 
@@ -281,6 +285,7 @@ struct TuiRunnerHost {
     session_id: String,
     config_model_name: Option<String>,
     ctx_window: u64,
+    memory: crate::memory::MemorySystem,
 }
 
 #[async_trait]
@@ -303,6 +308,14 @@ impl RunnerHost for TuiRunnerHost {
         if let Err(e) = store.save(&traj).await {
             eprintln!("[ra::tui] failed to save session: {e:#}");
         }
+        crate::memory::generate_for_session(
+            Some(&self.memory),
+            &cwd,
+            &self.session_id,
+            self.session.clone(),
+            None,
+        )
+        .await;
     }
 
     fn default_ctx_window(&self) -> u64 {
@@ -435,6 +448,7 @@ impl TuiApp {
             session_id: session_id.clone(),
             config_model_name,
             ctx_window: 200_000,
+            memory: crate::memory::MemorySystem::from_config(config),
         });
         let runner = Arc::new(
             SessionRunner::new(session.clone(), session_id.clone(), host)

@@ -389,6 +389,13 @@
           "format": "uint64",
           "minimum": 0.0
         },
+        "min_sessions_between_dreams": {
+          "description": "Minimum completed eligible sessions between agent-owned Dreams.",
+          "default": 10,
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0.0
+        },
         "region_available": {
           "description": "Region availability gate. Exposed for parity with Codex-style policy; default true for local Ra.",
           "default": true,

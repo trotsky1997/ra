@@ -108,3 +108,19 @@ existing memoryEntry lifecycle policy before writing artifacts.
 - **THEN** Ra redacts those fields before writing and records that redaction was
   applied
 
+### Requirement: Dream Scheduling Configuration
+
+Ra SHALL expose a memory configuration threshold for the minimum number of
+eligible sessions between agent-owned Dreams.
+
+#### Scenario: Default dream scheduling threshold
+
+- **WHEN** Ra loads a minimal config
+- **THEN** the memory policy uses a conservative default of 10 sessions between
+  Dreams
+
+#### Scenario: Configured dream scheduling threshold
+
+- **WHEN** Ra loads `[memory] min_sessions_between_dreams`
+- **THEN** Ra maps that value into the runtime memory policy
+

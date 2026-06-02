@@ -28,6 +28,7 @@ enabled = true
 min_idle_before_generation_secs = 0
 min_session_duration_secs = 0
 min_rate_limit_remaining_percent = 20
+min_sessions_between_dreams = 7
 max_prompt_memories = 5
 "#,
     )
@@ -61,6 +62,7 @@ fn memory_config_maps_to_lifecycle_policy_and_thread_controls() {
     assert!(policy.use_memories);
     assert!(policy.generate_memories);
     assert_eq!(policy.min_rate_limit_remaining_percent, 20);
+    assert_eq!(policy.min_sessions_between_dreams, 7);
 
     let thread_policy = policy_for_thread(
         &policy,

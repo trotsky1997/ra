@@ -6,6 +6,9 @@
 
 use std::time::Duration;
 
+/// Claude Dreams accepts at most 100 session transcripts per dream job.
+pub const DREAM_INPUT_SESSION_CAP: usize = 100;
+
 /// Policy switches and thresholds that apply to memory generation and use.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemoryPolicy {
@@ -17,6 +20,7 @@ pub struct MemoryPolicy {
     pub min_idle_before_generation: Duration,
     pub min_session_duration: Duration,
     pub min_rate_limit_remaining_percent: u8,
+    pub min_sessions_between_dreams: usize,
 }
 
 impl Default for MemoryPolicy {
@@ -30,6 +34,7 @@ impl Default for MemoryPolicy {
             min_idle_before_generation: Duration::from_secs(10 * 60),
             min_session_duration: Duration::from_secs(60),
             min_rate_limit_remaining_percent: 0,
+            min_sessions_between_dreams: 10,
         }
     }
 }
@@ -145,6 +150,159 @@ pub enum MemoryEntryLifecycle {
     Durable,
     ActiveForUse,
     Suppressed(SuppressionReason),
+}
+
+/// Agent-side policy helper for Claude-style Dreams.
+///
+/// Dreams synthesize many sessions and an input memory store into a new output
+/// memory store. They are intentionally modeled above `MemoryEntryLifecycle`
+/// because they are not a per-entry lifecycle state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DreamScheduler {
+    policy: MemoryPolicy,
+}
+
+impl DreamScheduler {
+    pub fn new(policy: MemoryPolicy) -> Self {
+        Self { policy }
+    }
+
+    pub fn policy(&self) -> &MemoryPolicy {
+        &self.policy
+    }
+
+    /// Decide whether the agent should start a dream now.
+    ///
+    /// The agent owns the scheduling loop; this method only evaluates the
+    /// memory policy gates that make the decision auditable.
+    pub fn should_dream(
+        &self,
+        sessions_since_last_dream: usize,
+        rate_limit_remaining_percent: Option<u8>,
+    ) -> ShouldDreamDecision {
+        if !self.policy.memories_enabled {
+            return ShouldDreamDecision::Skip(DreamSkipReason::MemoriesDisabled);
+        }
+        if !self.policy.region_available {
+            return ShouldDreamDecision::Skip(DreamSkipReason::RegionUnavailable);
+        }
+        if !self.policy.generate_memories {
+            return ShouldDreamDecision::Skip(DreamSkipReason::GenerationDisabled);
+        }
+        if rate_limit_remaining_percent
+            .is_some_and(|remaining| remaining < self.policy.min_rate_limit_remaining_percent)
+        {
+            return ShouldDreamDecision::Skip(DreamSkipReason::RateLimitTooLow);
+        }
+        if sessions_since_last_dream < self.policy.min_sessions_between_dreams {
+            return ShouldDreamDecision::Skip(DreamSkipReason::NotEnoughSessions);
+        }
+        ShouldDreamDecision::Dream
+    }
+
+    /// Select eligible past sessions for a dream input batch.
+    ///
+    /// Active and too-short sessions are excluded. Idle delay is intentionally
+    /// ignored here because Dreams consume prior sessions rather than deciding
+    /// whether a just-finished session may generate an entry.
+    pub fn select_dream_inputs<'a>(
+        &self,
+        candidates: &'a [MemoryCandidate],
+    ) -> Vec<&'a MemoryCandidate> {
+        candidates
+            .iter()
+            .filter(|candidate| {
+                !candidate.is_active
+                    && candidate.session_duration >= self.policy.min_session_duration
+                    && !(self.policy.disable_on_external_context && candidate.has_external_context)
+            })
+            .take(DREAM_INPUT_SESSION_CAP)
+            .collect()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShouldDreamDecision {
+    Dream,
+    Skip(DreamSkipReason),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DreamSkipReason {
+    MemoriesDisabled,
+    RegionUnavailable,
+    GenerationDisabled,
+    RateLimitTooLow,
+    NotEnoughSessions,
+}
+
+/// Agent-owned dream job state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DreamJob {
+    pub dream_id: String,
+    pub input_store_id: String,
+    pub output_store_id: Option<String>,
+    pub status: DreamStatus,
+}
+
+impl DreamJob {
+    pub fn new(dream_id: impl Into<String>, input_store_id: impl Into<String>) -> Self {
+        Self {
+            dream_id: dream_id.into(),
+            input_store_id: input_store_id.into(),
+            output_store_id: None,
+            status: DreamStatus::Pending,
+        }
+    }
+
+    pub fn update(&mut self, status: DreamStatus, output_store_id: Option<impl Into<String>>) {
+        self.status = status;
+        self.output_store_id = output_store_id.map(Into::into);
+    }
+
+    /// Decide whether the completed dream output may be adopted for future use.
+    ///
+    /// Adoption reuses the same memory use gate as ordinary generated durable
+    /// memories. Non-completed jobs or completed jobs without an output store do
+    /// not become active.
+    pub fn adopt_output(
+        &self,
+        policy: &MemoryPolicy,
+        has_external_context: bool,
+    ) -> DreamAdoptionDecision {
+        if self.status != DreamStatus::Completed {
+            return DreamAdoptionDecision::Suppressed {
+                reason: SuppressionReason::EntryNotDurable,
+            };
+        }
+        let Some(output_store_id) = &self.output_store_id else {
+            return DreamAdoptionDecision::Suppressed {
+                reason: SuppressionReason::EntryNotDurable,
+            };
+        };
+        let output_entry = MemoryEntry::generated(false);
+        match decide_use(policy, &output_entry, has_external_context) {
+            UseDecision::Active => DreamAdoptionDecision::Adopted {
+                output_store_id: output_store_id.clone(),
+            },
+            UseDecision::Suppressed { reason } => DreamAdoptionDecision::Suppressed { reason },
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DreamStatus {
+    Pending,
+    Running,
+    Completed,
+    Failed { error_type: String },
+    Canceled,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DreamAdoptionDecision {
+    Adopted { output_store_id: String },
+    Suppressed { reason: SuppressionReason },
 }
 
 /// Decide whether a thread/session may generate a memory entry.

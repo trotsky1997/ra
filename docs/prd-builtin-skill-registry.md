@@ -9,7 +9,7 @@ Ra should not reimplement the `npx skills` ecosystem manager. Instead, Ra should
 ## Goals & Success Metrics
 
 - Ra ships a deterministic builtin skill registry that can be loaded without network access.
-- Ra can load a local git-backed skill registry and records its HEAD revision as skill provenance.
+- Ra can load a local clean git checkout as a skill registry and records its HEAD revision as skill provenance.
 - Project and global installed skills can shadow Ra builtin skills by command name.
 - Users can manage external skills through `ra skills ...` with behavior aligned to `npx skills`.
 - Project-level installs default to a path Ra already discovers.
@@ -33,8 +33,9 @@ Ra should not reimplement the `npx skills` ecosystem manager. Instead, Ra should
 | Must | Allow project or global skills to shadow builtin skills with the same slash command name. |
 | Must | Expose only the resolved active winner in the model-facing catalog and slash-command map. |
 | Must | Add config controls to enable/disable builtin skills and include/exclude builtin names. |
-| Must | Support an optional local registry path that is treated as a git checkout and skipped if it is not versioned by git. |
+| Must | Support an optional local registry path that must be the root of a git checkout and is skipped if it is not versioned by git. |
 | Must | Record the registry HEAD commit for each skill loaded from the local registry. |
+| Must | Skip registry loading when the registry checkout has uncommitted or untracked changes, so HEAD provenance describes the loaded content. |
 | Must | Preserve progressive disclosure: builtin skill bodies must not be dumped into the startup system prompt. |
 | Must | Support `ra skills add/list/find/remove/update/init` by forwarding to `npx skills`. |
 | Must | When forwarding `ra skills add` without an explicit `--agent`, default to `--agent codex` so installs land in `.agents/skills/` for project scope. |
@@ -59,7 +60,7 @@ Ra should not reimplement the `npx skills` ecosystem manager. Instead, Ra should
 
 `npx skills` is the ecosystem manager. It owns source formats, install/update/remove behavior, project/global scopes, agent target paths, and interactive flows. Ra should use it as a subprocess for management commands.
 
-Ra's runtime registry has two local sources. The builtin source is embedded with Ra and provides fallback skills. The local registry source is a git checkout, analogous to the GitHub repositories used by `npx skills`, so skill versions are managed by commits, branches, tags, and ordinary git operations. Builtin and registry entries should behave like ordinary skills after resolution, including `disable-model-invocation`, `user-invocable`, runtime tool policy, hooks, model overrides, shell context, and fork behavior.
+Ra's runtime registry has two local sources. The builtin source is embedded with Ra and provides fallback skills. The local registry source is a clean git checkout root, analogous to the GitHub repositories used by `npx skills`, so skill versions are managed by commits, branches, tags, and ordinary git operations. Builtin and registry entries should behave like ordinary skills after resolution, including `disable-model-invocation`, `user-invocable`, runtime tool policy, hooks, model overrides, shell context, and fork behavior.
 
 ## Technical Considerations
 
@@ -67,7 +68,7 @@ The implementation should extend `src/skills.rs` with a `SkillSource` or equival
 
 Builtin definitions can live in a repo directory such as `skills/.system/<name>/SKILL.md` and be embedded at compile time with `include_str!`, or be loaded from a packaged runtime directory. Embedding is safer for single-binary installs; materializing to a read-only cache path may be useful so the existing `read` tool can load full builtin skill bodies during progressive disclosure.
 
-The optional local registry should default to `~/.ra/skill-registry` when the directory exists. It must be a git checkout; Ra should not silently treat an unversioned directory as a registry. Ra should not fetch, pull, checkout, or mutate the registry during normal startup. Version changes happen through git commands or future explicit registry-management commands.
+The optional local registry should default to `~/.ra/skill-registry` when the directory exists. It must be the root of a clean git checkout; Ra should not silently treat an unversioned directory, a subdirectory inside a larger repository, or a dirty worktree as a registry. Ra should not fetch, pull, checkout, or mutate the registry during normal startup. Version changes happen through git commands or future explicit registry-management commands.
 
 The `ra skills` adapter should shell out to:
 

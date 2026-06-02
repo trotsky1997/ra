@@ -724,38 +724,6 @@
       },
       "additionalProperties": false
     },
-    "SkillsSection": {
-      "type": "object",
-      "properties": {
-        "builtin": {
-          "description": "Ra-shipped builtin skill controls. Builtins are the lowest-priority source and can be shadowed by explicit, project, global, or registry skills.",
-          "$ref": "#/definitions/BuiltinSkillsSection"
-        },
-        "discover": {
-          "description": "Auto-discover skills from Ra-native, universal/cross-agent, Codex, and Claude Code layouts: `./.ra/skills/`, `~/.ra/skills/`, `./.agents/skills/`, `~/.agents/skills/`, `~/.codex/skills/`, `./.claude/skills/`, and `~/.claude/skills/`. Default true so project and personal skills work without explicit paths.",
-          "default": true,
-          "type": "boolean"
-        },
-        "enabled": {
-          "description": "Master switch. Default true.",
-          "default": true,
-          "type": "boolean"
-        },
-        "paths": {
-          "description": "Extra glob patterns expanded against `~` and the cwd. Each match is loaded as a SKILL.md, on top of (and de-duplicated against) whatever `discover` finds.",
-          "default": [],
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "registry": {
-          "description": "Optional local skill registry checkout. The registry must be a git repository; Ra records its HEAD revision as skill provenance.",
-          "$ref": "#/definitions/SkillRegistrySection"
-        }
-      },
-      "additionalProperties": false
-    },
     "SkillRegistrySection": {
       "type": "object",
       "properties": {
@@ -781,11 +749,51 @@
           }
         },
         "path": {
-          "description": "Local git checkout containing SKILL.md files. If omitted, Ra checks `~/.ra/skill-registry` and skips it when absent.",
+          "description": "Local clean git checkout root containing SKILL.md files. If omitted, Ra checks `~/.ra/skill-registry` and skips it when absent.",
           "default": null,
           "type": [
             "string",
             "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "SkillsSection": {
+      "type": "object",
+      "properties": {
+        "builtin": {
+          "description": "Ra-shipped builtin skill controls. Builtins are the lowest-priority source and can be shadowed by explicit, project, global, or registry skills.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/BuiltinSkillsSection"
+            }
+          ]
+        },
+        "discover": {
+          "description": "Auto-discover skills from Ra-native, universal/cross-agent, Codex, and Claude Code layouts: `./.ra/skills/`, `~/.ra/skills/`, `./.agents/skills/`, `~/.agents/skills/`, `~/.codex/skills/`, `./.claude/skills/`, and `~/.claude/skills/`. Default true so project and personal skills work without explicit paths.",
+          "default": true,
+          "type": "boolean"
+        },
+        "enabled": {
+          "description": "Master switch. Default true.",
+          "default": true,
+          "type": "boolean"
+        },
+        "paths": {
+          "description": "Extra glob patterns expanded against `~` and the cwd. Each match is loaded as a SKILL.md, on top of (and de-duplicated against) whatever `discover` finds.",
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "registry": {
+          "description": "Optional local skill registry checkout. The registry must be a clean git worktree root; Ra records its HEAD revision as skill provenance.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/SkillRegistrySection"
+            }
           ]
         }
       },

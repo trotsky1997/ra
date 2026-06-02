@@ -163,8 +163,8 @@ pub struct SkillsSection {
     /// skills.
     #[serde(default)]
     pub builtin: BuiltinSkillsSection,
-    /// Optional local skill registry checkout. The registry must be a git
-    /// repository; Ra records its HEAD revision as skill provenance.
+    /// Optional local skill registry checkout. The registry must be a clean git
+    /// worktree root; Ra records its HEAD revision as skill provenance.
     #[serde(default)]
     pub registry: SkillRegistrySection,
 }
@@ -195,8 +195,8 @@ pub struct SkillRegistrySection {
     /// exists.
     #[serde(default = "default_true")]
     pub enabled: bool,
-    /// Local git checkout containing SKILL.md files. If omitted, Ra checks
-    /// `~/.ra/skill-registry` and skips it when absent.
+    /// Local clean git checkout root containing SKILL.md files. If omitted, Ra
+    /// checks `~/.ra/skill-registry` and skips it when absent.
     #[serde(default)]
     pub path: Option<String>,
     /// Empty = load every discovered registry skill. Non-empty = load only

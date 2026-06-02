@@ -54,7 +54,7 @@ discover = true
 paths = []
 
 [skills.registry]
-# Optional local git checkout for versioned skill catalogs.
+# Optional clean git checkout root for versioned skill catalogs.
 enabled = true
 # path = "~/.ra/skill-registry"
 # include = []

@@ -27,22 +27,7 @@ fn write_skill(root: &std::path::Path, slug: &str, body: &str) {
 }
 
 fn git_commit_all(dir: &std::path::Path) -> String {
-    Command::new("git")
-        .arg("init")
-        .arg("-q")
-        .current_dir(dir)
-        .status()
-        .unwrap();
-    Command::new("git")
-        .args(["config", "user.email", "ra@example.invalid"])
-        .current_dir(dir)
-        .status()
-        .unwrap();
-    Command::new("git")
-        .args(["config", "user.name", "Ra Test"])
-        .current_dir(dir)
-        .status()
-        .unwrap();
+    init_git_repo(dir);
     Command::new("git")
         .args(["add", "."])
         .current_dir(dir)
@@ -60,6 +45,25 @@ fn git_commit_all(dir: &std::path::Path) -> String {
         .unwrap();
     assert!(output.status.success());
     String::from_utf8(output.stdout).unwrap().trim().to_string()
+}
+
+fn init_git_repo(dir: &std::path::Path) {
+    Command::new("git")
+        .arg("init")
+        .arg("-q")
+        .current_dir(dir)
+        .status()
+        .unwrap();
+    Command::new("git")
+        .args(["config", "user.email", "ra@example.invalid"])
+        .current_dir(dir)
+        .status()
+        .unwrap();
+    Command::new("git")
+        .args(["config", "user.name", "Ra Test"])
+        .current_dir(dir)
+        .status()
+        .unwrap();
 }
 
 #[test]
@@ -190,6 +194,64 @@ fn git_backed_registry_loads_skills_with_revision() {
 
     assert_eq!(skill.source.as_str(), "registry");
     assert_eq!(skill.source_revision.as_deref(), Some(revision.as_str()));
+}
+
+#[test]
+fn registry_path_must_be_git_worktree_root() {
+    let _guard = cwd_lock();
+    let tmp = TempDir::new().unwrap();
+    let parent = tmp.path().join("parent");
+    let registry = parent.join("registry");
+    write_skill(&registry.join("skills"), "nested-registry", "Nested body.");
+    git_commit_all(&parent);
+
+    let cwd = tmp.path().join("work");
+    fs::create_dir_all(&cwd).unwrap();
+    std::env::set_current_dir(&cwd).unwrap();
+
+    let mut config = RaConfig::default();
+    config.skills.builtin.enabled = false;
+    config.skills.registry.path = Some(registry.to_string_lossy().into_owned());
+    let bundle = build_resource_bundle(&config, false);
+
+    assert!(
+        !bundle
+            .skills
+            .iter()
+            .any(|skill| skill.command_name == "nested-registry"),
+        "a registry subdirectory inside a parent repo must not be treated as its own versioned registry"
+    );
+}
+
+#[test]
+fn registry_skips_dirty_or_untracked_content() {
+    let _guard = cwd_lock();
+    let tmp = TempDir::new().unwrap();
+    let registry = tmp.path().join("registry");
+    fs::create_dir_all(&registry).unwrap();
+    init_git_repo(&registry);
+    write_skill(
+        &registry.join("skills"),
+        "uncommitted-registry",
+        "Uncommitted body.",
+    );
+
+    let cwd = tmp.path().join("work");
+    fs::create_dir_all(&cwd).unwrap();
+    std::env::set_current_dir(&cwd).unwrap();
+
+    let mut config = RaConfig::default();
+    config.skills.builtin.enabled = false;
+    config.skills.registry.path = Some(registry.to_string_lossy().into_owned());
+    let bundle = build_resource_bundle(&config, false);
+
+    assert!(
+        !bundle
+            .skills
+            .iter()
+            .any(|skill| skill.command_name == "uncommitted-registry"),
+        "registry skills must come from committed git content so HEAD provenance is meaningful"
+    );
 }
 
 #[test]

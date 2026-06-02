@@ -83,8 +83,8 @@ paths = []
 # paths = ["./skills/.curated/**/SKILL.md"]  # opt-in extra layouts
 
 [skills.registry]
-# Optional local git checkout for versioned skill catalogs. Ra loads SKILL.md
-# files from this checkout and records HEAD as registry skill provenance.
+# Optional clean git checkout root for versioned skill catalogs. Ra loads
+# SKILL.md files from this checkout and records HEAD as registry provenance.
 enabled = true
 # path = "~/.ra/skill-registry"
 # include = []  # empty = all registry skills

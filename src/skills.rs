@@ -476,9 +476,9 @@ fn load_registry_skills(config: &crate::config::SkillRegistrySection) -> Vec<Ski
     if !root.exists() {
         return Vec::new();
     }
-    let Some(revision) = git_head_revision(&root) else {
+    let Some(revision) = git_registry_revision(&root) else {
         eprintln!(
-            "[ra::skills] registry {} is not a git checkout; skipping",
+            "[ra::skills] registry {} is not a clean git checkout; skipping",
             root.display()
         );
         return Vec::new();
@@ -526,7 +526,10 @@ fn registry_root(config: &crate::config::SkillRegistrySection) -> Option<PathBuf
     }
 }
 
-fn git_head_revision(root: &Path) -> Option<String> {
+fn git_registry_revision(root: &Path) -> Option<String> {
+    if !git_toplevel_matches(root) || !git_worktree_clean(root) {
+        return None;
+    }
     let output = std::process::Command::new("git")
         .arg("-C")
         .arg(root)
@@ -539,6 +542,46 @@ fn git_head_revision(root: &Path) -> Option<String> {
     }
     let revision = String::from_utf8_lossy(&output.stdout).trim().to_string();
     (!revision.is_empty()).then_some(revision)
+}
+
+fn git_toplevel_matches(root: &Path) -> bool {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .arg("rev-parse")
+        .arg("--show-toplevel")
+        .output();
+    let Ok(output) = output else {
+        return false;
+    };
+    if !output.status.success() {
+        return false;
+    }
+    let top = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if top.is_empty() {
+        return false;
+    }
+    let Ok(root) = root.canonicalize() else {
+        return false;
+    };
+    let Ok(top) = PathBuf::from(top).canonicalize() else {
+        return false;
+    };
+    top == root
+}
+
+fn git_worktree_clean(root: &Path) -> bool {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .arg("status")
+        .arg("--porcelain")
+        .arg("--untracked-files=all")
+        .output();
+    let Ok(output) = output else {
+        return false;
+    };
+    output.status.success() && output.stdout.is_empty()
 }
 
 fn resolve_skills(mut skills: Vec<Skill>) -> Vec<Skill> {
@@ -693,6 +736,7 @@ struct SkillMetadata {
     internal: Option<bool>,
 }
 
+#[cfg(test)]
 fn parse_skill(p: &Path) -> Result<Skill> {
     let raw = std::fs::read_to_string(p).context("read")?;
     parse_skill_document(&raw, p, SkillSource::Global, None)
@@ -714,7 +758,7 @@ fn parse_skill_document(
     source_revision: Option<String>,
 ) -> Result<Skill> {
     let (fm_raw, body) =
-        split_frontmatter(&raw).with_context(|| "missing or malformed YAML frontmatter")?;
+        split_frontmatter(raw).with_context(|| "missing or malformed YAML frontmatter")?;
     let fm: Frontmatter = serde_yaml::from_str(fm_raw).with_context(|| "parse YAML frontmatter")?;
     let command_name = skill_command_name(p)?;
     let name = fm.name.clone().unwrap_or_else(|| command_name.clone());

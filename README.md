@@ -203,6 +203,8 @@ Resolution order: `--config <path>` → `$RA_CONFIG` → `./ra.toml` →
 | `gh`    | Runs native GitHub CLI (`gh`) with argv-safe arguments; ACP hosts use the terminal reverse-call with shell quoting. This path does not use RTK. |
 | `jq`    | Runs jq filters against inline JSON or a JSON file with argv-safe stdin and a bounded JSON envelope. |
 | `mergiraf` | Runs mergiraf merge, solve, and languages actions with argv-safe arguments and bounded JSON output. |
+| `sd`    | Runs sd regex/literal find-replace across explicit file paths with argv-safe arguments and bounded JSON output. |
+| `comby` | Runs comby structural check, diff, and rewrite actions with argv-safe arguments and bounded JSON output. |
 | `mise`  | Runs mise tasks/tests with argv-safe arguments and bounded JSON output. |
 | `just`  | Runs just recipes with argv-safe arguments and bounded JSON output. |
 | `wrkflw` | Runs wrkflw local GitHub Actions validation/execution with argv-safe arguments and bounded JSON output. |
@@ -231,13 +233,13 @@ native because it is structured code search rather than a plain shell
 command. `bash` remains the fallback for project scripts, tests, and
 one-off command pipelines.
 
-Native `git` / `gh` / `jq` / `mergiraf` prioritize argv safety over RTK rewriting. If a
+Native `git` / `gh` / `jq` / `mergiraf` / `sd` / `comby` prioritize argv safety over RTK rewriting. If a
 high-volume native CLI command needs RTK output compression, run it
 through `bash` instead so the existing RTK rewrite path can apply.
 `jq` requires the system `jq` binary on `PATH`; missing jq returns
 structured install guidance instead of an opaque spawn error.
-`mergiraf` requires the system `mergiraf` binary on `PATH`; missing
-mergiraf returns structured install guidance. Native `mise` / `just` /
+`mergiraf`, `sd`, and `comby` require their system binaries on `PATH`;
+missing binaries return structured install guidance. Native `mise` / `just` /
 `wrkflw` are intended for test-first task and workflow loops such as
 `mise run test`, `just test`, and local GitHub Actions validation. They
 run local binaries with argv-safe arguments, optional `cwd`/timeout

@@ -186,6 +186,9 @@ impl DreamScheduler {
         if !self.policy.region_available {
             return ShouldDreamDecision::Skip(DreamSkipReason::RegionUnavailable);
         }
+        if !self.policy.generate_memories {
+            return ShouldDreamDecision::Skip(DreamSkipReason::GenerationDisabled);
+        }
         if rate_limit_remaining_percent
             .is_some_and(|remaining| remaining < self.policy.min_rate_limit_remaining_percent)
         {
@@ -211,6 +214,7 @@ impl DreamScheduler {
             .filter(|candidate| {
                 !candidate.is_active
                     && candidate.session_duration >= self.policy.min_session_duration
+                    && !(self.policy.disable_on_external_context && candidate.has_external_context)
             })
             .take(DREAM_INPUT_SESSION_CAP)
             .collect()
@@ -227,6 +231,7 @@ pub enum ShouldDreamDecision {
 pub enum DreamSkipReason {
     MemoriesDisabled,
     RegionUnavailable,
+    GenerationDisabled,
     RateLimitTooLow,
     NotEnoughSessions,
 }
@@ -252,9 +257,7 @@ impl DreamJob {
 
     pub fn update(&mut self, status: DreamStatus, output_store_id: Option<impl Into<String>>) {
         self.status = status;
-        if let Some(output_store_id) = output_store_id {
-            self.output_store_id = Some(output_store_id.into());
-        }
+        self.output_store_id = output_store_id.map(Into::into);
     }
 
     /// Decide whether the completed dream output may be adopted for future use.

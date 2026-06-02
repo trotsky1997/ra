@@ -260,6 +260,15 @@ fn dream_scheduler_reports_each_skip_branch() {
         ShouldDreamDecision::Skip(DreamSkipReason::RegionUnavailable)
     );
 
+    let scheduler = DreamScheduler::new(MemoryPolicy {
+        generate_memories: false,
+        ..enabled_policy()
+    });
+    assert_eq!(
+        scheduler.should_dream(10, Some(80)),
+        ShouldDreamDecision::Skip(DreamSkipReason::GenerationDisabled)
+    );
+
     let scheduler = DreamScheduler::new(enabled_policy());
     assert_eq!(
         scheduler.should_dream(10, Some(19)),
@@ -277,7 +286,6 @@ fn dream_scheduler_reports_each_skip_branch() {
 
 #[test]
 fn dream_input_selection_filters_active_short_and_caps_inputs() {
-    let scheduler = DreamScheduler::new(enabled_policy());
     let mut candidates = Vec::new();
     candidates.push(MemoryCandidate {
         is_active: true,
@@ -287,17 +295,28 @@ fn dream_input_selection_filters_active_short_and_caps_inputs() {
         session_duration: Duration::from_secs(119),
         ..mature_candidate()
     });
+    candidates.push(MemoryCandidate {
+        has_external_context: true,
+        ..mature_candidate()
+    });
     for _ in 0..(DREAM_INPUT_SESSION_CAP + 5) {
         candidates.push(mature_candidate());
     }
 
-    let selected = scheduler.select_dream_inputs(&candidates);
+    let selected = DreamScheduler::new(MemoryPolicy {
+        disable_on_external_context: true,
+        ..enabled_policy()
+    })
+    .select_dream_inputs(&candidates);
 
     assert_eq!(selected.len(), DREAM_INPUT_SESSION_CAP);
     assert!(selected.iter().all(|candidate| !candidate.is_active));
     assert!(selected
         .iter()
-        .all(|candidate| candidate.session_duration >= scheduler.policy().min_session_duration));
+        .all(|candidate| !candidate.has_external_context));
+    assert!(selected
+        .iter()
+        .all(|candidate| candidate.session_duration >= enabled_policy().min_session_duration));
 }
 
 #[test]
@@ -341,6 +360,16 @@ fn non_completed_or_missing_dream_output_is_not_adopted() {
     completed_without_output.update(DreamStatus::Completed, None::<String>);
     assert_eq!(
         completed_without_output.adopt_output(&policy, false),
+        DreamAdoptionDecision::Suppressed {
+            reason: SuppressionReason::EntryNotDurable
+        }
+    );
+
+    let mut stale_output = DreamJob::new("dream-3", "input-store");
+    stale_output.update(DreamStatus::Running, Some("partial-output"));
+    stale_output.update(DreamStatus::Completed, None::<String>);
+    assert_eq!(
+        stale_output.adopt_output(&policy, false),
         DreamAdoptionDecision::Suppressed {
             reason: SuppressionReason::EntryNotDurable
         }

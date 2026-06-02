@@ -73,6 +73,7 @@ builtin = []
 #   ~/.agents/skills/             — cross-agent global layout
 #   ./.claude/skills/             — Claude Code project skills
 #   ~/.claude/skills/             — Claude Code personal skills
+#   ~/.codex/skills/              — Codex global skills installed by `npx skills`
 # Other catalog-style layouts (`skills/.curated/`, …) go in `paths`
 # explicitly.
 [skills]
@@ -80,6 +81,22 @@ enabled = true
 discover = true
 paths = []
 # paths = ["./skills/.curated/**/SKILL.md"]  # opt-in extra layouts
+
+[skills.registry]
+# Optional clean git checkout root for versioned skill catalogs. Ra loads
+# SKILL.md files from this checkout and records HEAD as registry provenance.
+enabled = true
+# path = "~/.ra/skill-registry"
+# include = []  # empty = all registry skills
+# exclude = []
+
+[skills.builtin]
+# Ra-shipped fallback skills. Project/global/registry skills with the same
+# command name shadow builtins.
+enabled = true
+# include = []  # empty = curated builtin set
+# exclude = []
+# include_internal = false
 
 # ─── Prompt templates → slash commands ──────────────────────────────
 [prompts]

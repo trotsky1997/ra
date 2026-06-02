@@ -146,11 +146,11 @@ pub struct SkillsSection {
     /// Master switch. Default true.
     #[serde(default = "default_true")]
     pub enabled: bool,
-    /// Auto-discover skills from Ra-native, universal/cross-agent, and
-    /// Claude Code layouts: `./.ra/skills/`, `~/.ra/skills/`,
-    /// `./.agents/skills/`, `~/.agents/skills/`, `./.claude/skills/`,
-    /// and `~/.claude/skills/`. Default true so project and personal
-    /// skills work without explicit paths.
+    /// Auto-discover skills from Ra-native, universal/cross-agent, Codex,
+    /// and Claude Code layouts: `./.ra/skills/`, `~/.ra/skills/`,
+    /// `./.agents/skills/`, `~/.agents/skills/`, `~/.codex/skills/`,
+    /// `./.claude/skills/`, and `~/.claude/skills/`. Default true so
+    /// project and personal skills work without explicit paths.
     #[serde(default = "default_true")]
     pub discover: bool,
     /// Extra glob patterns expanded against `~` and the cwd. Each match
@@ -158,6 +158,54 @@ pub struct SkillsSection {
     /// whatever `discover` finds.
     #[serde(default)]
     pub paths: Vec<String>,
+    /// Ra-shipped builtin skill controls. Builtins are the lowest-priority
+    /// source and can be shadowed by explicit, project, global, or registry
+    /// skills.
+    #[serde(default)]
+    pub builtin: BuiltinSkillsSection,
+    /// Optional local skill registry checkout. The registry must be a clean git
+    /// worktree root; Ra records its HEAD revision as skill provenance.
+    #[serde(default)]
+    pub registry: SkillRegistrySection,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BuiltinSkillsSection {
+    /// Master switch for Ra-shipped builtin skills. Default true.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Empty = load the curated builtin set. Non-empty = load only these
+    /// builtin command names before applying `exclude`.
+    #[serde(default)]
+    pub include: Vec<String>,
+    /// Builtin command names to suppress. Always wins over `include`.
+    #[serde(default)]
+    pub exclude: Vec<String>,
+    /// Include builtins marked as internal. Default false.
+    #[serde(default)]
+    pub include_internal: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SkillRegistrySection {
+    /// Enable loading from a local git-backed skill registry. Default true;
+    /// no registry is loaded unless `path` is set or the default checkout
+    /// exists.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Local clean git checkout root containing SKILL.md files. If omitted, Ra
+    /// checks `~/.ra/skill-registry` and skips it when absent.
+    #[serde(default)]
+    pub path: Option<String>,
+    /// Empty = load every discovered registry skill. Non-empty = load only
+    /// these command names before applying `exclude`.
+    #[serde(default)]
+    pub include: Vec<String>,
+    /// Registry command names to suppress. Always wins over `include`.
+    #[serde(default)]
+    pub exclude: Vec<String>,
 }
 
 impl Default for SkillsSection {
@@ -166,6 +214,30 @@ impl Default for SkillsSection {
             enabled: true,
             discover: true,
             paths: Vec::new(),
+            builtin: BuiltinSkillsSection::default(),
+            registry: SkillRegistrySection::default(),
+        }
+    }
+}
+
+impl Default for BuiltinSkillsSection {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            include: Vec::new(),
+            exclude: Vec::new(),
+            include_internal: false,
+        }
+    }
+}
+
+impl Default for SkillRegistrySection {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            path: None,
+            include: Vec::new(),
+            exclude: Vec::new(),
         }
     }
 }
@@ -741,6 +813,17 @@ builtin = ["read", "bash"]
 [skills]
 paths = ["./skills/**/SKILL.md"]
 
+[skills.registry]
+path = "~/.ra/skill-registry"
+include = ["review"]
+exclude = ["internal-only"]
+
+[skills.builtin]
+enabled = true
+include = ["review"]
+exclude = ["demo"]
+include_internal = true
+
 [prompts]
 paths = ["./prompts/*.md"]
 
@@ -770,6 +853,16 @@ timeout = 2.0
         assert_eq!(cfg.models.len(), 1);
         assert_eq!(cfg.models[0].name, "pi");
         assert_eq!(cfg.tools.builtin, vec!["read", "bash"]);
+        assert_eq!(
+            cfg.skills.registry.path.as_deref(),
+            Some("~/.ra/skill-registry")
+        );
+        assert_eq!(cfg.skills.registry.include, vec!["review"]);
+        assert_eq!(cfg.skills.registry.exclude, vec!["internal-only"]);
+        assert!(cfg.skills.builtin.enabled);
+        assert_eq!(cfg.skills.builtin.include, vec!["review"]);
+        assert_eq!(cfg.skills.builtin.exclude, vec!["demo"]);
+        assert!(cfg.skills.builtin.include_internal);
         assert_eq!(cfg.a2a.serve.http_port, Some(3000));
         assert_eq!(cfg.a2a.remote_agents.len(), 1);
         assert_eq!(cfg.mcp.servers.len(), 1);

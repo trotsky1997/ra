@@ -46,10 +46,26 @@ builtin = []
 [skills]
 # `discover = true` loads project skills from `./.ra/skills/**/SKILL.md`
 # shared cross-agent skills from `./.agents/skills/**/SKILL.md`, and
-# Claude Code skills from `./.claude/skills/**/SKILL.md`.
+# Claude Code skills from `./.claude/skills/**/SKILL.md`. Global Codex
+# skills installed by `npx skills -g -a codex` are loaded from
+# `~/.codex/skills/**/SKILL.md`.
 enabled = true
 discover = true
 paths = []
+
+[skills.registry]
+# Optional clean git checkout root for versioned skill catalogs.
+enabled = true
+# path = "~/.ra/skill-registry"
+# include = []
+# exclude = []
+
+[skills.builtin]
+# Ra-shipped fallback skills. Project/global/registry skills shadow by name.
+enabled = true
+# include = []
+# exclude = []
+# include_internal = false
 
 [prompts]
 enabled = true

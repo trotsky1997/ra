@@ -26,6 +26,56 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+const BUILTIN_REVIEW_SKILL: &str = r#"---
+name: review
+description: Review local code changes for correctness, regressions, and missing tests.
+---
+
+# Review Skill
+
+Use this skill when the user asks for a code review or asks you to inspect a change before merging.
+
+## Instructions
+
+- Focus on concrete bugs, behavioral regressions, security issues, and missing tests.
+- Ground findings in file and line references where possible.
+- Put findings before summaries.
+- If no issues are found, say that directly and mention any residual test risk.
+"#;
+
+/// Provenance of a skill after discovery. Lower-priority sources can be
+/// shadowed by higher-priority sources with the same command name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SkillSource {
+    Explicit,
+    Project,
+    Global,
+    Registry,
+    Builtin,
+}
+
+impl SkillSource {
+    fn precedence(self) -> u8 {
+        match self {
+            SkillSource::Explicit => 0,
+            SkillSource::Project => 1,
+            SkillSource::Global => 2,
+            SkillSource::Registry => 3,
+            SkillSource::Builtin => 4,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SkillSource::Explicit => "explicit",
+            SkillSource::Project => "project",
+            SkillSource::Global => "global",
+            SkillSource::Registry => "registry",
+            SkillSource::Builtin => "builtin",
+        }
+    }
+}
+
 /// One agent skill following Claude Code / agentskills.io conventions.
 #[derive(Debug, Clone)]
 pub struct Skill {
@@ -53,6 +103,14 @@ pub struct Skill {
     pub user_invocable: bool,
     /// Path to the SKILL.md file on disk.
     pub path: PathBuf,
+    /// Where this skill came from before registry resolution.
+    pub source: SkillSource,
+    /// Optional version provenance for git-backed registry skills.
+    pub source_revision: Option<String>,
+    /// Internal skills are hidden from builtin loading unless explicitly
+    /// requested. External skills still load normally; this flag mainly
+    /// preserves `npx skills` metadata for Ra-shipped entries.
+    pub internal: bool,
     /// The Markdown body **after** the frontmatter. Not loaded into the
     /// system prompt at startup (progressive disclosure); the LLM reads
     /// it on demand.
@@ -300,15 +358,25 @@ impl ResourceBundle {
 // ---------- loaders -----------------------------------------------------
 
 pub fn load_skills(patterns: &[String]) -> Vec<Skill> {
+    load_skills_with_source(patterns, SkillSource::Global, None)
+}
+
+fn load_skills_with_source(
+    patterns: &[String],
+    source: SkillSource,
+    source_revision: Option<String>,
+) -> Vec<Skill> {
     expand_globs(patterns, "skills")
         .into_iter()
-        .filter_map(|p| match parse_skill(&p) {
-            Ok(s) => Some(s),
-            Err(e) => {
-                eprintln!("[ra::skills] {}: {e:#}", p.display());
-                None
-            }
-        })
+        .filter_map(
+            |p| match parse_skill_with_source(&p, source, source_revision.clone()) {
+                Ok(s) => Some(s),
+                Err(e) => {
+                    eprintln!("[ra::skills] {}: {e:#}", p.display());
+                    None
+                }
+            },
+        )
         .collect()
 }
 
@@ -321,14 +389,237 @@ pub fn default_discover_globs() -> Vec<String> {
         "~/.ra/skills/**/SKILL.md".to_string(),
         "./.agents/skills/**/SKILL.md".to_string(),
         "~/.agents/skills/**/SKILL.md".to_string(),
+        "~/.codex/skills/**/SKILL.md".to_string(),
         "./.claude/skills/**/SKILL.md".to_string(),
         "~/.claude/skills/**/SKILL.md".to_string(),
     ]
 }
 
+fn project_skill_globs(cwd: &Path) -> Vec<String> {
+    discover_project_skill_globs(cwd)
+}
+
+fn global_skill_globs() -> Vec<String> {
+    vec![
+        "~/.ra/skills/**/SKILL.md".to_string(),
+        "~/.agents/skills/**/SKILL.md".to_string(),
+        "~/.codex/skills/**/SKILL.md".to_string(),
+        "~/.claude/skills/**/SKILL.md".to_string(),
+    ]
+}
+
+fn builtin_skill_docs() -> Vec<(&'static str, &'static str)> {
+    vec![("review", BUILTIN_REVIEW_SKILL)]
+}
+
+fn load_builtin_skills(config: &crate::config::BuiltinSkillsSection) -> Vec<Skill> {
+    if !config.enabled {
+        return Vec::new();
+    }
+    let include = normalized_name_set(&config.include);
+    let exclude = normalized_name_set(&config.exclude);
+    builtin_skill_docs()
+        .into_iter()
+        .filter_map(|(name, raw)| {
+            let command = normalize_name(name);
+            if !include.is_empty() && !include.contains(&command) {
+                return None;
+            }
+            if exclude.contains(&command) {
+                return None;
+            }
+            let path = materialize_builtin_skill(name, raw)
+                .unwrap_or_else(|| PathBuf::from(format!("<builtin>/skills/{name}/SKILL.md")));
+            match parse_skill_document(raw, &path, SkillSource::Builtin, None) {
+                Ok(skill) if skill.internal && !config.include_internal => None,
+                Ok(skill) => Some(skill),
+                Err(e) => {
+                    eprintln!("[ra::skills] builtin {name}: {e:#}");
+                    None
+                }
+            }
+        })
+        .collect()
+}
+
+fn materialize_builtin_skill(name: &str, raw: &str) -> Option<PathBuf> {
+    let cache_root = dirs::cache_dir()?
+        .join("ra")
+        .join("builtin-skills")
+        .join(env!("CARGO_PKG_VERSION"))
+        .join(name);
+    if let Err(e) = std::fs::create_dir_all(&cache_root) {
+        eprintln!(
+            "[ra::skills] failed to create builtin skill cache {}: {e}",
+            cache_root.display()
+        );
+        return None;
+    }
+    let path = cache_root.join("SKILL.md");
+    if let Err(e) = std::fs::write(&path, raw) {
+        eprintln!(
+            "[ra::skills] failed to write builtin skill cache {}: {e}",
+            path.display()
+        );
+        return None;
+    }
+    Some(path)
+}
+
+fn load_registry_skills(config: &crate::config::SkillRegistrySection) -> Vec<Skill> {
+    if !config.enabled {
+        return Vec::new();
+    }
+    let Some(root) = registry_root(config) else {
+        return Vec::new();
+    };
+    if !root.exists() {
+        return Vec::new();
+    }
+    let Some(revision) = git_registry_revision(&root) else {
+        eprintln!(
+            "[ra::skills] registry {} is not a clean git checkout; skipping",
+            root.display()
+        );
+        return Vec::new();
+    };
+    let include = normalized_name_set(&config.include);
+    let exclude = normalized_name_set(&config.exclude);
+    let patterns = vec![
+        root.join("skills/**/SKILL.md")
+            .to_string_lossy()
+            .into_owned(),
+        root.join("skills/.curated/**/SKILL.md")
+            .to_string_lossy()
+            .into_owned(),
+        root.join("skills/.experimental/**/SKILL.md")
+            .to_string_lossy()
+            .into_owned(),
+        root.join("skills/.system/**/SKILL.md")
+            .to_string_lossy()
+            .into_owned(),
+        root.join(".agents/skills/**/SKILL.md")
+            .to_string_lossy()
+            .into_owned(),
+        root.join(".claude/skills/**/SKILL.md")
+            .to_string_lossy()
+            .into_owned(),
+    ];
+    load_skills_with_source(&patterns, SkillSource::Registry, Some(revision))
+        .into_iter()
+        .filter(|skill| {
+            let name = normalize_name(&skill.command_name);
+            (include.is_empty() || include.contains(&name)) && !exclude.contains(&name)
+        })
+        .collect()
+}
+
+fn registry_root(config: &crate::config::SkillRegistrySection) -> Option<PathBuf> {
+    match config
+        .path
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        Some(path) => Some(PathBuf::from(shellexpand::tilde(path).to_string())),
+        None => dirs::home_dir().map(|home| home.join(".ra").join("skill-registry")),
+    }
+}
+
+fn git_registry_revision(root: &Path) -> Option<String> {
+    if !git_toplevel_matches(root) || !git_worktree_clean(root) {
+        return None;
+    }
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .arg("rev-parse")
+        .arg("HEAD")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let revision = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!revision.is_empty()).then_some(revision)
+}
+
+fn git_toplevel_matches(root: &Path) -> bool {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .arg("rev-parse")
+        .arg("--show-toplevel")
+        .output();
+    let Ok(output) = output else {
+        return false;
+    };
+    if !output.status.success() {
+        return false;
+    }
+    let top = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if top.is_empty() {
+        return false;
+    }
+    let Ok(root) = root.canonicalize() else {
+        return false;
+    };
+    let Ok(top) = PathBuf::from(top).canonicalize() else {
+        return false;
+    };
+    top == root
+}
+
+fn git_worktree_clean(root: &Path) -> bool {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .arg("status")
+        .arg("--porcelain")
+        .arg("--untracked-files=all")
+        .output();
+    let Ok(output) = output else {
+        return false;
+    };
+    output.status.success() && output.stdout.is_empty()
+}
+
+fn resolve_skills(mut skills: Vec<Skill>) -> Vec<Skill> {
+    skills.sort_by(|a, b| {
+        a.source
+            .precedence()
+            .cmp(&b.source.precedence())
+            .then_with(|| a.command_name.cmp(&b.command_name))
+            .then_with(|| a.path.cmp(&b.path))
+    });
+    let mut seen = std::collections::HashSet::new();
+    let mut resolved = Vec::new();
+    for skill in skills {
+        let key = normalize_name(&skill.command_name);
+        if seen.insert(key) {
+            resolved.push(skill);
+        }
+    }
+    resolved.sort_by(|a, b| a.command_name.cmp(&b.command_name));
+    resolved
+}
+
+fn normalized_name_set(values: &[String]) -> std::collections::HashSet<String> {
+    values.iter().map(|s| normalize_name(s)).collect()
+}
+
+fn normalize_name(value: &str) -> String {
+    value.trim().to_ascii_lowercase()
+}
+
 pub fn discover_project_skill_globs(cwd: &Path) -> Vec<String> {
     let mut out = Vec::new();
     for dir in project_walk_dirs(cwd) {
+        out.push(
+            dir.join(".ra/skills/**/SKILL.md")
+                .to_string_lossy()
+                .into_owned(),
+        );
         out.push(
             dir.join(".agents/skills/**/SKILL.md")
                 .to_string_lossy()
@@ -437,12 +728,37 @@ struct Frontmatter {
     #[allow(dead_code)]
     paths: Option<serde_yaml::Value>,
     shell: Option<String>,
+    metadata: Option<SkillMetadata>,
 }
 
+#[derive(Debug, Default, Deserialize)]
+struct SkillMetadata {
+    internal: Option<bool>,
+}
+
+#[cfg(test)]
 fn parse_skill(p: &Path) -> Result<Skill> {
     let raw = std::fs::read_to_string(p).context("read")?;
+    parse_skill_document(&raw, p, SkillSource::Global, None)
+}
+
+fn parse_skill_with_source(
+    p: &Path,
+    source: SkillSource,
+    source_revision: Option<String>,
+) -> Result<Skill> {
+    let raw = std::fs::read_to_string(p).context("read")?;
+    parse_skill_document(&raw, p, source, source_revision)
+}
+
+fn parse_skill_document(
+    raw: &str,
+    p: &Path,
+    source: SkillSource,
+    source_revision: Option<String>,
+) -> Result<Skill> {
     let (fm_raw, body) =
-        split_frontmatter(&raw).with_context(|| "missing or malformed YAML frontmatter")?;
+        split_frontmatter(raw).with_context(|| "missing or malformed YAML frontmatter")?;
     let fm: Frontmatter = serde_yaml::from_str(fm_raw).with_context(|| "parse YAML frontmatter")?;
     let command_name = skill_command_name(p)?;
     let name = fm.name.clone().unwrap_or_else(|| command_name.clone());
@@ -470,6 +786,13 @@ fn parse_skill(p: &Path) -> Result<Skill> {
         disable_model_invocation: fm.disable_model_invocation.unwrap_or(false),
         user_invocable: fm.user_invocable.unwrap_or(true),
         path: p.to_path_buf(),
+        source,
+        source_revision,
+        internal: fm
+            .metadata
+            .as_ref()
+            .and_then(|m| m.internal)
+            .unwrap_or(false),
         body: body.to_string(),
     })
 }
@@ -732,18 +1055,30 @@ pub fn build_resource_bundle(config: &crate::config::RaConfig, emit_logs: bool) 
     let mut bundle = ResourceBundle::default();
 
     if config.skills.enabled {
-        let mut all_patterns: Vec<String> = Vec::new();
+        let mut skills = Vec::new();
         if config.skills.discover {
             let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
-            all_patterns.extend(discover_project_skill_globs(&cwd));
-            all_patterns.extend(default_discover_globs());
+            skills.extend(load_skills_with_source(
+                &project_skill_globs(&cwd),
+                SkillSource::Project,
+                None,
+            ));
+            skills.extend(load_skills_with_source(
+                &global_skill_globs(),
+                SkillSource::Global,
+                None,
+            ));
         }
-        all_patterns.extend(config.skills.paths.iter().cloned());
-        if !all_patterns.is_empty() {
-            bundle.skills = load_skills(&all_patterns);
-            if !bundle.skills.is_empty() {
-                log(&format!("[ra] loaded {} skill(s)", bundle.skills.len()));
-            }
+        skills.extend(load_skills_with_source(
+            &config.skills.paths,
+            SkillSource::Explicit,
+            None,
+        ));
+        skills.extend(load_registry_skills(&config.skills.registry));
+        skills.extend(load_builtin_skills(&config.skills.builtin));
+        bundle.skills = resolve_skills(skills);
+        if !bundle.skills.is_empty() {
+            log(&format!("[ra] loaded {} skill(s)", bundle.skills.len()));
         }
     }
     if config.prompts.enabled {

@@ -457,6 +457,71 @@ async fn constrained_tool_policy_declarations_do_not_expand_to_whole_tool() {
 }
 
 #[tokio::test]
+async fn constrained_disallowed_tool_policy_blocks_whole_tool() {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let seen_tools = Arc::new(Mutex::new(Vec::new()));
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let model = ScriptedModel {
+        seen,
+        seen_tools: seen_tools.clone(),
+        chunks: vec![
+            ModelChunk::ToolCall(ToolCall {
+                id: "call-1".to_string(),
+                name: "bash".to_string(),
+                input: serde_json::json!({ "text": "blocked" }),
+            }),
+            ModelChunk::End {
+                stop_reason: StopReason::EndTurn,
+            },
+        ],
+    };
+    let session = Arc::new(Session::new(
+        Arc::new(model),
+        vec![Arc::new(EchoTool {
+            name: "bash",
+            log: log.clone(),
+        })],
+    ));
+
+    let mut templates = HashMap::new();
+    templates.insert(
+        "audit".to_string(),
+        skill_template(
+            "Audit.",
+            SkillRuntimeOptions {
+                disallowed_tools: vec!["Bash(git push:*)".to_string()],
+                ..SkillRuntimeOptions::default()
+            },
+        ),
+    );
+
+    let mut events = Vec::new();
+    let runner = SessionRunner::new(session, "test-session".into(), Arc::new(NullHost))
+        .with_prompt_templates(Arc::new(templates));
+
+    let outcome = runner
+        .run_input("/audit".to_string(), |ev| events.push(ev))
+        .await;
+    assert_eq!(outcome, RunOutcome::Completed);
+    assert!(
+        seen_tools.lock().unwrap()[0].is_empty(),
+        "constrained denied tool should not be exposed to the model"
+    );
+    assert!(log.lock().unwrap().is_empty(), "denied tool must not run");
+    assert!(
+        events.iter().any(|ev| matches!(
+            ev,
+            ra::session_runner::RunnerEvent::ToolCallEnd {
+                is_error: true,
+                content,
+                ..
+            } if content.contains("denied by skill-scoped tool policy")
+        )),
+        "denied tool should produce an error ToolCallEnd: {events:?}"
+    );
+}
+
+#[tokio::test]
 async fn skill_scoped_disallowed_tools_block_execution() {
     let seen = Arc::new(Mutex::new(Vec::new()));
     let log = Arc::new(Mutex::new(Vec::new()));

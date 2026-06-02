@@ -628,25 +628,41 @@ fn tool_allowed(name: &str, scope: Option<&SessionRuntimeScope>) -> bool {
         && !scope
             .allowed_tools
             .iter()
-            .any(|decl| tool_decl_matches(decl, name))
+            .any(|decl| tool_decl_allows(decl, name))
     {
         return false;
     }
     !scope
         .disallowed_tools
         .iter()
-        .any(|decl| tool_decl_matches(decl, name))
+        .any(|decl| tool_decl_denies(decl, name))
 }
 
-fn tool_decl_matches(decl: &str, name: &str) -> bool {
+fn tool_decl_allows(decl: &str, name: &str) -> bool {
     let decl = decl.trim();
-    if decl == "*" || decl.eq_ignore_ascii_case(name) {
+    if decl == "*" {
         return true;
     }
     if decl.contains('(') || decl.contains(')') {
         return false;
     }
     decl.eq_ignore_ascii_case(name)
+}
+
+fn tool_decl_denies(decl: &str, name: &str) -> bool {
+    let decl = decl.trim();
+    if tool_decl_allows(decl, name) {
+        return true;
+    }
+    constrained_tool_decl_head(decl).is_some_and(|head| head.eq_ignore_ascii_case(name))
+}
+
+fn constrained_tool_decl_head(decl: &str) -> Option<&str> {
+    if !decl.contains('(') && !decl.contains(')') {
+        return None;
+    }
+    let head = decl.split(['(', ')']).next().unwrap_or("").trim();
+    (!head.is_empty()).then_some(head)
 }
 
 fn combine_system_prompt(base: Option<String>, memory: Option<String>) -> Option<String> {

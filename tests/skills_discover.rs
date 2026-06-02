@@ -7,6 +7,7 @@ use ra::{
     skills::{build_resource_bundle, default_discover_globs, load_skills, ResourceBundle},
 };
 use std::fs;
+use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 use tempfile::TempDir;
 
@@ -25,6 +26,42 @@ fn write_skill(root: &std::path::Path, slug: &str, body: &str) {
     .unwrap();
 }
 
+fn git_commit_all(dir: &std::path::Path) -> String {
+    Command::new("git")
+        .arg("init")
+        .arg("-q")
+        .current_dir(dir)
+        .status()
+        .unwrap();
+    Command::new("git")
+        .args(["config", "user.email", "ra@example.invalid"])
+        .current_dir(dir)
+        .status()
+        .unwrap();
+    Command::new("git")
+        .args(["config", "user.name", "Ra Test"])
+        .current_dir(dir)
+        .status()
+        .unwrap();
+    Command::new("git")
+        .args(["add", "."])
+        .current_dir(dir)
+        .status()
+        .unwrap();
+    Command::new("git")
+        .args(["commit", "-qm", "add skills"])
+        .current_dir(dir)
+        .status()
+        .unwrap();
+    let output = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    String::from_utf8(output.stdout).unwrap().trim().to_string()
+}
+
 #[test]
 fn default_discovery_finds_ra_and_agents_layouts() {
     let _guard = cwd_lock();
@@ -38,6 +75,10 @@ fn default_discovery_finds_ra_and_agents_layouts() {
     std::env::set_current_dir(cwd).unwrap();
 
     let globs = default_discover_globs();
+    assert!(
+        globs.iter().any(|glob| glob.contains("~/.codex/skills")),
+        "global Codex skills installed by npx skills should be discoverable"
+    );
     let skills = load_skills(&globs);
     let names: Vec<&str> = skills.iter().map(|s| s.command_name.as_str()).collect();
 
@@ -48,6 +89,107 @@ fn default_discovery_finds_ra_and_agents_layouts() {
             names
         );
     }
+}
+
+#[test]
+fn build_resource_bundle_loads_builtin_skills_by_default() {
+    let _guard = cwd_lock();
+    let tmp = TempDir::new().unwrap();
+    std::env::set_current_dir(tmp.path()).unwrap();
+
+    let bundle = build_resource_bundle(&RaConfig::default(), false);
+    let review = bundle
+        .skills
+        .iter()
+        .find(|skill| skill.command_name == "review")
+        .expect("builtin review skill should load by default");
+
+    assert_eq!(review.source.as_str(), "builtin");
+    assert!(bundle.prompt_map().contains_key("review"));
+    assert!(bundle
+        .build_system_prompt()
+        .expect("skills prompt")
+        .contains("Review local code changes"));
+}
+
+#[test]
+fn project_skill_shadows_builtin_skill() {
+    let _guard = cwd_lock();
+    let tmp = TempDir::new().unwrap();
+    let cwd = tmp.path();
+    write_skill(
+        &cwd.join(".agents/skills"),
+        "review",
+        "Project review body.",
+    );
+    std::env::set_current_dir(cwd).unwrap();
+
+    let bundle = build_resource_bundle(&RaConfig::default(), false);
+    let review = bundle
+        .skills
+        .iter()
+        .find(|skill| skill.command_name == "review")
+        .expect("review skill should resolve");
+
+    assert_eq!(review.source.as_str(), "project");
+    assert_eq!(review.body.trim(), "Project review body.");
+    assert_eq!(
+        bundle
+            .skills
+            .iter()
+            .filter(|skill| skill.command_name == "review")
+            .count(),
+        1,
+        "only the active winner should be exposed"
+    );
+}
+
+#[test]
+fn builtin_skill_exclude_suppresses_builtin() {
+    let _guard = cwd_lock();
+    let tmp = TempDir::new().unwrap();
+    std::env::set_current_dir(tmp.path()).unwrap();
+
+    let mut config = RaConfig::default();
+    config.skills.builtin.exclude = vec!["review".to_string()];
+    let bundle = build_resource_bundle(&config, false);
+
+    assert!(
+        !bundle
+            .skills
+            .iter()
+            .any(|skill| skill.command_name == "review"),
+        "excluded builtin skill should not load"
+    );
+}
+
+#[test]
+fn git_backed_registry_loads_skills_with_revision() {
+    let _guard = cwd_lock();
+    let tmp = TempDir::new().unwrap();
+    let cwd = tmp.path().join("work");
+    fs::create_dir_all(&cwd).unwrap();
+    let registry = tmp.path().join("registry");
+    write_skill(
+        &registry.join("skills"),
+        "plan-review",
+        "Registry skill body.",
+    );
+    let revision = git_commit_all(&registry);
+    std::env::set_current_dir(&cwd).unwrap();
+
+    let mut config = RaConfig::default();
+    config.skills.builtin.enabled = false;
+    config.skills.registry.path = Some(registry.to_string_lossy().into_owned());
+    let bundle = build_resource_bundle(&config, false);
+    let skill = bundle
+        .skills
+        .iter()
+        .find(|skill| skill.command_name == "plan-review")
+        .expect("registry skill should load");
+
+    assert_eq!(skill.source.as_str(), "registry");
+    assert_eq!(skill.source_revision.as_deref(), Some(revision.as_str()));
 }
 
 #[test]

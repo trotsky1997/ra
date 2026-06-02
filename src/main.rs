@@ -70,6 +70,12 @@ enum Cmd {
     },
     /// List saved sessions in the current cwd's bucket.
     Sessions,
+    /// Manage external skills through the npx skills ecosystem manager.
+    Skills {
+        /// Command and arguments forwarded to `npx skills`.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
     /// Interactive terminal UI. Requires the `tui` cargo feature
     /// (and a nightly toolchain — opentui_rust uses edition 2024).
     Tui,
@@ -94,6 +100,7 @@ async fn main() -> anyhow::Result<()> {
             force,
             example_skill,
         }) => return run_init(force, example_skill),
+        Some(Cmd::Skills { args }) => return run_skills_passthrough(args).await,
         Some(Cmd::Acp) => RuntimeCmd::Acp,
         Some(Cmd::Run { prompt }) => RuntimeCmd::Run { prompt },
         Some(Cmd::Serve {
@@ -124,6 +131,113 @@ async fn main() -> anyhow::Result<()> {
         RuntimeCmd::Sessions => run_list_sessions(&config).await,
         RuntimeCmd::Tui => run_tui(&config).await,
         RuntimeCmd::LegacyPrompt { prompt } => run_print(prompt, &config).await,
+    }
+}
+
+async fn run_skills_passthrough(args: Vec<String>) -> anyhow::Result<()> {
+    let mut forwarded = normalize_skills_args(args);
+    let status = tokio::process::Command::new("npx")
+        .arg("--yes")
+        .arg("skills@1.5.9")
+        .args(forwarded.drain(..))
+        .status()
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to run `npx skills`: {e}"))?;
+    if !status.success() {
+        std::process::exit(status.code().unwrap_or(1));
+    }
+    Ok(())
+}
+
+fn normalize_skills_args(mut args: Vec<String>) -> Vec<String> {
+    let Some(command) = args.first().cloned() else {
+        return vec!["--help".to_string()];
+    };
+    if command == "add" || command == "a" {
+        if !skills_args_have_agent(&args[1..]) {
+            args.push("--agent".to_string());
+            args.push("codex".to_string());
+        }
+    }
+    args
+}
+
+fn skills_args_have_agent(args: &[String]) -> bool {
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        if arg == "-a" || arg == "--agent" || arg == "--all" || arg.starts_with("--agent=") {
+            return true;
+        }
+        if arg == "--" {
+            break;
+        }
+    }
+    false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn skills_add_defaults_to_codex_agent() {
+        let args = normalize_skills_args(vec![
+            "add".to_string(),
+            "vercel-labs/agent-skills".to_string(),
+        ]);
+        assert_eq!(
+            args,
+            vec![
+                "add".to_string(),
+                "vercel-labs/agent-skills".to_string(),
+                "--agent".to_string(),
+                "codex".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn skills_add_preserves_explicit_agent() {
+        let args = normalize_skills_args(vec![
+            "add".to_string(),
+            "vercel-labs/agent-skills".to_string(),
+            "--agent".to_string(),
+            "claude-code".to_string(),
+        ]);
+        assert_eq!(
+            args,
+            vec![
+                "add".to_string(),
+                "vercel-labs/agent-skills".to_string(),
+                "--agent".to_string(),
+                "claude-code".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn skills_add_all_preserves_npx_all_semantics() {
+        let args = normalize_skills_args(vec![
+            "add".to_string(),
+            "vercel-labs/agent-skills".to_string(),
+            "--all".to_string(),
+        ]);
+        assert_eq!(
+            args,
+            vec![
+                "add".to_string(),
+                "vercel-labs/agent-skills".to_string(),
+                "--all".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn skills_no_command_shows_help() {
+        assert_eq!(
+            normalize_skills_args(Vec::new()),
+            vec!["--help".to_string()]
+        );
     }
 }
 
